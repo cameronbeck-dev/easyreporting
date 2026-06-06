@@ -13,6 +13,10 @@ export interface ActionState {
   ok?: boolean;
   /** Invite URL surfaced after creating a user / resending an invite. */
   inviteUrl?: string;
+  /** Human-readable message (e.g. connection test result). */
+  message?: string;
+  /** Connection/table/column lists returned by introspect actions. */
+  data?: unknown;
 }
 
 function bool(v: FormDataEntryValue | null): boolean {
@@ -81,7 +85,101 @@ export async function setTenantColumnsAction(_prev: ActionState, formData: FormD
   return run(['/admin/columns'], async () => {
     const admin = await requireAdminAction();
     const columns = formData.getAll('columns').map((c) => String(c));
-    await repo.setTenantColumns(admin, String(formData.get('tenantId') ?? ''), columns);
+    const datasetId = String(formData.get('datasetId') ?? 'sales');
+    await repo.setTenantColumns(admin, String(formData.get('tenantId') ?? ''), datasetId, columns);
+  });
+}
+
+// --- Connections (owner admins) ------------------------------------------
+
+export async function createConnectionAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return run(['/admin/connections'], async () => {
+    const admin = await requireAdminAction();
+    await repo.createConnection(admin, {
+      name: String(formData.get('name') ?? ''),
+      host: String(formData.get('host') ?? ''),
+      port: Number(formData.get('port') ?? 5432),
+      database: String(formData.get('database') ?? ''),
+      user: String(formData.get('user') ?? ''),
+      password: String(formData.get('password') ?? ''),
+      sslMode: (formData.get('sslMode') === 'require' ? 'require' : 'disable'),
+    });
+  });
+}
+
+export async function deleteConnectionAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return run(['/admin/connections'], async () => {
+    const admin = await requireAdminAction();
+    await repo.deleteConnection(admin, String(formData.get('connectionId') ?? ''));
+  });
+}
+
+export async function testConnectionAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return run([], async () => {
+    const admin = await requireAdminAction();
+    const connectionId = String(formData.get('connectionId') ?? '');
+    let result: { ok: boolean; message?: string };
+    if (connectionId) {
+      result = await repo.testConnectionById(admin, connectionId);
+    } else {
+      result = await repo.testConnectionDraft(admin, {
+        host: String(formData.get('host') ?? ''),
+        port: Number(formData.get('port') ?? 5432),
+        database: String(formData.get('database') ?? ''),
+        user: String(formData.get('user') ?? ''),
+        password: String(formData.get('password') ?? ''),
+        sslMode: (formData.get('sslMode') === 'require' ? 'require' : 'disable'),
+      });
+    }
+    if (!result.ok) return { error: result.message ?? 'Connection failed.' };
+    return { message: 'Connection successful.' };
+  });
+}
+
+export async function introspectTablesAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return run([], async () => {
+    const admin = await requireAdminAction();
+    const tables = await repo.introspectTables(
+      admin,
+      String(formData.get('connectionId') ?? ''),
+      String(formData.get('schemaName') ?? 'public'),
+    );
+    return { data: tables };
+  });
+}
+
+export async function introspectColumnsAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return run([], async () => {
+    const admin = await requireAdminAction();
+    const cols = await repo.introspectColumns(
+      admin,
+      String(formData.get('connectionId') ?? ''),
+      String(formData.get('schemaName') ?? 'public'),
+      String(formData.get('tableName') ?? ''),
+    );
+    return { data: cols };
+  });
+}
+
+// --- Datasets (owner admins) ---------------------------------------------
+
+export async function createDatasetAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return run(['/admin/datasets'], async () => {
+    const admin = await requireAdminAction();
+    await repo.createDataset(admin, {
+      name: String(formData.get('name') ?? ''),
+      connectionId: String(formData.get('connectionId') ?? ''),
+      schemaName: String(formData.get('schemaName') ?? 'public'),
+      tableName: String(formData.get('tableName') ?? ''),
+      tenantColumn: String(formData.get('tenantColumn') ?? ''),
+    });
+  });
+}
+
+export async function deleteDatasetAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return run(['/admin/datasets'], async () => {
+    const admin = await requireAdminAction();
+    await repo.deleteDataset(admin, String(formData.get('datasetId') ?? ''));
   });
 }
 

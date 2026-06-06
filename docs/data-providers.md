@@ -89,12 +89,36 @@ Putting security logic inside a provider would duplicate it inconsistently and r
 
 ## Registering a New Provider
 
-Edit `src/lib/data/getProvider.ts` to swap in your provider:
+Edit `src/lib/data/resolveDataset.ts` to add a new branch. The resolver picks the inner
+provider based on the dataset row's `connectionId` and any driver-specific fields, then wraps
+it in `AccessControlledProvider` before returning.
 
-```ts
-export function getProvider(ctx: UserContext): DataProvider {
-  return new AccessControlledProvider(new SqlProvider(pool), ctx);
-}
-```
+## Implementing a Postgres Provider
 
-That is the only change required to wire in a new backend.
+`src/lib/data/SqlProvider.ts` is the reference Postgres connector. Key design decisions:
+
+### Introspection
+
+`src/lib/data/sql/introspect.ts` uses `information_schema.tables` and
+`information_schema.columns` to discover tables, views, and column types. The admin creates a
+dataset by picking a connection → schema → table → tenant column; columns are captured at
+creation time into `columnsJson` in the `datasets` row. At query time the provider validates
+the stored columns still exist before building SQL (`validateStoredColumnsExist`).
+
+### Identifier vs value safety
+
+- **Identifiers** (schema, table, column names): come only from DB introspection read-back,
+  validated against a known set (`assertKnown`), and always double-quoted (`quoteIdent`).
+  `src/lib/data/sql/identifiers.ts` provides both helpers; `buildQuery.ts` calls them.
+- **Values**: all values are parameterized (`$1`, `$2`, …). No user-controlled string is ever
+  interpolated into SQL text.
+- `in` filters with an empty array short-circuit to the literal `FALSE` (fail-closed).
+- `in` filters with a non-empty array use `col = ANY($n)` binding the whole JS array as one
+  parameter — one param regardless of array length.
+
+### The AccessControlledProvider guarantee
+
+`SqlProvider` returns raw, unmasked data. Security (tenant isolation, row scopes, column
+allow-list) is applied by `AccessControlledProvider` exactly as for the CSV provider. The SQL
+provider has no knowledge of tenants or allowed columns — that is intentional. See the choke
+point guarantee in the `AccessControlledProvider` source.

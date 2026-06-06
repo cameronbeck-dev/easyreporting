@@ -108,9 +108,22 @@ The metadata DB defaults to a local SQLite file (`data/metadata.db`) via libSQL.
 `METADATA_DB_URL` (and optionally `METADATA_DB_AUTH_TOKEN`) at a libSQL/Turso or Postgres URL
 to use a managed store — only `src/lib/db/` changes, never call sites.
 
-## Not yet (later PRs)
+## SQL data sources (PR 3b)
 
-- **PR 3b** — SQL data sources: `connections`/`datasets` tables, a SQL-building dataset editor,
-  and a Postgres reference connector. Admin-authored SQL will be wrapped as an inner subquery so
-  the `AccessControlledProvider` still applies tenant isolation + the column allow-list + row
-  scopes on the outer query — admin SQL can never bypass the choke point.
+`connections` and `datasets` tables hold Postgres connection metadata. Connection passwords are
+AES-256-GCM encrypted at rest using `APP_ENCRYPTION_KEY` (server-side only; never returned to
+the client). The owner admin creates connections (`/admin/connections`) and datasets
+(`/admin/datasets`). Creating a dataset introspects the target table/view and requires the
+admin to designate the **tenant column** — the column that carries the company identity.
+If the tenant column is absent or blank, the resolver refuses to serve the dataset (fail-closed).
+
+Column allow-lists are now **per dataset** (not global): `tenant_column_rules` rows carry a
+`dataset_id`. The resolver (`src/lib/data/resolveDataset.ts`) loads the right allow-list for
+the dataset being queried; `getResolvedUserById` no longer loads them at login time.
+
+The `AccessControlledProvider` choke point is unchanged — CSV and SQL sources are both wrapped
+by it, so tenant isolation, row scopes, and the column allow-list apply identically to both.
+
+Owner admins set per-company per-dataset column lists from `/admin/columns` (dataset picker
+added). The CSV demo dataset `'sales'` is treated as a special case: its synthetic id is never
+stored in the `datasets` table, and the resolver falls back to it for unknown ids.

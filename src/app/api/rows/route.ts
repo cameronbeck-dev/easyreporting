@@ -10,7 +10,7 @@ export async function POST(request: NextRequest) {
     const { datasetId, query } = body;
     const ctx = await getUserContext();
     if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    const provider = getProvider(ctx);
+    const provider = await getProvider(ctx, datasetId);
     const result = await provider.queryRows(datasetId, query);
     return NextResponse.json(result);
   } catch (err) {

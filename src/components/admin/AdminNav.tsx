@@ -8,7 +8,13 @@ export default function AdminNav({ isOwner }: { isOwner: boolean }) {
   const links = [
     { href: '/admin/users', label: 'Users' },
     { href: '/admin/profiles', label: 'Row profiles' },
-    ...(isOwner ? [{ href: '/admin/columns', label: 'Company columns' }] : []),
+    ...(isOwner
+      ? [
+          { href: '/admin/columns', label: 'Company columns' },
+          { href: '/admin/connections', label: 'Connections' },
+          { href: '/admin/datasets', label: 'Datasets' },
+        ]
+      : []),
   ];
 
   return (

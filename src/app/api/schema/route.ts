@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
     }
     const ctx = await getUserContext();
     if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    const provider = getProvider(ctx);
+    const provider = await getProvider(ctx, datasetId);
     const schema = await provider.getSchema(datasetId);
     return NextResponse.json(schema);
   } catch (err) {

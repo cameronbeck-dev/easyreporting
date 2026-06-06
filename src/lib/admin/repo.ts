@@ -12,14 +12,18 @@
 // carry only ROW restrictions and are optional per user. Two invariants hold:
 //   • Company isolation — a company admin acts only within their own company.
 //   • Row ceiling       — no admin grants rows they can't see themselves.
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { db } from '../db/client';
-import { users, accessProfiles, profileRowScopes, tenantColumnRules } from '../db/schema';
+import { users, accessProfiles, profileRowScopes, tenantColumnRules, connections, datasets } from '../db/schema';
 import { createInvite } from '../auth/invite';
 import { ForbiddenError, type AdminContext } from '../auth/requireAdmin';
 import { isPlatformTenant } from '../auth/platform';
 import { listSelectableColumns } from '../data/catalog';
+import { encryptSecret, decryptSecret } from '../crypto/secrets';
+import { testConnection as introspectTestConnection, listTablesAndViews, listColumns, mapSqlType } from '../data/sql/introspect';
+import type { ColumnType } from '../data/types';
+import type { DecryptedConnection } from '../data/sql/pool';
 
 // ---------------------------------------------------------------------------
 // Guards
@@ -215,24 +219,24 @@ async function loadManageableUser(admin: AdminContext, userId: string) {
 // Company columns (owner admins only)
 // ---------------------------------------------------------------------------
 
-/** The full catalog of selectable columns (across datasets), for the picker. */
-export async function getColumnCatalog(admin: AdminContext): Promise<{ name: string; type: string }[]> {
+/** The full catalog of selectable columns for a specific dataset, for the picker. */
+export async function getColumnCatalog(admin: AdminContext, datasetId: string): Promise<{ name: string; type: string }[]> {
   assertOwner(admin);
-  return listSelectableColumns();
+  return listSelectableColumns(datasetId);
 }
 
-/** The columns currently visible to a company (empty for the owner company = all). */
-export async function listTenantColumns(admin: AdminContext, tenantId: string): Promise<string[]> {
+/** The columns currently visible to a company for a specific dataset. */
+export async function listTenantColumns(admin: AdminContext, tenantId: string, datasetId: string): Promise<string[]> {
   assertOwner(admin);
   const rows = await db
     .select({ columnName: tenantColumnRules.columnName })
     .from(tenantColumnRules)
-    .where(eq(tenantColumnRules.tenantId, tenantId));
+    .where(and(eq(tenantColumnRules.tenantId, tenantId), eq(tenantColumnRules.datasetId, datasetId)));
   return rows.map((r) => r.columnName);
 }
 
-/** Replace a customer company's visible-column list. Owner admins only. */
-export async function setTenantColumns(admin: AdminContext, tenantId: string, columns: string[]): Promise<void> {
+/** Replace a customer company's visible-column list for a specific dataset. Owner admins only. */
+export async function setTenantColumns(admin: AdminContext, tenantId: string, datasetId: string, columns: string[]): Promise<void> {
   assertOwner(admin);
   const tid = tenantId.trim();
   if (!tid) throw new ForbiddenError('A company is required.');
@@ -240,13 +244,24 @@ export async function setTenantColumns(admin: AdminContext, tenantId: string, co
     throw new ForbiddenError('The owner company always sees all columns — no list to set.');
   }
   // Only persist real, selectable columns (defends against tampered form values).
-  const valid = new Set((await listSelectableColumns()).map((c) => c.name));
+  const valid = new Set((await listSelectableColumns(datasetId)).map((c) => c.name));
   const clean = [...new Set(columns.map((c) => c.trim()).filter((c) => valid.has(c)))];
 
-  await db.delete(tenantColumnRules).where(eq(tenantColumnRules.tenantId, tid));
+  await db.delete(tenantColumnRules).where(
+    and(eq(tenantColumnRules.tenantId, tid), eq(tenantColumnRules.datasetId, datasetId)),
+  );
   if (clean.length > 0) {
-    await db.insert(tenantColumnRules).values(clean.map((columnName) => ({ tenantId: tid, datasetId: null, columnName })));
+    await db.insert(tenantColumnRules).values(
+      clean.map((columnName) => ({ tenantId: tid, datasetId, columnName })),
+    );
   }
+}
+
+/** List datasets available for column management (CSV demo + SQL datasets). */
+export async function listAllDatasetsForAdmin(admin: AdminContext): Promise<{ id: string; name: string }[]> {
+  assertOwner(admin);
+  const sqlRows = await db.select({ id: datasets.id, name: datasets.name }).from(datasets);
+  return [{ id: 'sales', name: 'Sales (CSV demo)' }, ...sqlRows];
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +397,274 @@ export async function removeRowScope(admin: AdminContext, profileId: string, sco
   const { tenantId } = await loadProfile(profileId);
   assertCanEditProfile(admin, tenantId);
   await db.delete(profileRowScopes).where(eq(profileRowScopes.id, scopeId));
+}
+
+// ---------------------------------------------------------------------------
+// Connections (owner admins only)
+// Connections are IMMUTABLE — to rotate credentials, delete and recreate.
+// ---------------------------------------------------------------------------
+
+export interface ConnectionRow {
+  id: string;
+  name: string;
+  driver: string;
+  host: string;
+  port: number;
+  database: string;
+  user: string;
+  sslMode: string;
+  createdAt: Date;
+}
+
+export interface CreateConnectionInput {
+  name: string;
+  host: string;
+  port: number;
+  database: string;
+  user: string;
+  password: string;
+  sslMode: 'disable' | 'require';
+}
+
+export async function listConnections(admin: AdminContext): Promise<ConnectionRow[]> {
+  assertOwner(admin);
+  const rows = await db
+    .select({
+      id: connections.id,
+      name: connections.name,
+      driver: connections.driver,
+      host: connections.host,
+      port: connections.port,
+      database: connections.database,
+      user: connections.user,
+      sslMode: connections.sslMode,
+      createdAt: connections.createdAt,
+    })
+    .from(connections);
+  return rows;
+}
+
+export async function createConnection(
+  admin: AdminContext,
+  input: CreateConnectionInput,
+): Promise<string> {
+  assertOwner(admin);
+  const name = input.name.trim();
+  if (!name) throw new ForbiddenError('A connection name is required.');
+  if (!input.host.trim()) throw new ForbiddenError('A host is required.');
+  if (!input.database.trim()) throw new ForbiddenError('A database is required.');
+  if (!input.user.trim()) throw new ForbiddenError('A user is required.');
+  if (!input.password) throw new ForbiddenError('A password is required.');
+
+  const passwordEncrypted = encryptSecret(input.password);
+  const id = randomUUID();
+  await db.insert(connections).values({
+    id,
+    name,
+    driver: 'postgres',
+    host: input.host.trim(),
+    port: input.port,
+    database: input.database.trim(),
+    user: input.user.trim(),
+    passwordEncrypted,
+    sslMode: input.sslMode,
+  });
+  return id;
+}
+
+export async function deleteConnection(admin: AdminContext, connectionId: string): Promise<void> {
+  assertOwner(admin);
+  const [inUse] = await db
+    .select({ id: datasets.id })
+    .from(datasets)
+    .where(eq(datasets.connectionId, connectionId))
+    .limit(1);
+  if (inUse) {
+    throw new ForbiddenError(
+      'This connection is in use by one or more datasets; delete those datasets first.',
+    );
+  }
+  await db.delete(connections).where(eq(connections.id, connectionId));
+}
+
+async function loadDecryptedConnection(connectionId: string): Promise<DecryptedConnection> {
+  const [row] = await db
+    .select()
+    .from(connections)
+    .where(eq(connections.id, connectionId))
+    .limit(1);
+  if (!row) throw new ForbiddenError('Connection not found.');
+  const password = decryptSecret(row.passwordEncrypted);
+  return {
+    id: row.id,
+    host: row.host,
+    port: row.port,
+    database: row.database,
+    user: row.user,
+    password,
+    sslMode: row.sslMode as 'disable' | 'require',
+  };
+}
+
+export async function testConnectionById(
+  admin: AdminContext,
+  connectionId: string,
+): Promise<{ ok: boolean; message?: string }> {
+  assertOwner(admin);
+  const conn = await loadDecryptedConnection(connectionId);
+  const result = await introspectTestConnection(conn);
+  return result.ok ? { ok: true } : { ok: false, message: result.message };
+}
+
+export interface TestConnectionDraftInput {
+  host: string;
+  port: number;
+  database: string;
+  user: string;
+  password: string;
+  sslMode: 'disable' | 'require';
+}
+
+export async function testConnectionDraft(
+  admin: AdminContext,
+  input: TestConnectionDraftInput,
+): Promise<{ ok: boolean; message?: string }> {
+  assertOwner(admin);
+  const conn: DecryptedConnection = {
+    id: '__draft__',
+    host: input.host,
+    port: input.port,
+    database: input.database,
+    user: input.user,
+    password: input.password,
+    sslMode: input.sslMode,
+  };
+  const result = await introspectTestConnection(conn);
+  return result.ok ? { ok: true } : { ok: false, message: result.message };
+}
+
+export async function introspectTables(
+  admin: AdminContext,
+  connectionId: string,
+  schemaName = 'public',
+): Promise<string[]> {
+  assertOwner(admin);
+  const conn = await loadDecryptedConnection(connectionId);
+  const tables = await listTablesAndViews(conn, schemaName);
+  return tables.map((t) => t.name);
+}
+
+export async function introspectColumns(
+  admin: AdminContext,
+  connectionId: string,
+  schemaName: string,
+  tableName: string,
+): Promise<{ name: string; type: ColumnType }[]> {
+  assertOwner(admin);
+  const conn = await loadDecryptedConnection(connectionId);
+  // Validate tableName is in the introspected list (no raw identifier injection)
+  const tables = await listTablesAndViews(conn, schemaName);
+  const tableNames = new Set(tables.map((t) => t.name));
+  if (!tableNames.has(tableName)) {
+    throw new ForbiddenError(`Table "${tableName}" does not exist in schema "${schemaName}".`);
+  }
+  const cols = await listColumns(conn, schemaName, tableName);
+  return cols.map((c) => ({ name: c.name, type: mapSqlType(c.sqlType) }));
+}
+
+// ---------------------------------------------------------------------------
+// Datasets (owner admins only)
+// ---------------------------------------------------------------------------
+
+export interface DatasetAdminRow {
+  id: string;
+  name: string;
+  connectionId: string | null;
+  tableName: string | null;
+  tenantColumn: string;
+  createdAt: Date;
+}
+
+export interface CreateDatasetInput {
+  name: string;
+  connectionId: string;
+  schemaName: string;
+  tableName: string;
+  tenantColumn: string;
+}
+
+export async function createDataset(
+  admin: AdminContext,
+  input: CreateDatasetInput,
+): Promise<string> {
+  assertOwner(admin);
+  const name = input.name.trim();
+  if (!name) throw new ForbiddenError('A dataset name is required.');
+
+  const conn = await loadDecryptedConnection(input.connectionId);
+
+  // Validate the table exists.
+  const tables = await listTablesAndViews(conn, input.schemaName);
+  const tableNames = new Set(tables.map((t) => t.name));
+  if (!tableNames.has(input.tableName)) {
+    throw new ForbiddenError(
+      `Table "${input.tableName}" does not exist in schema "${input.schemaName}".`,
+    );
+  }
+
+  // Introspect columns.
+  const rawCols = await listColumns(conn, input.schemaName, input.tableName);
+  const colNames = new Set(rawCols.map((c) => c.name));
+
+  // Require a valid tenant column.
+  const tenantColumn = input.tenantColumn.trim();
+  if (!tenantColumn) {
+    throw new ForbiddenError(
+      'Pick which column identifies the company (tenant) for this dataset.',
+    );
+  }
+  if (!colNames.has(tenantColumn)) {
+    throw new ForbiddenError(
+      `Tenant column "${tenantColumn}" does not exist in the table.`,
+    );
+  }
+
+  const columnsJson = rawCols.map((c) => ({
+    name: c.name,
+    type: mapSqlType(c.sqlType),
+  }));
+
+  const id = randomUUID();
+  await db.insert(datasets).values({
+    id,
+    name,
+    connectionId: input.connectionId,
+    tableName: input.tableName,
+    tenantColumn,
+    columnsJson,
+  });
+  return id;
+}
+
+export async function listDatasetsAdmin(admin: AdminContext): Promise<DatasetAdminRow[]> {
+  assertOwner(admin);
+  const rows = await db
+    .select({
+      id: datasets.id,
+      name: datasets.name,
+      connectionId: datasets.connectionId,
+      tableName: datasets.tableName,
+      tenantColumn: datasets.tenantColumn,
+      createdAt: datasets.createdAt,
+    })
+    .from(datasets);
+  return rows;
+}
+
+export async function deleteDataset(admin: AdminContext, datasetId: string): Promise<void> {
+  assertOwner(admin);
+  await db.delete(tenantColumnRules).where(eq(tenantColumnRules.datasetId, datasetId));
+  await db.delete(datasets).where(eq(datasets.id, datasetId));
 }
 
 // ---------------------------------------------------------------------------

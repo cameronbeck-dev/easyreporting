@@ -6,6 +6,30 @@ CREATE TABLE `access_profiles` (
 	`created_at` integer NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE `connections` (
+	`id` text PRIMARY KEY NOT NULL,
+	`name` text NOT NULL,
+	`driver` text DEFAULT 'postgres' NOT NULL,
+	`host` text NOT NULL,
+	`port` integer DEFAULT 5432 NOT NULL,
+	`database` text NOT NULL,
+	`user` text NOT NULL,
+	`password_encrypted` text NOT NULL,
+	`ssl_mode` text DEFAULT 'disable' NOT NULL,
+	`created_at` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE `datasets` (
+	`id` text PRIMARY KEY NOT NULL,
+	`name` text NOT NULL,
+	`connection_id` text,
+	`table_name` text,
+	`tenant_column` text NOT NULL,
+	`columns_json` text NOT NULL,
+	`created_at` integer NOT NULL,
+	FOREIGN KEY (`connection_id`) REFERENCES `connections`(`id`) ON UPDATE no action ON DELETE no action
+);
+--> statement-breakpoint
 CREATE TABLE `invites` (
 	`id` text PRIMARY KEY NOT NULL,
 	`user_id` text NOT NULL,

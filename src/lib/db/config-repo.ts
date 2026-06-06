@@ -1,7 +1,7 @@
 // Reads the metadata DB and resolves a user into the access facts the security
 // layer needs. This is the ONLY module that knows how config is stored, so
 // swapping SQLite for Postgres later is a change here, not across the app.
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { db } from './client';
 import { users, tenantColumnRules, profileRowScopes } from './schema';
 import { isPlatformTenant } from '../auth/platform';
@@ -57,17 +57,9 @@ export async function getResolvedUserById(userId: string): Promise<ResolvedUser 
   const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
   if (!user || user.status !== 'active') return null;
 
-  // Column visibility is per company: the owner/platform tenant sees ALL columns;
-  // every other company sees only its configured allow-list (fail-closed).
   const isOwner = isPlatformTenant(user.tenantId);
-  let allowedColumns: string[] = [];
-  if (!isOwner) {
-    const columnRules = await db
-      .select({ columnName: tenantColumnRules.columnName })
-      .from(tenantColumnRules)
-      .where(eq(tenantColumnRules.tenantId, user.tenantId));
-    allowedColumns = columnRules.map((r) => r.columnName);
-  }
+  // Column allow-list is resolved PER DATASET in resolveDataset.ts — see PR 3b.
+  const allowedColumns: string[] = [];
 
   // Row restrictions come from the user's profile, if they have one (else: no limits).
   let rowScopes: RowScope[] = [];
@@ -88,4 +80,20 @@ export async function getResolvedUserById(userId: string): Promise<ResolvedUser 
     allowedColumns,
     rowScopes,
   };
+}
+
+/**
+ * Resolve the allowed columns for a tenant on a specific dataset.
+ * Queries tenantColumnRules where tenantId AND datasetId match.
+ * Owner handling (allColumns) lives in the resolver, not here.
+ */
+export async function listTenantColumnsResolved(
+  tenantId: string,
+  datasetId: string,
+): Promise<string[]> {
+  const rows = await db
+    .select({ columnName: tenantColumnRules.columnName })
+    .from(tenantColumnRules)
+    .where(and(eq(tenantColumnRules.tenantId, tenantId), eq(tenantColumnRules.datasetId, datasetId)));
+  return rows.map((r) => r.columnName);
 }

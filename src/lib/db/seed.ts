@@ -41,9 +41,9 @@ async function main() {
   await db.delete(users);
   await db.delete(accessProfiles);
 
-  // Per-company column visibility.
+  // Per-company column visibility — scoped to the 'sales' CSV demo dataset.
   for (const [tenantId, columns] of Object.entries(TENANT_COLUMNS)) {
-    await db.insert(tenantColumnRules).values(columns.map((columnName) => ({ tenantId, datasetId: null, columnName })));
+    await db.insert(tenantColumnRules).values(columns.map((columnName) => ({ tenantId, datasetId: 'sales', columnName })));
   }
 
   // A demo row profile: globex users on this profile only see Victoria rows.

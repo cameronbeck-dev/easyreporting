@@ -2,6 +2,7 @@
 // This is where admin-defined access lives once the admin UI lands (PR 3).
 // For now it is populated by the seed script.
 import { sqliteTable, text, integer, primaryKey } from 'drizzle-orm/sqlite-core';
+import type { ColumnType } from '../data/types';
 
 // A person who can sign in. tenantId scopes them to one company's data;
 // profileId points at their bundle of access rules; isAdmin grants the admin UI.
@@ -52,6 +53,40 @@ export const invites = sqliteTable('invites', {
   tokenHash: text('token_hash').notNull().unique(),
   expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
   usedAt: integer('used_at', { mode: 'timestamp' }),
+  createdAt: integer('created_at', { mode: 'timestamp' })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+// A SQL connection. Passwords are AES-256-GCM encrypted at rest (APP_ENCRYPTION_KEY).
+// Connections are immutable — to rotate credentials, delete and recreate.
+export const connections = sqliteTable('connections', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  driver: text('driver', { enum: ['postgres'] }).notNull().default('postgres'),
+  host: text('host').notNull(),
+  port: integer('port').notNull().default(5432),
+  database: text('database').notNull(),
+  user: text('user').notNull(),
+  passwordEncrypted: text('password_encrypted').notNull(),
+  sslMode: text('ssl_mode', { enum: ['disable', 'require'] }).notNull().default('disable'),
+  createdAt: integer('created_at', { mode: 'timestamp' })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+// A dataset backed by a SQL connection + table/view.
+// connectionId IS NULL is the canonical "CSV demo" signal.
+// id is always server-generated (crypto.randomUUID()); 'sales' is synthesized and never stored.
+export const datasets = sqliteTable('datasets', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  connectionId: text('connection_id').references(() => connections.id),
+  tableName: text('table_name'),
+  tenantColumn: text('tenant_column').notNull(),
+  columnsJson: text('columns_json', { mode: 'json' })
+    .notNull()
+    .$type<{ name: string; type: ColumnType }[]>(),
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()
     .$defaultFn(() => new Date()),

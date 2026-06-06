@@ -2,6 +2,7 @@
 
 import { useActionState, useEffect, useRef, useState } from 'react';
 import { useFormStatus } from 'react-dom';
+import { useRouter } from 'next/navigation';
 import { setTenantColumnsAction, type ActionState } from '@/lib/admin/actions';
 import { FormError } from './ui';
 
@@ -13,12 +14,15 @@ interface CatalogColumn {
   name: string;
   type: string;
 }
+interface DatasetOption {
+  id: string;
+  name: string;
+}
 
 function sameSet(a: Set<string>, b: Set<string>): boolean {
   return a.size === b.size && [...a].every((x) => b.has(x));
 }
 
-// Greyed + "Changes saved" when nothing's changed; coloured + "Save changes" when dirty.
 function SaveButton({ dirty }: { dirty: boolean }) {
   const { pending } = useFormStatus();
   const label = pending ? 'Saving…' : dirty ? 'Save changes' : 'Changes saved';
@@ -41,19 +45,18 @@ function CompanyCard({
   company,
   catalog,
   others,
+  datasetId,
 }: {
   company: Company;
   catalog: CatalogColumn[];
   others: Company[];
+  datasetId: string;
 }) {
   const [state, action] = useActionState<ActionState, FormData>(setTenantColumnsAction, {});
-  // Controlled so "Copy from" / All / None can change the ticks programmatically.
   const [selected, setSelected] = useState<Set<string>>(() => new Set(company.selected));
-  // The last-saved selection; the button is "dirty" when `selected` differs from it.
   const [saved, setSaved] = useState<Set<string>>(() => new Set(company.selected));
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
-  // After a successful save, the current selection becomes the new baseline.
   useEffect(() => {
     if (state.ok) setSaved(new Set(selectedRef.current));
   }, [state]);
@@ -104,6 +107,7 @@ function CompanyCard({
 
       <form action={action} className="flex flex-col gap-3">
         <input type="hidden" name="tenantId" value={company.tenantId} />
+        <input type="hidden" name="datasetId" value={datasetId} />
 
         <div className="flex items-center gap-3 text-sm">
           <button
@@ -159,17 +163,40 @@ export default function CompanyColumnsManager({
   catalog,
   companies,
   ownerTenant,
+  datasetId,
+  allDatasets,
 }: {
   catalog: CatalogColumn[];
   companies: Company[];
   ownerTenant: string;
+  datasetId: string;
+  allDatasets: DatasetOption[];
 }) {
+  const router = useRouter();
+
   return (
     <div className="flex flex-col gap-6">
+      {allDatasets.length > 1 && (
+        <label className="flex items-center gap-3 text-sm font-medium text-foreground">
+          Dataset
+          <select
+            value={datasetId}
+            onChange={(e) => router.push(`/admin/columns?datasetId=${e.target.value}`)}
+            className="rounded-control border border-border bg-surface px-3 py-1.5 text-sm text-foreground outline-none focus:border-primary"
+          >
+            {allDatasets.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+
       <p className="rounded-control border border-border bg-surface-muted/50 px-4 py-3 text-sm text-foreground-muted">
         The owner company <strong className="text-foreground">{ownerTenant}</strong> always sees all columns —
         only customer companies are limited here. Use <strong className="text-foreground">Copy from</strong> to
-        clone another company's selection, then Save.
+        clone another company&apos;s selection, then Save.
       </p>
       {companies.length === 0 && (
         <p className="text-sm text-foreground-muted">No customer companies yet. Add a user in another company first.</p>
@@ -180,6 +207,7 @@ export default function CompanyColumnsManager({
           company={c}
           catalog={catalog}
           others={companies.filter((o) => o.tenantId !== c.tenantId)}
+          datasetId={datasetId}
         />
       ))}
     </div>

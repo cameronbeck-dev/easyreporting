@@ -15,17 +15,26 @@ Browser
   getUserContext()          (resolves the signed-in session -> user + access
         |                    profile from the metadata DB; null -> 401)
         v
+  getProvider(ctx, datasetId)  (resolveDataset.ts: picks CSV or SQL, applies
+        |                        per-dataset tenant column + column allow-list)
+        v
   AccessControlledProvider  (injects tenant filter + row scopes, enforces column allow-list)
         |
         v
   CsvProvider               (parses data/sales.csv, in-memory query)
+    OR
+  SqlProvider               (Postgres via pg; pooled; identifier-safe SQL builders)
         |
         v
-  data/sales.csv
+  data/sales.csv  OR  Postgres table/view
 
-  Metadata DB (SQLite via Drizzle) — users (+ password hashes, invites), per-company columns, optional row profiles + scopes
+  Metadata DB (SQLite via Drizzle) — users (+ password hashes, invites), per-company
+    per-dataset column rules, optional row profiles + scopes, SQL connections
+    (passwords AES-256-GCM encrypted at rest), and SQL datasets
   Auth: Auth.js v5 credentials, scrypt password hashing, one-time invite links
-  Admin UI (/admin) — owner sets each company's columns; owner & company admins manage users + row profiles; every write re-checked server-side
+  Admin UI (/admin) — owner sets each company's columns (per dataset); owner & company
+    admins manage users + row profiles; owner admins manage SQL connections + datasets;
+    every write re-checked server-side
 ```
 
 ## Security Model
@@ -51,6 +60,14 @@ npm run dev
 ```bash
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
+
+To use SQL data sources, set `APP_ENCRYPTION_KEY` (32-byte hex string) in `.env` before saving any connection:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+Then install the optional `pg` driver: `npm install pg`. CSV-only usage requires neither.
 
 Open http://localhost:3000 — you'll be redirected to `/login`.
 
@@ -109,7 +126,7 @@ All pages require sign-in. `/login` and `/invite/<token>` are the only public ro
 
 ## Notes
 
-- Access config (per-company columns, optional row profiles + scopes, user→company assignment) lives in the metadata DB, resolved by `getUserContext` from the signed-in session and managed through the `/admin` UI. Connecting real SQL data sources is the next milestone.
+- Access config (per-company per-dataset columns, optional row profiles + scopes, user→company assignment) lives in the metadata DB, resolved per-dataset in `resolveDataset.ts` and managed through the `/admin` UI. SQL connections and datasets are managed by owner admins under `/admin/connections` and `/admin/datasets`.
 - See `docs/access-model.md` for how access control is configured and enforced.
 - See `docs/data-providers.md` for how to add a custom data source (and the one rule every provider must follow).
 - See `docs/design-system.md` for the design philosophy, token system, and per-company white-labeling model — **read it before building any UI.**
