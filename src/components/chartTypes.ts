@@ -13,6 +13,26 @@ export interface ChartConfig {
   dateBucket?: DateBucket;
 }
 
+/** Human-friendly word for each aggregation, used in default chart titles. */
+const AGGREGATION_LABEL: Record<Aggregation, string> = {
+  [Aggregation.Sum]: 'Total',
+  [Aggregation.Avg]: 'Average',
+  [Aggregation.Count]: 'Number of',
+  [Aggregation.Min]: 'Lowest',
+  [Aggregation.Max]: 'Highest',
+};
+
+/** Readable name for a single measure, e.g. "Total revenue" or "Number of records". */
+export function metricLabel(aggregation: Aggregation, column: string): string {
+  const measure = aggregation === Aggregation.Count ? 'records' : column;
+  return `${AGGREGATION_LABEL[aggregation]} ${measure}`;
+}
+
+/** Builds a readable default chart title, e.g. "Total revenue by month". */
+export function defaultChartTitle(aggregation: Aggregation, y: string, x: string): string {
+  return `${metricLabel(aggregation, y)} by ${x}`;
+}
+
 /** A configurable snapshot KPI tile. */
 export interface TileConfig {
   id: string;

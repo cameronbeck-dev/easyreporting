@@ -120,7 +120,9 @@ export default function ChartCard({
 
     return {
       color: theme.color,
-      grid: { top: 16, right: 16, bottom: 28, left: 48, containLabel: true },
+      // containLabel already reserves room for the axis labels — keep these
+      // margins small so the plot fills the card instead of doubling the gutter.
+      grid: { top: 12, right: 16, bottom: 4, left: 4, containLabel: true },
       tooltip: {
         trigger: 'axis',
         ...tooltipStyle(theme),
@@ -148,9 +150,6 @@ export default function ChartCard({
     );
   };
 
-  const subtitle =
-    config.aggregation === Aggregation.Count ? 'Count' : `${config.aggregation}(${config.y})`;
-
   return (
     <div className="group/card relative flex flex-col gap-3 overflow-hidden rounded-card border border-border bg-surface p-4 shadow-card">
       {/* Field-colored accent strip */}
@@ -161,7 +160,9 @@ export default function ChartCard({
       />
 
       <div className="flex items-start justify-between gap-2">
-        <h3 className="pt-0.5 text-sm font-semibold text-foreground">{config.title}</h3>
+        <h3 className="pt-0.5 text-base font-semibold tracking-tight text-foreground">
+          {config.title}
+        </h3>
         <div className="flex items-center gap-1">
           <button
             onClick={onEdit}
@@ -178,10 +179,6 @@ export default function ChartCard({
             Remove
           </button>
         </div>
-      </div>
-
-      <div className="text-xs text-foreground-muted">
-        {subtitle} by {config.x}
       </div>
 
       <div ref={chartWrapRef} style={{ height: chartHeight }}>

@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import type { ColumnSchema, Filter, SummaryResult, SummaryMetric } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import type { TileConfig } from './chartTypes';
+import { metricLabel } from './chartTypes';
 import { fieldColor } from './fieldColors';
 
 interface Props {
@@ -23,8 +24,7 @@ function prettify(name: string): string {
 }
 
 function tileLabel(t: TileConfig): string {
-  if (t.aggregation === Aggregation.Count) return 'Records';
-  return `${prettify(t.aggregation)} ${prettify(t.column)}`;
+  return metricLabel(t.aggregation, t.column);
 }
 
 function tileColorKey(t: TileConfig): string {

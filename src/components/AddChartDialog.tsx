@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import type { ColumnSchema, DatasetSchema, DateBucket } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import type { ChartConfig } from './chartTypes';
+import { defaultChartTitle } from './chartTypes';
 
 interface Props {
   datasetId: string;
@@ -58,7 +59,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
     e.preventDefault();
     const config: ChartConfig = {
       id: initial?.id ?? `chart-${Date.now()}`,
-      title: title || `${aggregation}(${isCount ? 'rows' : yCol}) by ${xCol}`,
+      title: title || defaultChartTitle(aggregation, yCol, xCol),
       type: chartType,
       datasetId,
       x: xCol,
