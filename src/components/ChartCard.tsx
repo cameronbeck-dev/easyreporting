@@ -1,22 +1,61 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import ReactECharts from 'echarts-for-react';
 import type { ChartConfig } from './chartTypes';
-import type { AggregatedResult } from '@/lib/data/types';
+import type { AggregatedResult, Filter, DateBucket } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
+import { useChartTheme, axisStyle, tooltipStyle } from './echartsTheme';
+import { fieldColor } from './fieldColors';
 
 interface Props {
   config: ChartConfig;
+  globalFilters: Filter[];
+  granularity: DateBucket;
   onRemove: () => void;
+  onEdit: () => void;
+  onResizePointerDown?: (e: React.PointerEvent) => void;
 }
 
-export default function ChartCard({ config, onRemove }: Props) {
+export default function ChartCard({
+  config,
+  globalFilters,
+  granularity,
+  onRemove,
+  onEdit,
+  onResizePointerDown,
+}: Props) {
   const router = useRouter();
+  const theme = useChartTheme();
   const [result, setResult] = useState<AggregatedResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // Keep a consistent aspect ratio: chart height tracks the card's width.
+  const chartWrapRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<React.ComponentRef<typeof ReactECharts>>(null);
+  const [chartHeight, setChartHeight] = useState(200);
+
+  useEffect(() => {
+    const el = chartWrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0].contentRect.width;
+      // 1:2 aspect ratio — height is half the width.
+      setChartHeight(Math.min(420, Math.max(140, Math.round(w * 0.5))));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    chartRef.current?.getEchartsInstance().resize();
+  }, [chartHeight]);
+
+  const accent = fieldColor(config.aggregation === Aggregation.Count ? 'records' : config.y);
+  const effectiveBucket = config.dateBucket ?? granularity;
+  const filtersKey = JSON.stringify(globalFilters);
 
   useEffect(() => {
     setLoading(true);
@@ -26,7 +65,8 @@ export default function ChartCard({ config, onRemove }: Props) {
       x: config.x,
       y: config.y,
       aggregation: config.aggregation,
-      filters: [],
+      filters: globalFilters,
+      dateBucket: effectiveBucket,
     };
 
     fetch('/api/query', {
@@ -52,26 +92,52 @@ export default function ChartCard({ config, onRemove }: Props) {
         setError(err instanceof Error ? err.message : 'Unknown error');
         setLoading(false);
       });
-  }, [config]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config, filtersKey, effectiveBucket]);
 
   const getEChartsOption = () => {
-    if (!result) return {};
+    if (!result || !theme) return {};
 
     const seriesType = config.type === 'bar' ? 'bar' : 'line';
-    const series = result.series.map((s) => ({
-      name: s.name,
-      type: seriesType,
-      data: s.data,
-      ...(config.type === 'area' ? { areaStyle: {} } : {}),
-    }));
+    const series = result.series.map((s) => {
+      const color = fieldColor(s.name === 'Count' ? 'records' : s.name);
+      return {
+        name: s.name,
+        type: seriesType,
+        data: s.data,
+        smooth: seriesType === 'line',
+        symbol: 'circle',
+        symbolSize: 6,
+        itemStyle: {
+          color,
+          ...(config.type === 'bar' ? { borderRadius: [4, 4, 0, 0] } : {}),
+        },
+        lineStyle: { color },
+        ...(config.type === 'bar' ? { barMaxWidth: 28 } : {}),
+        ...(config.type === 'area' ? { areaStyle: { color, opacity: 0.16 } } : {}),
+      };
+    });
 
     return {
-      tooltip: { trigger: 'axis' },
+      color: theme.color,
+      grid: { top: 16, right: 16, bottom: 28, left: 48, containLabel: true },
+      tooltip: {
+        trigger: 'axis',
+        ...tooltipStyle(theme),
+        axisPointer: { lineStyle: { color: theme.axisLine } },
+      },
       xAxis: {
         type: 'category',
         data: result.x,
+        boundaryGap: config.type === 'bar',
+        ...axisStyle(theme),
       },
-      yAxis: { type: 'value' },
+      yAxis: {
+        type: 'value',
+        ...axisStyle(theme),
+        axisLine: { show: false },
+        splitLine: { lineStyle: { color: theme.splitLine, type: 'dashed' } },
+      },
       series,
     };
   };
@@ -82,42 +148,77 @@ export default function ChartCard({ config, onRemove }: Props) {
     );
   };
 
+  const subtitle =
+    config.aggregation === Aggregation.Count ? 'Count' : `${config.aggregation}(${config.y})`;
+
   return (
-    <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4 flex flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <h3 className="font-semibold text-gray-800 text-sm">{config.title}</h3>
-        <button
-          onClick={onRemove}
-          className="text-gray-400 hover:text-red-500 text-xs px-2 py-1 rounded hover:bg-red-50 transition-colors"
-          aria-label="Remove chart"
-        >
-          Remove
-        </button>
-      </div>
+    <div className="group/card relative flex flex-col gap-3 overflow-hidden rounded-card border border-border bg-surface p-4 shadow-card">
+      {/* Field-colored accent strip */}
+      <span
+        className="absolute inset-x-0 top-0 h-1"
+        style={{ backgroundColor: accent }}
+        aria-hidden
+      />
 
-      <div className="text-xs text-gray-500">
-        {config.aggregation === Aggregation.Count ? 'Count' : `${config.aggregation}(${config.y})`} by {config.x}
-      </div>
-
-      {loading && (
-        <div className="h-48 flex items-center justify-center text-gray-400 text-sm">Loading...</div>
-      )}
-
-      {error && (
-        <div className="h-48 flex items-center justify-center">
-          <div className="text-center p-4 bg-red-50 border border-red-200 rounded text-red-700 text-sm">
-            <div className="font-semibold mb-1">Chart unavailable</div>
-            <div>{error}</div>
-          </div>
+      <div className="flex items-start justify-between gap-2">
+        <h3 className="pt-0.5 text-sm font-semibold text-foreground">{config.title}</h3>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onEdit}
+            className="rounded-control px-2 py-1 text-xs text-foreground-muted transition-colors hover:bg-surface-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Edit chart"
+          >
+            Edit
+          </button>
+          <button
+            onClick={onRemove}
+            className="rounded-control px-2 py-1 text-xs text-foreground-muted transition-colors hover:bg-danger/10 hover:text-danger focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Remove chart"
+          >
+            Remove
+          </button>
         </div>
-      )}
+      </div>
 
-      {!loading && !error && result && (
-        <ReactECharts
-          option={getEChartsOption()}
-          style={{ height: '220px' }}
-          onEvents={{ click: onChartClick }}
-        />
+      <div className="text-xs text-foreground-muted">
+        {subtitle} by {config.x}
+      </div>
+
+      <div ref={chartWrapRef} style={{ height: chartHeight }}>
+        {loading && (
+          <div className="flex h-full items-center justify-center">
+            <div className="h-full w-full animate-pulse rounded-control bg-surface-muted" />
+          </div>
+        )}
+
+        {error && (
+          <div className="flex h-full items-center justify-center">
+            <div className="rounded-control border border-danger/30 bg-danger/10 p-4 text-center text-sm text-danger">
+              <div className="mb-1 font-semibold">Chart unavailable</div>
+              <div>{error}</div>
+            </div>
+          </div>
+        )}
+
+        {!loading && !error && result && (
+          <ReactECharts
+            ref={chartRef}
+            option={getEChartsOption()}
+            style={{ height: chartHeight, cursor: 'pointer' }}
+            onEvents={{ click: onChartClick }}
+          />
+        )}
+      </div>
+
+      {/* Drag the right edge (the gutter between cards) to resize the grid. */}
+      {onResizePointerDown && (
+        <div
+          onPointerDown={onResizePointerDown}
+          className="absolute right-0 top-0 flex h-full w-2.5 cursor-col-resize touch-none items-center justify-center opacity-0 transition-opacity group-hover/card:opacity-100"
+          aria-hidden
+        >
+          <span className="h-10 w-1 rounded-full bg-border" />
+        </div>
       )}
     </div>
   );

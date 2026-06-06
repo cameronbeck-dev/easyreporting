@@ -1,28 +1,37 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { ColumnSchema, DatasetSchema } from '@/lib/data/types';
+import type { ColumnSchema, DatasetSchema, DateBucket } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import type { ChartConfig } from './chartTypes';
 
 interface Props {
   datasetId: string;
-  onAdd: (config: ChartConfig) => void;
+  /** When provided, the dialog edits this chart instead of creating a new one. */
+  initial?: ChartConfig;
+  onSubmit: (config: ChartConfig) => void;
   onClose: () => void;
 }
 
-export default function AddChartDialog({ datasetId, onAdd, onClose }: Props) {
+type BucketChoice = 'global' | DateBucket;
+
+export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }: Props) {
+  const editing = Boolean(initial);
+
   const [columns, setColumns] = useState<ColumnSchema[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [title, setTitle] = useState('');
-  const [chartType, setChartType] = useState<'line' | 'area' | 'bar'>('bar');
-  const [xCol, setXCol] = useState('');
-  const [yCol, setYCol] = useState('');
-  const [aggregation, setAggregation] = useState<Aggregation>(Aggregation.Sum);
+  const [title, setTitle] = useState(initial?.title ?? '');
+  const [chartType, setChartType] = useState<'line' | 'area' | 'bar'>(initial?.type ?? 'bar');
+  const [xCol, setXCol] = useState(initial?.x ?? '');
+  const [yCol, setYCol] = useState(initial?.y ?? '');
+  const [aggregation, setAggregation] = useState<Aggregation>(initial?.aggregation ?? Aggregation.Sum);
+  const [bucket, setBucket] = useState<BucketChoice>(initial?.dateBucket ?? 'global');
 
   const isCount = aggregation === Aggregation.Count;
+  const xType = columns.find((c) => c.name === xCol)?.type;
+  const isXDate = xType === 'date';
 
   useEffect(() => {
     fetch(`/api/schema?datasetId=${encodeURIComponent(datasetId)}`)
@@ -32,7 +41,7 @@ export default function AddChartDialog({ datasetId, onAdd, onClose }: Props) {
       })
       .then((schema) => {
         setColumns(schema.columns);
-        if (schema.columns.length > 0) {
+        if (!initial && schema.columns.length > 0) {
           setXCol(schema.columns[0].name);
           const numCol = schema.columns.find((c) => c.type === 'number');
           setYCol(numCol?.name ?? schema.columns[0].name);
@@ -43,58 +52,62 @@ export default function AddChartDialog({ datasetId, onAdd, onClose }: Props) {
         setError(err instanceof Error ? err.message : 'Unknown error');
         setLoading(false);
       });
-  }, [datasetId]);
+  }, [datasetId, initial]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const config: ChartConfig = {
-      id: `chart-${Date.now()}`,
+      id: initial?.id ?? `chart-${Date.now()}`,
       title: title || `${aggregation}(${isCount ? 'rows' : yCol}) by ${xCol}`,
       type: chartType,
       datasetId,
       x: xCol,
       y: yCol,
       aggregation,
+      dateBucket: isXDate && bucket !== 'global' ? bucket : undefined,
     };
-    onAdd(config);
+    onSubmit(config);
   };
 
+  const fieldClass =
+    'w-full rounded-control border border-border bg-surface px-3 py-2 text-sm text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-gray-800">Add Chart</h2>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/40 p-4">
+      <div className="w-full max-w-md rounded-card border border-border bg-surface p-6 shadow-pop">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-foreground">{editing ? 'Edit Chart' : 'Add Chart'}</h2>
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 text-xl leading-none"
+            className="rounded-control px-2 text-xl leading-none text-foreground-muted transition-colors hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             aria-label="Close"
           >
             &times;
           </button>
         </div>
 
-        {loading && <div className="text-gray-500 text-sm py-4">Loading schema...</div>}
-        {error && <div className="text-red-600 text-sm py-4">{error}</div>}
+        {loading && <div className="py-4 text-sm text-foreground-muted">Loading schema...</div>}
+        {error && <div className="py-4 text-sm text-danger">{error}</div>}
 
         {!loading && !error && (
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Title (optional)</label>
+              <label className="mb-1 block text-sm font-medium text-foreground">Title (optional)</label>
               <input
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 placeholder="Auto-generated if blank"
-                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className={`${fieldClass} placeholder:text-foreground-muted`}
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Chart Type</label>
+              <label className="mb-1 block text-sm font-medium text-foreground">Chart Type</label>
               <select
                 value={chartType}
                 onChange={(e) => setChartType(e.target.value as 'line' | 'area' | 'bar')}
-                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className={fieldClass}
               >
                 <option value="bar">Bar</option>
                 <option value="line">Line</option>
@@ -103,24 +116,37 @@ export default function AddChartDialog({ datasetId, onAdd, onClose }: Props) {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">X Axis (Group By)</label>
-              <select
-                value={xCol}
-                onChange={(e) => setXCol(e.target.value)}
-                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
+              <label className="mb-1 block text-sm font-medium text-foreground">X Axis (Group By)</label>
+              <select value={xCol} onChange={(e) => setXCol(e.target.value)} className={fieldClass}>
                 {columns.map((c) => (
                   <option key={c.name} value={c.name}>{c.name}</option>
                 ))}
               </select>
             </div>
 
+            {isXDate && (
+              <div>
+                <label className="mb-1 block text-sm font-medium text-foreground">Time Grouping</label>
+                <select
+                  value={bucket}
+                  onChange={(e) => setBucket(e.target.value as BucketChoice)}
+                  className={fieldClass}
+                >
+                  <option value="global">Use dashboard default</option>
+                  <option value="day">Daily</option>
+                  <option value="week">Weekly</option>
+                  <option value="month">Monthly</option>
+                  <option value="quarter">Quarterly</option>
+                </select>
+              </div>
+            )}
+
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Aggregation</label>
+              <label className="mb-1 block text-sm font-medium text-foreground">Aggregation</label>
               <select
                 value={aggregation}
                 onChange={(e) => setAggregation(e.target.value as Aggregation)}
-                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className={fieldClass}
               >
                 {Object.values(Aggregation).map((a) => (
                   <option key={a} value={a}>{a.toUpperCase()}</option>
@@ -129,37 +155,37 @@ export default function AddChartDialog({ datasetId, onAdd, onClose }: Props) {
             </div>
 
             <div>
-              <label className={`block text-sm font-medium mb-1 ${isCount ? 'text-gray-400' : 'text-gray-700'}`}>
+              <label className={`mb-1 block text-sm font-medium ${isCount ? 'text-foreground-muted' : 'text-foreground'}`}>
                 Y Axis (Metric)
               </label>
               <select
                 value={yCol}
                 onChange={(e) => setYCol(e.target.value)}
                 disabled={isCount}
-                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-400"
+                className={`${fieldClass} disabled:bg-surface-muted disabled:text-foreground-muted`}
               >
                 {columns.map((c) => (
                   <option key={c.name} value={c.name}>{c.name}</option>
                 ))}
               </select>
               {isCount && (
-                <p className="text-xs text-gray-400 mt-1">Y axis is not used for COUNT aggregation.</p>
+                <p className="mt-1 text-xs text-foreground-muted">Y axis is not used for COUNT aggregation.</p>
               )}
             </div>
 
-            <div className="flex gap-2 justify-end pt-2">
+            <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
                 onClick={onClose}
-                className="px-4 py-2 text-sm rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
+                className="rounded-control border border-border px-4 py-2 text-sm text-foreground transition-colors hover:bg-surface-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="px-4 py-2 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors"
+                className="rounded-full bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
-                Add Chart
+                {editing ? 'Save changes' : 'Add Chart'}
               </button>
             </div>
           </form>

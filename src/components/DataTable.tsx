@@ -10,25 +10,33 @@ interface Props {
 export default function DataTable({ result, onPageChange }: Props) {
   const totalPages = Math.ceil(result.total / result.pageSize);
 
+  const isNumeric = (type: string) => type === 'number';
+
   return (
     <div className="flex flex-col gap-3">
-      <div className="overflow-x-auto rounded-lg border border-gray-200">
-        <table className="w-full text-sm text-left">
-          <thead className="bg-gray-50 border-b border-gray-200">
+      <div className="overflow-x-auto rounded-card border border-border bg-surface">
+        <table className="w-full text-left text-sm">
+          <thead className="border-b border-border bg-surface-muted">
             <tr>
               {result.columns.map((col) => (
-                <th key={col.name} className="px-4 py-3 font-medium text-gray-700 whitespace-nowrap">
+                <th
+                  key={col.name}
+                  className={`whitespace-nowrap px-4 py-3 font-medium text-foreground ${isNumeric(col.type) ? 'text-right' : ''}`}
+                >
                   {col.name}
-                  <span className="ml-1 text-xs text-gray-400 font-normal">({col.type})</span>
+                  <span className="ml-1 text-xs font-normal text-foreground-muted">({col.type})</span>
                 </th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-100">
+          <tbody className="divide-y divide-border">
             {result.rows.map((row, i) => (
-              <tr key={i} className="hover:bg-gray-50">
+              <tr key={i} className="transition-colors hover:bg-surface-muted">
                 {result.columns.map((col) => (
-                  <td key={col.name} className="px-4 py-2 text-gray-700 whitespace-nowrap">
+                  <td
+                    key={col.name}
+                    className={`whitespace-nowrap px-4 py-2 text-foreground-muted ${isNumeric(col.type) ? 'text-right tnum' : ''}`}
+                  >
                     {row[col.name] === null || row[col.name] === undefined
                       ? ''
                       : String(row[col.name])}
@@ -38,7 +46,7 @@ export default function DataTable({ result, onPageChange }: Props) {
             ))}
             {result.rows.length === 0 && (
               <tr>
-                <td colSpan={result.columns.length} className="px-4 py-8 text-center text-gray-400">
+                <td colSpan={result.columns.length} className="px-4 py-8 text-center text-foreground-muted">
                   No rows found.
                 </td>
               </tr>
@@ -47,8 +55,8 @@ export default function DataTable({ result, onPageChange }: Props) {
         </table>
       </div>
 
-      <div className="flex items-center justify-between text-sm text-gray-600">
-        <span>
+      <div className="flex items-center justify-between text-sm text-foreground-muted">
+        <span className="tnum">
           Showing {result.rows.length === 0 ? 0 : (result.page - 1) * result.pageSize + 1}–
           {Math.min(result.page * result.pageSize, result.total)} of {result.total} rows
         </span>
@@ -56,17 +64,17 @@ export default function DataTable({ result, onPageChange }: Props) {
           <button
             onClick={() => onPageChange(result.page - 1)}
             disabled={result.page <= 1}
-            className="px-3 py-1 rounded border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="rounded-control border border-border px-3 py-1 text-foreground transition-colors hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             Previous
           </button>
-          <span className="text-gray-500">
+          <span className="tnum text-foreground-muted">
             Page {result.page} of {totalPages || 1}
           </span>
           <button
             onClick={() => onPageChange(result.page + 1)}
             disabled={result.page >= totalPages}
-            className="px-3 py-1 rounded border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="rounded-control border border-border px-3 py-1 text-foreground transition-colors hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-40 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             Next
           </button>

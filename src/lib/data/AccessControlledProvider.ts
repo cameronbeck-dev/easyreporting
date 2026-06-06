@@ -7,6 +7,8 @@ import type {
   AggregatedResult,
   RowsQuery,
   RowsResult,
+  SummaryQuery,
+  SummaryResult,
   Filter,
 } from './types';
 import { Aggregation } from './types';
@@ -69,6 +71,29 @@ export class AccessControlledProvider implements DataProvider {
     };
 
     return this.inner.queryAggregated(datasetId, delegatedQuery);
+  }
+
+  async querySummary(datasetId: string, q: SummaryQuery): Promise<SummaryResult> {
+    for (const m of q.metrics) {
+      // Count doesn't read a column; other aggregations must reference an allowed one.
+      if (m.aggregation !== Aggregation.Count && !this.isAllowedColumn(m.column)) {
+        throw new AccessError(`Column '${m.column}' is not accessible`);
+      }
+    }
+    if (q.filters) {
+      for (const f of q.filters) {
+        if (!this.isAllowedColumn(f.column)) {
+          throw new AccessError(`Column '${f.column}' is not accessible`);
+        }
+      }
+    }
+
+    const delegatedQuery: SummaryQuery = {
+      ...q,
+      filters: [...(q.filters ?? []), this.tenantFilter()],
+    };
+
+    return this.inner.querySummary(datasetId, delegatedQuery);
   }
 
   async queryRows(datasetId: string, q: RowsQuery): Promise<RowsResult> {

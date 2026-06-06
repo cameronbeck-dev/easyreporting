@@ -54,32 +54,34 @@ function DataPageInner() {
   };
 
   return (
-    <main className="flex-1 px-6 py-6">
-      <div className="flex items-center justify-between mb-6">
+    <main className="flex-1 px-6 py-8">
+      <div className="mb-6 flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Data Explorer</h1>
-          <p className="text-sm text-gray-500 mt-1">Dataset: {datasetId}</p>
+          <h1 className="text-[28px] font-extrabold tracking-tight text-foreground">Your data</h1>
+          <p className="mt-1 text-[15px] text-foreground-muted">
+            Every row behind your charts — filter, browse, and dig in.
+          </p>
         </div>
       </div>
 
       {filterCol && filterVal && (
-        <div className="mb-4 flex items-center gap-2 bg-blue-50 border border-blue-200 rounded-lg px-4 py-2 text-sm text-blue-800">
+        <div className="mb-4 flex items-center gap-2 rounded-control border border-primary/30 bg-primary/10 px-4 py-2 text-sm text-foreground">
           <span>
             Filtered by <strong>{filterCol}</strong> = <strong>{filterVal}</strong>
           </span>
           <button
             onClick={clearFilter}
-            className="ml-2 text-blue-500 hover:text-blue-700 font-medium underline"
+            className="ml-2 font-medium text-primary underline-offset-2 transition-colors hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             Clear filter
           </button>
         </div>
       )}
 
-      {loading && <div className="text-gray-400 text-sm py-8 text-center">Loading...</div>}
+      {loading && <div className="py-8 text-center text-sm text-foreground-muted">Loading...</div>}
 
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3 text-red-700 text-sm">
+        <div className="rounded-control border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
           {error}
         </div>
       )}
@@ -93,7 +95,7 @@ function DataPageInner() {
 
 export default function DataPage() {
   return (
-    <Suspense fallback={<div className="px-6 py-6 text-gray-400">Loading...</div>}>
+    <Suspense fallback={<div className="px-6 py-8 text-sm text-foreground-muted">Loading...</div>}>
       <DataPageInner />
     </Suspense>
   );

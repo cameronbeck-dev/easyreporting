@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# data — never commit real exports/customer data. Only the demo dataset is tracked.
+data/*.csv
+!data/sales.csv

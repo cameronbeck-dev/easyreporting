@@ -1,17 +1,116 @@
 @import "tailwindcss";
 
+/*
+ * Design tokens — see docs/design-system.md (the source of truth).
+ * Components consume ONLY the semantic tokens mapped in @theme inline below
+ * (bg-surface, text-foreground, bg-primary, ...). Never hardcode colors.
+ *
+ * Brandable tokens (--primary*, --secondary*, --font-brand) are overridden
+ * per-company by inline variables injected on <html> in layout.tsx. They apply
+ * to both light and dark. Neutral/status tokens swap by color mode.
+ */
+
 :root {
-  --background: #f9fafb;
-  --foreground: #111827;
+  /* Neutrals — light (warm, paper-like — friendly customer portal, not a dashboard) */
+  --background: #faf7f2;
+  --surface: #fffdfa;
+  --surface-muted: #f3ede3;
+  --border: #ece3d6;
+  --foreground: #33302b;
+  --foreground-muted: #7c7366;
+
+  /* Brand (default = work brand; companies override via injection) */
+  --primary: #005fa1;
+  --primary-foreground: #ffffff;
+  --primary-hover: color-mix(in srgb, var(--primary), black 14%);
+  --secondary: #76b729;
+  --secondary-foreground: #14250a;
+  --secondary-hover: color-mix(in srgb, var(--secondary), black 12%);
+
+  /* Status (warm-leaning) */
+  --success: #3a9d4a;
+  --warning: #e0891e;
+  --danger: #d2543f;
+
+  /* Focus */
+  --ring: var(--primary);
+
+  /* Shape & elevation — rounder + soft warm-tinted shadows */
+  --radius-card-raw: 1rem;
+  --radius-control-raw: 0.625rem;
+  --shadow-card-raw: 0 1px 2px rgba(76, 57, 38, 0.04), 0 6px 20px rgba(76, 57, 38, 0.07);
+  --shadow-pop-raw: 0 14px 44px rgba(76, 57, 38, 0.18);
+
+  color-scheme: light;
 }
 
+[data-theme="dark"] {
+  /* Neutrals — dark (warm charcoal, not cold navy) */
+  --background: #1b1714;
+  --surface: #26211b;
+  --surface-muted: #2f2922;
+  --border: #3b342b;
+  --foreground: #f0e9df;
+  --foreground-muted: #a99e8f;
+
+  /* Lift brand accents toward white for legibility on dark surfaces */
+  --primary-hover: color-mix(in srgb, var(--primary), white 16%);
+  --secondary-hover: color-mix(in srgb, var(--secondary), white 14%);
+
+  --success: #4ab866;
+  --warning: #e2a03f;
+  --danger: #e07a64;
+
+  --shadow-card-raw: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 20px rgba(0, 0, 0, 0.4);
+  --shadow-pop-raw: 0 14px 44px rgba(0, 0, 0, 0.6);
+
+  color-scheme: dark;
+}
+
+/* Map raw tokens → Tailwind utility namespaces (bg-*, text-*, rounded-*, shadow-*) */
 @theme inline {
   --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-muted: var(--surface-muted);
+  --color-border: var(--border);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
+  --color-foreground-muted: var(--foreground-muted);
+
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-hover: var(--primary-hover);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary-hover: var(--secondary-hover);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-ring: var(--ring);
+
+  --radius-card: var(--radius-card-raw);
+  --radius-control: var(--radius-control-raw);
+  --shadow-card: var(--shadow-card-raw);
+  --shadow-pop: var(--shadow-pop-raw);
+
+  --font-sans: var(--font-brand, var(--font-app-sans));
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
+}
+
+/* Tabular figures for data-dense surfaces (tables, axes, metrics) */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
 }

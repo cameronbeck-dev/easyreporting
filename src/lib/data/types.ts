@@ -32,11 +32,16 @@ export enum Aggregation {
   Max = 'max',
 }
 
+/** Time bucket for date X axes. */
+export type DateBucket = 'day' | 'week' | 'month' | 'quarter';
+
 export interface AggregatedQuery {
   x: string;
   y: string;
   aggregation: Aggregation;
   filters?: Filter[];
+  /** When x is a date column, group dates into this bucket. */
+  dateBucket?: DateBucket;
 }
 
 export interface AggregatedResult {
@@ -56,4 +61,25 @@ export interface RowsResult {
   total: number;
   page: number;
   pageSize: number;
+}
+
+/** A single headline metric — e.g. Sum(revenue), or Count (column ignored). */
+export interface SummaryMetric {
+  column: string;
+  aggregation: Aggregation;
+}
+
+export interface SummaryQuery {
+  metrics: SummaryMetric[];
+  filters?: Filter[];
+}
+
+export interface SummaryValue {
+  column: string;
+  aggregation: Aggregation;
+  value: number;
+}
+
+export interface SummaryResult {
+  metrics: SummaryValue[];
 }

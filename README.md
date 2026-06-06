@@ -58,8 +58,14 @@ Both mocks use `tenantId = acme`. To change tenantId, edit the `tenantId` field 
 
 ## Pages
 
-- `/` — Dashboard: add/remove ECharts visualizations, persisted to localStorage. Click a chart bar/point to drill into the Data page with that filter applied.
+- `/` — Dashboard:
+  - **Snapshot tiles** — auto-derived headline totals, user-editable (hover → edit → pick aggregation/column), with optional compare-to-previous-period deltas.
+  - **Charts** — add/edit/remove line/area/bar visualizations; per-chart date granularity (day/week/month/quarter); click a point to drill into the Data page filtered.
+  - **Global controls** (collapsible) — date range, time granularity, dimension focus, and compare, all applied to every tile + chart at once.
+  - **Resizable grid** — drag the gutter between cards to set column width; cards auto-wrap. Charts keep a 1:2 aspect ratio.
+  - All dashboard state persists to localStorage.
 - `/data` — Data Explorer: paginated table of raw rows. Accepts `?datasetId=`, `?filterCol=`, `?filterVal=` query params.
+- Light/dark mode toggle and per-company white-label branding (colors, logo, font) resolved server-side.
 
 ## Notes
 

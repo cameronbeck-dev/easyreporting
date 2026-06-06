@@ -59,28 +59,32 @@ These are the philosophies every screen is measured against.
 
 ---
 
-## 3. Aesthetic direction — Modern minimal SaaS
+## 3. Aesthetic direction — Warm, friendly customer portal
 
-The reference points are Stripe, Linear, and Vercel dashboards: airy, precise, premium,
-quietly confident.
+The audience is mostly **non-technical logistics customers**. The product must feel
+welcoming and effortless on load — a portal you're glad to visit, not an analyst tool that
+intimidates. Warm and human first, precise underneath.
 
-- **Generous whitespace.** Crowding reads as cheap. Give content room.
-- **Soft, low elevation.** Subtle shadows and hairline borders define surfaces — not heavy
-  drop shadows or hard 1px black lines.
-- **Rounded, not bubbly.** Consistent medium radii. Nothing sharp, nothing pill-shaped
-  except true pills (badges, toggles).
-- **Restrained color.** The interface is mostly neutral grays. Brand color is an *accent*
-  — used for primary actions, active states, key data — not for filling large areas.
-- **Quiet motion.** Transitions are short (150–200ms) and only on interactive feedback
-  (hover, focus, expand). No looping or attention-seeking animation.
-- **Crisp typography.** Strong type hierarchy does most of the layout work.
+- **Warm, not clinical.** Cream/paper backgrounds and warm-gray text — never cold white +
+  navy. Warmth is the single biggest "this is friendly" lever.
+- **Generous whitespace.** Crowding reads as cheap and stressful. Give content room.
+- **Soft, rounded, low elevation.** Larger radii, soft warm-tinted shadows. Approachable,
+  never sharp or "enterprise grid." True pills for actions and toggles.
+- **Color with purpose.** Neutrals stay warm and calm; the brand color fills the nav and
+  primary actions, and each **data field carries its own consistent color** (§7) across
+  tiles and charts so the dashboard reads at a glance.
+- **Lead with the answer.** Pages open with headline numbers (snapshot tiles), then detail
+  below. Don't make a casual user hunt.
+- **Quiet motion.** Short transitions (150–200ms) on interactive feedback only. No looping
+  or attention-seeking animation.
 
 ---
 
 ## 4. Typography
 
-- **Default family:** Geist (already wired via `next/font`). The active font is a token
-  (`--font-sans`) so a company can override it (§6).
+- **Default family:** Nunito (rounded, humanist, warm — wired via `next/font`). Chosen over
+  a technical grotesk because rounded letterforms read as friendly. The active font is a
+  token (`--font-sans`) so a company can override it (§6).
 - **Numbers matter.** This is a data product. Use **tabular figures** for any column or
   metric where digits should align (`font-variant-numeric: tabular-nums`).
 
@@ -193,8 +197,8 @@ be styled as another company.**
   guaranteed contrast ratio; never trust a raw client color to be legible.
 - Enforce a **minimum contrast** (WCAG AA, §8) between brand color and its foreground; if a
   chosen brand color fails, adjust the derived foreground, not the layout.
-- Brand color is an **accent only** — it must never become a full-bleed background, or the
-  "calm neutral surface" principle breaks.
+- Brand color fills the **top navigation** and primary actions, and nothing else large.
+  Content surfaces stay warm-neutral so the brand reads as a confident frame, not noise.
 
 ---
 
@@ -206,9 +210,10 @@ Charts are the heart of the product and must obey the same system.
   axis/label color, gridlines, and tooltip styling all read from `--color-*`. A company's
   brand color flows into charts automatically; dark mode restyles charts with no per-chart
   code.
-- **Series palette.** The first/primary series uses `--color-primary`. Additional series use
-  a fixed, accessible categorical palette derived to harmonize with the brand hue — not
-  random colors.
+- **Color by field, consistently.** Each data field maps to a stable color via
+  `fieldColor(name)` (`src/components/fieldColors.ts`) from a warm categorical palette. The
+  same field is the same color everywhere — a "revenue" chart line matches the "revenue"
+  snapshot tile. Backend-agnostic: any column name hashes to a stable color.
 - **Tooltips on hover** are mandatory (principle 3): show exact values, the dimension being
   viewed, and where useful a delta. Caption type scale, surface background, hairline border.
 - **Drill-down is the default interaction.** Clicking a chart element navigates to the Data
@@ -238,16 +243,32 @@ Because we hand-roll components, we own accessibility — meet it deliberately.
 
 ---
 
-## 9. Layout & navigation conventions
+## 9. Layout, navigation & dashboard composition
 
-- **App shell:** persistent top header (logo + primary nav) on a `--color-surface`
-  background with a hairline bottom border. Content sits on `--color-background`.
+- **App shell:** persistent **brand-filled** top header (logo + primary nav) — the one large
+  brand surface. Content sits on warm `--color-background`.
 - **Content in cards.** Charts, tables, and panels live in `--color-surface` cards with
-  `--radius`, a hairline border, and at most `--shadow-sm` at rest.
-- **Responsive grid** for the dashboard; cards reflow, never overflow horizontally.
-- **One primary action per view.** The single most important action uses the brand-colored
-  primary button; everything else is secondary/ghost.
-- **Consistent page anatomy:** title (Heading) → optional filter/context bar → content.
+  `radius-card`, a hairline border, a field-colored accent strip on top, and `shadow-card`.
+- **One primary action per view**, as the brand-colored pill button; everything else is
+  secondary/ghost.
+
+### Dashboard anatomy (the customer's home)
+
+Ordered to answer first, explore second:
+
+1. **Controls bar** — global date range / granularity / dimension focus / compare. Defaults
+   **collapsed** to a one-line summary of the active view: a returning user gets a clean page
+   and a glance, not a wall of inputs. Expandable when they want to change something.
+2. **Overview** — snapshot KPI tiles: headline totals computed server-side through the
+   access-controlled provider. Tiles are **user-editable** (hover → edit → pick
+   aggregation + column) and persist locally. Optional compare shows ▲/▼ % vs the prior
+   equal-length period (sign + arrow + color, never color alone).
+3. **Reports** — the chart grid. Cards **auto-wrap** (`auto-fill` minmax) and the column
+   width is **user-draggable** via the gutter between cards, with live feedback. Charts hold
+   a **1:2 aspect ratio** (height tracks width).
+
+All dashboard state (tiles, charts, globals, grid width, controls open) persists per browser
+today; server-side per-user persistence is the production path.
 
 ---
 
