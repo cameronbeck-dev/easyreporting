@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
 import type { CSSProperties } from 'react';
 import { Nunito } from 'next/font/google';
+import { headers } from 'next/headers';
+import { redirect } from 'next/navigation';
 import './globals.css';
 import Nav from '@/components/Nav';
 import ThemeToggle from '@/components/ThemeToggle';
@@ -26,6 +28,16 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // Branding is resolved server-side from the authenticated company — never the client.
   // Unauthenticated routes (login, invite) get the house brand and no app chrome.
   const ctx = await getUserContext();
+
+  // A cookie can outlive its user (deleted/disabled, or a reseed changed ids). Middleware
+  // can't catch that on the edge, so do it here: if the session doesn't resolve to a real
+  // active user on a protected route, send them to /login to re-authenticate.
+  if (!ctx) {
+    const pathname = (await headers()).get('x-pathname') ?? '';
+    const isPublic = pathname.startsWith('/login') || pathname.startsWith('/invite');
+    if (!isPublic) redirect('/login');
+  }
+
   const branding = ctx ? await getBranding(ctx.tenantId) : DEFAULT_BRANDING;
 
   const brandVars = {
@@ -61,7 +73,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               )}
             </div>
             <div className="flex flex-1 items-center justify-between">
-              <Nav />
+              <Nav isAdmin={ctx.isAdmin} />
               <div className="flex items-center gap-3">
                 <span className="hidden text-sm text-primary-foreground/80 sm:inline">
                   {ctx.email}

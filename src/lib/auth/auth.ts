@@ -27,11 +27,9 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const ok = await verifyPassword(password, user.passwordHash);
         if (!ok) return null;
 
-        // The role rides on the JWT (see auth.config callbacks); full access facts
-        // are re-resolved from the DB per request in getUserContext.
-        const { getResolvedUserById } = await import('../db/config-repo');
-        const resolved = await getResolvedUserById(user.id);
-        return { id: user.id, email: user.email, role: resolved?.role ?? 'external' };
+        // Only the id rides on the JWT; access facts are re-resolved per request
+        // from the DB in getUserContext, so nothing stale can be trusted from the cookie.
+        return { id: user.id, email: user.email };
       },
     }),
   ],

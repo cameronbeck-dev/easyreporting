@@ -1,26 +1,33 @@
-// Seeds the metadata DB with demo config + login-ready users.
-// Reproduces the original access behavior: tenant `easyreporting`, an internal profile
-// that sees everything, an external profile that sees every sales column EXCEPT
-// profit_margin, and an admin. All three demo users are `active` with known dev
-// passwords (printed below). Idempotent: clears config tables and re-inserts.
+// Seeds the metadata DB with demo config + login-ready users across several companies.
+//
+// What a user SEES is their profile; an admin's REACH is derived from their tenant
+// (admins in the platform tenant `easyreporting` are owner admins; admins in any other
+// company are company admins). Two GLOBAL profiles (tenantId null = any company):
+//   • Full access — every column.
+//   • Operational — every sales column EXCEPT profit_margin (tenantId is always stripped).
+// All demo users are `active` with known DEV-ONLY passwords (printed below).
+// Idempotent: clears config tables and re-inserts.
 import { migrate } from 'drizzle-orm/libsql/migrator';
 import { db } from './client';
 import { users, accessProfiles, profileColumnRules, profileRowScopes, invites } from './schema';
 import { hashPassword } from '../auth/password';
+import { getPlatformTenantId } from '../auth/platform';
 
-const ADMIN_PROFILE = 'profile-admin';
-const INTERNAL_PROFILE = 'profile-internal-full';
-const EXTERNAL_PROFILE = 'profile-external-customer';
+const FULL_PROFILE = 'profile-full';
+const OPERATIONAL_PROFILE = 'profile-operational';
 
-// Columns an external customer may see: every sales column except the masked
-// profit_margin. tenantId is omitted here too (it is always stripped in code).
-const EXTERNAL_ALLOWED = ['date', 'region', 'product', 'units_sold', 'revenue', 'cost'];
+// Columns the Operational profile may see: every sales column except profit_margin.
+const OPERATIONAL_ALLOWED = ['date', 'region', 'product', 'units_sold', 'revenue', 'cost'];
+
+const OWNER_TENANT = getPlatformTenantId(); // 'easyreporting' by default
 
 // Dev-only credentials. Documented in README; change before any real deployment.
-const DEMO_PASSWORD = {
-  admin: 'admin-password',
-  internal: 'internal-password',
-  external: 'customer-password',
+const PW = {
+  owner: 'owner-password',
+  ownerMember: 'staff-password',
+  ownerCustomer: 'customer-password',
+  globexAdmin: 'globex-admin-password',
+  globexMember: 'globex-user-password',
 };
 
 async function main() {
@@ -34,54 +41,76 @@ async function main() {
   await db.delete(accessProfiles);
 
   await db.insert(accessProfiles).values([
-    { id: ADMIN_PROFILE, name: 'Administrator', description: 'Full access; manages the platform.', allColumns: true },
-    { id: INTERNAL_PROFILE, name: 'Internal — Full', description: 'Internal staff: every column, full tenant data.', allColumns: true },
+    { id: FULL_PROFILE, name: 'Full access', description: 'Every column.', tenantId: null, allColumns: true },
     {
-      id: EXTERNAL_PROFILE,
-      name: 'External — Customer',
-      description: 'External customers: operational columns only, no cost/margin internals.',
+      id: OPERATIONAL_PROFILE,
+      name: 'Operational — no margin',
+      description: 'Operational columns only; no cost/margin internals.',
+      tenantId: null,
       allColumns: false,
     },
   ]);
 
   await db.insert(profileColumnRules).values(
-    EXTERNAL_ALLOWED.map((columnName) => ({ profileId: EXTERNAL_PROFILE, datasetId: null, columnName })),
+    OPERATIONAL_ALLOWED.map((columnName) => ({ profileId: OPERATIONAL_PROFILE, datasetId: null, columnName })),
   );
 
   await db.insert(users).values([
+    // Owner company (MGL): an owner admin, a full-access member, a restricted customer.
     {
-      id: 'user-admin',
-      email: 'admin@easyreporting.example',
-      passwordHash: await hashPassword(DEMO_PASSWORD.admin),
+      id: 'user-owner-admin',
+      email: `admin@${OWNER_TENANT}.example`,
+      passwordHash: await hashPassword(PW.owner),
       status: 'active' as const,
-      tenantId: 'easyreporting',
-      role: 'admin' as const,
-      profileId: ADMIN_PROFILE,
+      tenantId: OWNER_TENANT,
+      isAdmin: true,
+      profileId: FULL_PROFILE,
     },
     {
-      id: 'user-internal',
-      email: 'internal@easyreporting.example',
-      passwordHash: await hashPassword(DEMO_PASSWORD.internal),
+      id: 'user-owner-member',
+      email: `staff@${OWNER_TENANT}.example`,
+      passwordHash: await hashPassword(PW.ownerMember),
       status: 'active' as const,
-      tenantId: 'easyreporting',
-      role: 'internal' as const,
-      profileId: INTERNAL_PROFILE,
+      tenantId: OWNER_TENANT,
+      isAdmin: false,
+      profileId: FULL_PROFILE,
     },
     {
-      id: 'user-external',
-      email: 'customer@easyreporting.example',
-      passwordHash: await hashPassword(DEMO_PASSWORD.external),
+      id: 'user-owner-customer',
+      email: `customer@${OWNER_TENANT}.example`,
+      passwordHash: await hashPassword(PW.ownerCustomer),
       status: 'active' as const,
-      tenantId: 'easyreporting',
-      role: 'external' as const,
-      profileId: EXTERNAL_PROFILE,
+      tenantId: OWNER_TENANT,
+      isAdmin: false,
+      profileId: OPERATIONAL_PROFILE,
+    },
+    // A separate company (globex): a COMPANY admin (manages only globex) + a member.
+    {
+      id: 'user-globex-admin',
+      email: 'admin@globex.example',
+      passwordHash: await hashPassword(PW.globexAdmin),
+      status: 'active' as const,
+      tenantId: 'globex',
+      isAdmin: true,
+      profileId: FULL_PROFILE,
+    },
+    {
+      id: 'user-globex-member',
+      email: 'user@globex.example',
+      passwordHash: await hashPassword(PW.globexMember),
+      status: 'active' as const,
+      tenantId: 'globex',
+      isAdmin: false,
+      profileId: OPERATIONAL_PROFILE,
     },
   ]);
 
-  console.log('Seeded metadata DB: 3 profiles, 3 users. Dev logins:');
-  console.log('  admin@easyreporting.example    /', DEMO_PASSWORD.admin);
-  console.log('  internal@easyreporting.example /', DEMO_PASSWORD.internal);
-  console.log('  customer@easyreporting.example /', DEMO_PASSWORD.external);
+  console.log('Seeded metadata DB: 2 global profiles, 5 users. Dev logins:');
+  console.log(`  admin@${OWNER_TENANT}.example     /`, PW.owner, '(OWNER admin — all companies)');
+  console.log(`  staff@${OWNER_TENANT}.example     /`, PW.ownerMember, '(member, full access)');
+  console.log(`  customer@${OWNER_TENANT}.example  /`, PW.ownerCustomer, '(member, no margin)');
+  console.log('  admin@globex.example          /', PW.globexAdmin, '(COMPANY admin — globex only)');
+  console.log('  user@globex.example           /', PW.globexMember, '(member, no margin)');
 }
 
 main()

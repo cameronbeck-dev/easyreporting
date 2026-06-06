@@ -8,12 +8,13 @@ const LINKS = [
   { href: '/data', label: 'Data' },
 ];
 
-export default function Nav() {
+export default function Nav({ isAdmin = false }: { isAdmin?: boolean }) {
   const pathname = usePathname();
+  const links = isAdmin ? [...LINKS, { href: '/admin', label: 'Admin' }] : LINKS;
 
   return (
     <nav className="flex items-center gap-1 text-sm font-medium">
-      {LINKS.map(({ href, label }) => {
+      {links.map(({ href, label }) => {
         const active = href === '/' ? pathname === '/' : pathname.startsWith(href);
         return (
           <Link

@@ -1,5 +1,3 @@
-export type Role = 'admin' | 'internal' | 'external';
-
 /** One row-access constraint: `column` must be one of `values`. AND-ed with others. */
 export interface RowScope {
   column: string;
@@ -10,8 +8,11 @@ export interface UserContext {
   userId: string;
   email: string;
   tenantId: string;
-  role: Role;
-  /** When true, every column is visible (internal/admin). */
+  /** Grants the admin UI. Reach is derived: see isPlatformAdmin. */
+  isAdmin: boolean;
+  /** True when this admin's tenant is the platform/owner tenant (cross-tenant reach). */
+  isPlatformAdmin: boolean;
+  /** When true, every column is visible. */
   allColumns: boolean;
   /** Fail-closed allow-list of visible columns; used only when allColumns is false. */
   allowedColumns: string[];

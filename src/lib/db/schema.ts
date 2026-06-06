@@ -4,18 +4,24 @@
 import { sqliteTable, text, integer, primaryKey } from 'drizzle-orm/sqlite-core';
 
 // A person who can sign in. tenantId scopes them to one company's data;
-// role gates admin features; profileId points at their bundle of access rules.
+// profileId points at their bundle of access rules; isAdmin grants the admin UI.
 // passwordHash is null until the user accepts an invite and sets a password;
 // status reflects that lifecycle.
+//
+// There is no separate role/scope column: what a user can SEE is entirely their
+// profile, and an admin's REACH is derived from their tenant. An admin whose
+// tenant is the configured platform tenant (PLATFORM_TENANT_ID) is an owner admin
+// (all tenants); any other admin is scoped to their own company. See
+// src/lib/auth/platform.ts and src/lib/auth/requireAdmin.ts.
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
   email: text('email').notNull().unique(),
   passwordHash: text('password_hash'),
-  status: text('status', { enum: ['invited', 'active'] })
+  status: text('status', { enum: ['invited', 'active', 'disabled'] })
     .notNull()
     .default('invited'),
   tenantId: text('tenant_id').notNull(),
-  role: text('role', { enum: ['admin', 'internal', 'external'] }).notNull(),
+  isAdmin: integer('is_admin', { mode: 'boolean' }).notNull().default(false),
   profileId: text('profile_id')
     .notNull()
     .references(() => accessProfiles.id),
@@ -42,10 +48,13 @@ export const invites = sqliteTable('invites', {
 // A reusable bundle of access rules assigned to users.
 // allColumns=true is the "see everything" shortcut for internal/admin profiles;
 // when false, column access is the fail-closed allow-list in profileColumnRules.
+// tenantId scopes the profile to one company; null = a global template any
+// tenant may assign. Only platform admins author profiles.
 export const accessProfiles = sqliteTable('access_profiles', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   description: text('description'),
+  tenantId: text('tenant_id'),
   allColumns: integer('all_columns', { mode: 'boolean' }).notNull().default(false),
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()

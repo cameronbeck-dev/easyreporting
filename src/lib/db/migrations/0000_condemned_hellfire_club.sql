@@ -2,6 +2,7 @@ CREATE TABLE `access_profiles` (
 	`id` text PRIMARY KEY NOT NULL,
 	`name` text NOT NULL,
 	`description` text,
+	`tenant_id` text,
 	`all_columns` integer DEFAULT false NOT NULL,
 	`created_at` integer NOT NULL
 );
@@ -40,7 +41,7 @@ CREATE TABLE `users` (
 	`password_hash` text,
 	`status` text DEFAULT 'invited' NOT NULL,
 	`tenant_id` text NOT NULL,
-	`role` text NOT NULL,
+	`is_admin` integer DEFAULT false NOT NULL,
 	`profile_id` text NOT NULL,
 	`created_at` integer NOT NULL,
 	FOREIGN KEY (`profile_id`) REFERENCES `access_profiles`(`id`) ON UPDATE no action ON DELETE no action

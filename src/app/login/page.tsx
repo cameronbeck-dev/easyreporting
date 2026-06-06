@@ -1,11 +1,13 @@
 import { redirect } from 'next/navigation';
-import { auth } from '@/lib/auth/auth';
+import { getUserContext } from '@/lib/auth/getUserContext';
 import LoginForm from '@/components/LoginForm';
 
 export default async function LoginPage() {
-  // Already signed in? Skip the form.
-  const session = await auth();
-  if (session?.user) redirect('/');
+  // Already signed in AS A REAL, ACTIVE USER? Skip the form. We check the resolved
+  // context (not just the raw cookie) so a stale/disabled session lands on the form
+  // and can re-authenticate, instead of bouncing back to a chrome-less dashboard.
+  const ctx = await getUserContext();
+  if (ctx) redirect('/');
 
   return (
     <main className="flex flex-1 items-center justify-center px-4 py-16">

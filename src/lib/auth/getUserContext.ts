@@ -4,6 +4,7 @@
 import type { UserContext } from './types';
 import { auth } from './auth';
 import { getResolvedUserById } from '../db/config-repo';
+import { isPlatformTenant } from './platform';
 
 // The tenant identity column for the demo dataset. Configurable per connection later.
 const TENANT_COLUMN = 'tenantId';
@@ -20,7 +21,8 @@ export async function getUserContext(): Promise<UserContext | null> {
     userId: resolved.userId,
     email: resolved.email,
     tenantId: resolved.tenantId,
-    role: resolved.role,
+    isAdmin: resolved.isAdmin,
+    isPlatformAdmin: resolved.isAdmin && isPlatformTenant(resolved.tenantId),
     allColumns: resolved.allColumns,
     allowedColumns: resolved.allowedColumns,
     rowScopes: resolved.rowScopes,

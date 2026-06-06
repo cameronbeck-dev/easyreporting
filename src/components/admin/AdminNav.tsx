@@ -1,0 +1,34 @@
+'use client';
+
+import Link from 'next/link';
+import { usePathname } from 'next/navigation';
+
+export default function AdminNav() {
+  const pathname = usePathname();
+  const links = [
+    { href: '/admin/users', label: 'Users' },
+    { href: '/admin/profiles', label: 'Access profiles' },
+  ];
+
+  return (
+    <nav className="flex items-center gap-1 text-sm font-medium">
+      {links.map(({ href, label }) => {
+        const active = pathname.startsWith(href);
+        return (
+          <Link
+            key={href}
+            href={href}
+            aria-current={active ? 'page' : undefined}
+            className={
+              active
+                ? 'rounded-full bg-primary/10 px-3.5 py-1.5 font-semibold text-primary'
+                : 'rounded-full px-3.5 py-1.5 text-foreground-muted transition-colors hover:bg-surface-muted hover:text-foreground'
+            }
+          >
+            {label}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}

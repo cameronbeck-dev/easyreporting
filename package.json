@@ -9,7 +9,8 @@
     "lint": "eslint",
     "db:generate": "drizzle-kit generate",
     "db:seed": "tsx src/lib/db/seed.ts",
-    "db:invite": "tsx src/lib/db/invite-cli.ts"
+    "db:invite": "tsx src/lib/db/invite-cli.ts",
+    "db:gen-data": "tsx scripts/generate-sales.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.17.3",

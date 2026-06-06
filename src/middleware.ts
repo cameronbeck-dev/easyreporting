@@ -3,6 +3,7 @@
 // are redirected to /login. API routes are intentionally left to enforce their
 // own 401 via getUserContext, so a fetch never gets an HTML redirect body.
 import NextAuth from 'next-auth';
+import { NextResponse } from 'next/server';
 import { authConfig } from '@/lib/auth/auth.config';
 
 const { auth } = NextAuth(authConfig);
@@ -20,6 +21,12 @@ export default auth((req) => {
   if (!isLoggedIn && !isPublic) {
     return Response.redirect(new URL('/login', nextUrl));
   }
+
+  // Expose the path so the root layout can DB-validate the session (the edge can't):
+  // a still-valid cookie for a deleted/disabled user must not strand them on a page.
+  const headers = new Headers(req.headers);
+  headers.set('x-pathname', nextUrl.pathname);
+  return NextResponse.next({ request: { headers } });
 });
 
 export const config = {

@@ -1,6 +1,6 @@
 # EasyReporting
 
-A multi-tenant reporting platform built with Next.js. Milestone 1 ships a CSV-backed demo with access-controlled API routes, an interactive dashboard with ECharts visualizations, and a data explorer with filtering and pagination.
+A multi-tenant reporting platform built with Next.js: a CSV-backed demo with access-controlled API routes, an interactive ECharts dashboard, a data explorer, real credential auth with one-time invites, and an admin UI for managing users and configurable access profiles. Who can see which data is **configuration, not code** — enforced server-side at a single choke point.
 
 ## Architecture
 
@@ -25,6 +25,7 @@ Browser
 
   Metadata DB (SQLite via Drizzle) — users (+ password hashes, invites), profiles, column rules, row scopes
   Auth: Auth.js v5 credentials, scrypt password hashing, one-time invite links
+  Admin UI (/admin) — owner & company admins manage users + access profiles; every write re-checks company + access-ceiling server-side
 ```
 
 ## Security Model
@@ -55,27 +56,39 @@ Open http://localhost:3000 — you'll be redirected to `/login`.
 
 The metadata DB defaults to a local SQLite file (`data/metadata.db`). To use a managed store, set `METADATA_DB_URL` (and optionally `METADATA_DB_AUTH_TOKEN`) to a libSQL/Turso or Postgres URL before seeding — see `docs/access-model.md`.
 
+Set `PLATFORM_TENANT_ID` to the company that owns the instance (defaults to the demo tenant `easyreporting`). Admins in that company are **owner admins** with reach across every company; admins anywhere else are scoped to their own. `data/sales.csv` is demo data spanning several companies — regenerate it with `npm run db:gen-data`.
+
 ## Signing in
 
-Authentication is real (Auth.js credentials). `npm run db:seed` creates three demo users in tenant `easyreporting`, all with **dev-only passwords** — change them before any real deployment:
+Authentication is real (Auth.js credentials). `npm run db:seed` creates five demo users across two companies, all with **dev-only passwords** — change them before any real deployment:
 
-| Email | Password | Role | Visible columns |
+| Email | Password | Admin | Visible columns |
 |---|---|---|---|
-| `admin@easyreporting.example` | `admin-password` | admin | all |
-| `internal@easyreporting.example` | `internal-password` | internal | all |
-| `customer@easyreporting.example` | `customer-password` | external | all sales columns except `profit_margin` |
+| `admin@easyreporting.example` | `owner-password` | owner (all companies) | all |
+| `staff@easyreporting.example` | `staff-password` | — | all |
+| `customer@easyreporting.example` | `customer-password` | — | all sales columns except `profit_margin` |
+| `admin@globex.example` | `globex-admin-password` | company (globex only) | all |
+| `user@globex.example` | `globex-user-password` | — | all sales columns except `profit_margin` |
 
-Switch users by signing out and back in. Users, profiles, and their column/row rules are seeded by `npm run db:seed` (or, from PR 3, the admin UI).
+Switch users by signing out and back in.
 
-### Inviting a user
+A user is just **a company + an access profile + an `isAdmin` flag**. What they *see* is their profile; an admin's *reach* is derived from their company (see `docs/access-model.md`):
 
-New users are created without a password and set their own via a one-time invite link. Until the admin UI lands (PR 3), mint one from the CLI:
+- **Owner admin** — an admin in the platform company (`PLATFORM_TENANT_ID`, default `easyreporting`): manages every company and authors global profile templates.
+- **Company admin** — an admin in any other company: manages only their own company's users and profiles, and can never grant access beyond what they themselves can see (the *access ceiling*).
+
+### Managing users & access
+
+Admins get an **Admin** link in the header (`/admin`):
+
+- **Users** — create/invite users, assign an access profile, toggle admin, disable/re-enable, and re-issue invite links.
+- **Access profiles** — create profiles and edit their column allow-list and row scopes. Company admins manage profiles for their own company (bounded by their access ceiling); only owner admins author **global** templates.
+
+New users are created without a password and set their own via a one-time invite link (valid 7 days, single use). You can also mint one from the CLI:
 
 ```bash
 npm run db:invite -- someone@example.com
 ```
-
-This prints an invite URL (valid 7 days, single use). Opening it lets the user set a password and sign in.
 
 ## Pages
 
@@ -88,6 +101,7 @@ All pages require sign-in. `/login` and `/invite/<token>` are the only public ro
   - **Resizable grid** — drag the gutter between cards to set column width; cards auto-wrap. Charts keep a 1:2 aspect ratio.
   - All dashboard state persists to localStorage.
 - `/data` — Data Explorer: paginated table of raw rows. Accepts `?datasetId=`, `?filterCol=`, `?filterVal=` query params.
+- `/admin` — Admin (admins only): manage users and access profiles (column allow-list + row scopes), scoped to the admin's company (owner admins span all companies). Non-admins are redirected away server-side.
 - Light/dark mode toggle and per-company white-label branding (colors, logo, font) resolved server-side.
 
 ## Notes

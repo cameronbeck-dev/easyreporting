@@ -4,7 +4,6 @@
 import { eq } from 'drizzle-orm';
 import { db } from './client';
 import { users, accessProfiles, profileColumnRules, profileRowScopes } from './schema';
-import type { Role } from '../auth/types';
 
 export interface RowScope {
   column: string;
@@ -15,8 +14,9 @@ export interface ResolvedUser {
   userId: string;
   email: string;
   tenantId: string;
-  role: Role;
-  /** When true, all columns are visible (internal/admin). */
+  /** Grants the admin UI; reach is derived from the tenant. */
+  isAdmin: boolean;
+  /** When true, all columns are visible. */
   allColumns: boolean;
   /** Fail-closed allow-list, consulted only when allColumns is false. */
   allowedColumns: string[];
@@ -29,7 +29,7 @@ export interface UserCredentials {
   id: string;
   email: string;
   passwordHash: string | null;
-  status: 'invited' | 'active';
+  status: 'invited' | 'active' | 'disabled';
 }
 
 /** Look up a user's credentials by email (for the Credentials provider). */
@@ -47,10 +47,14 @@ export async function getUserCredentialsByEmail(email: string): Promise<UserCred
   return user ?? null;
 }
 
-/** Resolve a user (by id) into their profile's access facts. */
+/**
+ * Resolve a user (by id) into their profile's access facts. Returns null unless the
+ * user exists AND is active — so a deleted or disabled account's still-valid session
+ * cookie resolves to "logged out" on the very next request, rather than lingering.
+ */
 export async function getResolvedUserById(userId: string): Promise<ResolvedUser | null> {
   const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
-  if (!user) return null;
+  if (!user || user.status !== 'active') return null;
 
   const [profile] = await db
     .select()
@@ -73,7 +77,7 @@ export async function getResolvedUserById(userId: string): Promise<ResolvedUser 
     userId: user.id,
     email: user.email,
     tenantId: user.tenantId,
-    role: user.role,
+    isAdmin: user.isAdmin,
     allColumns: profile.allColumns,
     allowedColumns: columnRules.map((r) => r.columnName),
     rowScopes: rowScopeRows.map((r) => ({ column: r.column, values: r.values })),
