@@ -1,16 +1,14 @@
 // Dev helper to mint an invite link without going through the admin UI.
 //   npm run db:invite -- someone@example.com
-// Creates the user as a non-admin `invited` member of the owner tenant on the
-// Operational profile if they don't exist, then prints a one-time invite URL.
-// Run after `npm run db:seed`.
+// Creates the user as a non-admin `invited` member of the owner company (no row
+// profile) if they don't exist, then prints a one-time invite URL. Run after
+// `npm run db:seed`.
 import { eq } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
 import { db } from './client';
 import { users } from './schema';
 import { createInvite } from '../auth/invite';
 import { getPlatformTenantId } from '../auth/platform';
-
-const OPERATIONAL_PROFILE = 'profile-operational';
 
 async function main() {
   const email = process.argv[2]?.toLowerCase();
@@ -28,10 +26,10 @@ async function main() {
       status: 'invited',
       tenantId: getPlatformTenantId(),
       isAdmin: false,
-      profileId: OPERATIONAL_PROFILE,
+      profileId: null,
     });
     [user] = await db.select().from(users).where(eq(users.id, id)).limit(1);
-    console.log(`Created invited member ${email} (Operational profile).`);
+    console.log(`Created invited member ${email} (owner company, no row profile).`);
   }
 
   const token = await createInvite(user.id);

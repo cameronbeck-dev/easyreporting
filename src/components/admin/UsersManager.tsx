@@ -16,7 +16,7 @@ export interface UserRowData {
   tenantId: string;
   isAdmin: boolean;
   status: 'invited' | 'active' | 'disabled';
-  profileId: string;
+  profileId: string | null;
   profileName: string | null;
 }
 
@@ -83,9 +83,9 @@ function CreateUserForm({ tenants, profiles, isOwner }: Pick<Props, 'tenants' | 
       </label>
 
       <label className={`${labelClass} sm:col-span-2`}>
-        Access profile
-        <select name="profileId" required className={inputClass}>
-          {assignable.length === 0 && <option value="">No profiles available for this company</option>}
+        Row profile <span className="font-normal text-foreground-muted">(optional — restricts which rows they see)</span>
+        <select name="profileId" defaultValue="" className={inputClass}>
+          <option value="">No row limits</option>
           {assignable.map((p) => (
             <option key={p.id} value={p.id}>
               {p.name}
@@ -181,8 +181,9 @@ function UserRow({
               <form action={updateAction} className="flex flex-wrap items-end gap-3">
                 <input type="hidden" name="userId" value={user.id} />
                 <label className="flex flex-col gap-1 text-xs font-medium text-foreground-muted">
-                  Profile
-                  <select name="profileId" defaultValue={user.profileId} className={inputClass}>
+                  Row profile
+                  <select name="profileId" defaultValue={user.profileId ?? ''} className={inputClass}>
+                    <option value="">No row limits</option>
                     {assignable.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.name}

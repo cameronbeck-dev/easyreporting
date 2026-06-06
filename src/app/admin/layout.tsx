@@ -23,7 +23,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
         </p>
       </div>
       <div className="mb-6 border-b border-border pb-3">
-        <AdminNav />
+        <AdminNav isOwner={isOwner} />
       </div>
       {children}
     </main>

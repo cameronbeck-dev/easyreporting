@@ -3,7 +3,6 @@ CREATE TABLE `access_profiles` (
 	`name` text NOT NULL,
 	`description` text,
 	`tenant_id` text,
-	`all_columns` integer DEFAULT false NOT NULL,
 	`created_at` integer NOT NULL
 );
 --> statement-breakpoint
@@ -18,14 +17,6 @@ CREATE TABLE `invites` (
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `invites_token_hash_unique` ON `invites` (`token_hash`);--> statement-breakpoint
-CREATE TABLE `profile_column_rules` (
-	`profile_id` text NOT NULL,
-	`dataset_id` text,
-	`column_name` text NOT NULL,
-	PRIMARY KEY(`profile_id`, `dataset_id`, `column_name`),
-	FOREIGN KEY (`profile_id`) REFERENCES `access_profiles`(`id`) ON UPDATE no action ON DELETE cascade
-);
---> statement-breakpoint
 CREATE TABLE `profile_row_scopes` (
 	`id` text PRIMARY KEY NOT NULL,
 	`profile_id` text NOT NULL,
@@ -35,6 +26,13 @@ CREATE TABLE `profile_row_scopes` (
 	FOREIGN KEY (`profile_id`) REFERENCES `access_profiles`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
+CREATE TABLE `tenant_column_rules` (
+	`tenant_id` text NOT NULL,
+	`dataset_id` text,
+	`column_name` text NOT NULL,
+	PRIMARY KEY(`tenant_id`, `dataset_id`, `column_name`)
+);
+--> statement-breakpoint
 CREATE TABLE `users` (
 	`id` text PRIMARY KEY NOT NULL,
 	`email` text NOT NULL,
@@ -42,7 +40,7 @@ CREATE TABLE `users` (
 	`status` text DEFAULT 'invited' NOT NULL,
 	`tenant_id` text NOT NULL,
 	`is_admin` integer DEFAULT false NOT NULL,
-	`profile_id` text NOT NULL,
+	`profile_id` text,
 	`created_at` integer NOT NULL,
 	FOREIGN KEY (`profile_id`) REFERENCES `access_profiles`(`id`) ON UPDATE no action ON DELETE no action
 );

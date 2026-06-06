@@ -10,7 +10,6 @@ export interface ProfileSummaryData {
   name: string;
   description: string | null;
   tenantId: string | null;
-  allColumns: boolean;
 }
 
 function CreateProfileForm({ tenants, isOwner }: { tenants: string[]; isOwner: boolean }) {
@@ -38,10 +37,6 @@ function CreateProfileForm({ tenants, isOwner }: { tenants: string[]; isOwner: b
       <label className={`${labelClass} sm:col-span-2`}>
         Description
         <input name="description" className={inputClass} />
-      </label>
-      <label className="flex items-center gap-2 text-sm font-medium text-foreground sm:col-span-2">
-        <input type="checkbox" name="allColumns" className="h-4 w-4 accent-[var(--primary)]" />
-        See all columns (skip the allow-list)
       </label>
       <div className="flex flex-col gap-3 sm:col-span-2">
         <FormError error={state.error} />
@@ -76,9 +71,10 @@ export default function ProfilesManager({
   return (
     <div className="flex flex-col gap-8">
       <section className="rounded-card border border-border bg-surface p-6 shadow-card">
-        <h2 className="mb-1 text-lg font-semibold text-foreground">New access profile</h2>
+        <h2 className="mb-1 text-lg font-semibold text-foreground">New row profile</h2>
         <p className="mb-5 text-sm text-foreground-muted">
-          A reusable bundle of access rules. Edit its column allow-list and row scopes after creating it.
+          A reusable bundle of row restrictions (e.g. one cost centre). Add its row scopes after creating it,
+          then assign it to users. Columns are controlled separately, per company.
         </p>
         <CreateProfileForm tenants={tenants} isOwner={isOwner} />
       </section>
@@ -93,8 +89,7 @@ export default function ProfilesManager({
             <thead className="text-xs uppercase tracking-wide text-foreground-muted">
               <tr>
                 <th className="px-3 py-2 font-medium">Name</th>
-                <th className="px-3 py-2 font-medium">Scope</th>
-                <th className="px-3 py-2 font-medium">Columns</th>
+                <th className="px-3 py-2 font-medium">Company</th>
                 <th className="px-3 py-2 text-right font-medium">Actions</th>
               </tr>
             </thead>
@@ -109,9 +104,6 @@ export default function ProfilesManager({
                   </td>
                   <td className="px-3 py-3">
                     {p.tenantId === null ? <Pill>global</Pill> : <Pill tone="neutral">{p.tenantId}</Pill>}
-                  </td>
-                  <td className="px-3 py-3 text-sm text-foreground-muted">
-                    {p.allColumns ? 'All columns' : 'Allow-list'}
                   </td>
                   <td className="px-3 py-3">
                     <div className="flex items-center justify-end gap-2">

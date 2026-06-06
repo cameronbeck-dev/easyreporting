@@ -1,33 +1,34 @@
 // Seeds the metadata DB with demo config + login-ready users across several companies.
 //
-// What a user SEES is their profile; an admin's REACH is derived from their tenant
-// (admins in the platform tenant `easyreporting` are owner admins; admins in any other
-// company are company admins). Two GLOBAL profiles (tenantId null = any company):
-//   • Full access — every column.
-//   • Operational — every sales column EXCEPT profit_margin (tenantId is always stripped).
-// All demo users are `active` with known DEV-ONLY passwords (printed below).
+// Column visibility is per COMPANY (tenant_column_rules): the owner/platform tenant
+// (easyreporting) sees ALL columns automatically; customer companies see only their
+// configured list. Row restrictions are optional per-user profiles. An admin's reach
+// is derived from their company. All demo users are `active` with DEV-ONLY passwords.
 // Idempotent: clears config tables and re-inserts.
 import { migrate } from 'drizzle-orm/libsql/migrator';
 import { db } from './client';
-import { users, accessProfiles, profileColumnRules, profileRowScopes, invites } from './schema';
+import { users, accessProfiles, profileRowScopes, tenantColumnRules, invites } from './schema';
 import { hashPassword } from '../auth/password';
 import { getPlatformTenantId } from '../auth/platform';
 
-const FULL_PROFILE = 'profile-full';
-const OPERATIONAL_PROFILE = 'profile-operational';
+const OWNER = getPlatformTenantId(); // 'easyreporting' by default
+const VIC_PROFILE = 'profile-globex-vic';
 
-// Columns the Operational profile may see: every sales column except profit_margin.
-const OPERATIONAL_ALLOWED = ['date', 'region', 'product', 'units_sold', 'revenue', 'cost'];
-
-const OWNER_TENANT = getPlatformTenantId(); // 'easyreporting' by default
+// Per-company visible columns (owner sees all, so it has none here). Excludes the
+// always-stripped company id; note no cost/profit_margin for customers.
+const TENANT_COLUMNS: Record<string, string[]> = {
+  globex: ['date', 'region', 'product', 'units_sold', 'revenue'],
+  initech: ['date', 'region', 'revenue'],
+};
 
 // Dev-only credentials. Documented in README; change before any real deployment.
 const PW = {
   owner: 'owner-password',
-  ownerMember: 'staff-password',
-  ownerCustomer: 'customer-password',
+  ownerStaff: 'staff-password',
   globexAdmin: 'globex-admin-password',
-  globexMember: 'globex-user-password',
+  globexUser: 'globex-user-password',
+  globexVic: 'globex-vic-password',
+  initechAdmin: 'initech-admin-password',
 };
 
 async function main() {
@@ -36,81 +37,42 @@ async function main() {
   // Clear in FK-safe order so reseeding is idempotent.
   await db.delete(invites);
   await db.delete(profileRowScopes);
-  await db.delete(profileColumnRules);
+  await db.delete(tenantColumnRules);
   await db.delete(users);
   await db.delete(accessProfiles);
 
-  await db.insert(accessProfiles).values([
-    { id: FULL_PROFILE, name: 'Full access', description: 'Every column.', tenantId: null, allColumns: true },
-    {
-      id: OPERATIONAL_PROFILE,
-      name: 'Operational — no margin',
-      description: 'Operational columns only; no cost/margin internals.',
-      tenantId: null,
-      allColumns: false,
-    },
-  ]);
+  // Per-company column visibility.
+  for (const [tenantId, columns] of Object.entries(TENANT_COLUMNS)) {
+    await db.insert(tenantColumnRules).values(columns.map((columnName) => ({ tenantId, datasetId: null, columnName })));
+  }
 
-  await db.insert(profileColumnRules).values(
-    OPERATIONAL_ALLOWED.map((columnName) => ({ profileId: OPERATIONAL_PROFILE, datasetId: null, columnName })),
-  );
+  // A demo row profile: globex users on this profile only see Victoria rows.
+  await db.insert(accessProfiles).values([
+    { id: VIC_PROFILE, name: 'Victoria only', description: 'Rows where region = Victoria.', tenantId: 'globex' },
+  ]);
+  await db.insert(profileRowScopes).values([
+    { id: 'scope-globex-vic', profileId: VIC_PROFILE, datasetId: null, column: 'region', values: ['Victoria'] },
+  ]);
 
   await db.insert(users).values([
-    // Owner company (MGL): an owner admin, a full-access member, a restricted customer.
-    {
-      id: 'user-owner-admin',
-      email: `admin@${OWNER_TENANT}.example`,
-      passwordHash: await hashPassword(PW.owner),
-      status: 'active' as const,
-      tenantId: OWNER_TENANT,
-      isAdmin: true,
-      profileId: FULL_PROFILE,
-    },
-    {
-      id: 'user-owner-member',
-      email: `staff@${OWNER_TENANT}.example`,
-      passwordHash: await hashPassword(PW.ownerMember),
-      status: 'active' as const,
-      tenantId: OWNER_TENANT,
-      isAdmin: false,
-      profileId: FULL_PROFILE,
-    },
-    {
-      id: 'user-owner-customer',
-      email: `customer@${OWNER_TENANT}.example`,
-      passwordHash: await hashPassword(PW.ownerCustomer),
-      status: 'active' as const,
-      tenantId: OWNER_TENANT,
-      isAdmin: false,
-      profileId: OPERATIONAL_PROFILE,
-    },
-    // A separate company (globex): a COMPANY admin (manages only globex) + a member.
-    {
-      id: 'user-globex-admin',
-      email: 'admin@globex.example',
-      passwordHash: await hashPassword(PW.globexAdmin),
-      status: 'active' as const,
-      tenantId: 'globex',
-      isAdmin: true,
-      profileId: FULL_PROFILE,
-    },
-    {
-      id: 'user-globex-member',
-      email: 'user@globex.example',
-      passwordHash: await hashPassword(PW.globexMember),
-      status: 'active' as const,
-      tenantId: 'globex',
-      isAdmin: false,
-      profileId: OPERATIONAL_PROFILE,
-    },
+    // Owner company (MGL): everyone sees all columns. An owner admin + a plain member.
+    { id: 'user-owner-admin', email: `admin@${OWNER}.example`, passwordHash: await hashPassword(PW.owner), status: 'active', tenantId: OWNER, isAdmin: true, profileId: null },
+    { id: 'user-owner-staff', email: `staff@${OWNER}.example`, passwordHash: await hashPassword(PW.ownerStaff), status: 'active', tenantId: OWNER, isAdmin: false, profileId: null },
+    // globex: a company admin, a member (limited columns), and a Victoria-only member.
+    { id: 'user-globex-admin', email: 'admin@globex.example', passwordHash: await hashPassword(PW.globexAdmin), status: 'active', tenantId: 'globex', isAdmin: true, profileId: null },
+    { id: 'user-globex-user', email: 'user@globex.example', passwordHash: await hashPassword(PW.globexUser), status: 'active', tenantId: 'globex', isAdmin: false, profileId: null },
+    { id: 'user-globex-vic', email: 'vic@globex.example', passwordHash: await hashPassword(PW.globexVic), status: 'active', tenantId: 'globex', isAdmin: false, profileId: VIC_PROFILE },
+    // initech: a company admin (even more limited columns).
+    { id: 'user-initech-admin', email: 'admin@initech.example', passwordHash: await hashPassword(PW.initechAdmin), status: 'active', tenantId: 'initech', isAdmin: true, profileId: null },
   ]);
 
-  console.log('Seeded metadata DB: 2 global profiles, 5 users. Dev logins:');
-  console.log(`  admin@${OWNER_TENANT}.example     /`, PW.owner, '(OWNER admin — all companies)');
-  console.log(`  staff@${OWNER_TENANT}.example     /`, PW.ownerMember, '(member, full access)');
-  console.log(`  customer@${OWNER_TENANT}.example  /`, PW.ownerCustomer, '(member, no margin)');
-  console.log('  admin@globex.example          /', PW.globexAdmin, '(COMPANY admin — globex only)');
-  console.log('  user@globex.example           /', PW.globexMember, '(member, no margin)');
+  console.log('Seeded metadata DB. Dev logins:');
+  console.log(`  admin@${OWNER}.example   /`, PW.owner, '(OWNER admin — all companies, all columns)');
+  console.log(`  staff@${OWNER}.example   /`, PW.ownerStaff, '(member, all columns)');
+  console.log('  admin@globex.example   /', PW.globexAdmin, '(globex admin)');
+  console.log('  user@globex.example    /', PW.globexUser, '(globex member — date/region/product/units/revenue)');
+  console.log('  vic@globex.example     /', PW.globexVic, '(globex member — Victoria rows only)');
+  console.log('  admin@initech.example  /', PW.initechAdmin, '(initech admin — date/region/revenue)');
 }
 
 main()

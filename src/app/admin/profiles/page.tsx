@@ -11,7 +11,6 @@ export default async function AdminProfilesPage() {
     name: p.name,
     description: p.description,
     tenantId: p.tenantId,
-    allColumns: p.allColumns,
   }));
 
   return <ProfilesManager profiles={profiles} tenants={tenants} isOwner={admin.isPlatformAdmin} />;

@@ -1,6 +1,6 @@
 # EasyReporting
 
-A multi-tenant reporting platform built with Next.js: a CSV-backed demo with access-controlled API routes, an interactive ECharts dashboard, a data explorer, real credential auth with one-time invites, and an admin UI for managing users and configurable access profiles. Who can see which data is **configuration, not code** — enforced server-side at a single choke point.
+A multi-tenant reporting platform built with Next.js: a CSV-backed demo with access-controlled API routes, an interactive ECharts dashboard, a data explorer, real credential auth with one-time invites, and an admin UI for managing users, per-company column access, and row profiles. Who can see which data is **configuration, not code** — enforced server-side at a single choke point.
 
 ## Architecture
 
@@ -23,18 +23,18 @@ Browser
         v
   data/sales.csv
 
-  Metadata DB (SQLite via Drizzle) — users (+ password hashes, invites), profiles, column rules, row scopes
+  Metadata DB (SQLite via Drizzle) — users (+ password hashes, invites), per-company columns, optional row profiles + scopes
   Auth: Auth.js v5 credentials, scrypt password hashing, one-time invite links
-  Admin UI (/admin) — owner & company admins manage users + access profiles; every write re-checks company + access-ceiling server-side
+  Admin UI (/admin) — owner sets each company's columns; owner & company admins manage users + row profiles; every write re-checked server-side
 ```
 
 ## Security Model
 
 Access is **configuration, not code** — defined in a metadata DB and enforced at one server-side choke point (`AccessControlledProvider`). See `docs/access-model.md` for the full model.
 
-- **Row isolation**: every API query gets a tenant equality filter injected server-side. The client cannot override or omit it.
-- **Row scopes**: a profile can further constrain rows (`column ∈ values`), injected as `in` filters.
-- **Column allow-list (fail-closed)**: unless a profile grants all columns, only explicitly-allowed columns survive in schema and row results. A column that isn't granted is invisible — mistakes hide data rather than leak it. Queries referencing a disallowed column return HTTP 403.
+- **Company isolation**: every API query gets a company equality filter injected server-side. The client cannot override or omit it.
+- **Row scopes**: an optional row profile can further constrain rows (`column ∈ values`), injected as `in` filters.
+- **Per-company columns (fail-closed)**: the owner company sees all columns; every other company sees only its configured list. Columns outside it are invisible in schema and row results; referencing one returns HTTP 403. Mistakes hide data rather than leak it.
 - The `tenantColumn` (`tenantId`) is always stripped from results, so it is never exposed to the client.
 
 ## Setup & Running
@@ -60,29 +60,32 @@ Set `PLATFORM_TENANT_ID` to the company that owns the instance (defaults to the 
 
 ## Signing in
 
-Authentication is real (Auth.js credentials). `npm run db:seed` creates five demo users across two companies, all with **dev-only passwords** — change them before any real deployment:
+Authentication is real (Auth.js credentials). `npm run db:seed` creates six demo users across three companies, all with **dev-only passwords** — change them before any real deployment:
 
 | Email | Password | Admin | Visible columns |
 |---|---|---|---|
 | `admin@easyreporting.example` | `owner-password` | owner (all companies) | all |
 | `staff@easyreporting.example` | `staff-password` | — | all |
-| `customer@easyreporting.example` | `customer-password` | — | all sales columns except `profit_margin` |
-| `admin@globex.example` | `globex-admin-password` | company (globex only) | all |
-| `user@globex.example` | `globex-user-password` | — | all sales columns except `profit_margin` |
+| `admin@globex.example` | `globex-admin-password` | company (globex only) | date/region/product/units_sold/revenue |
+| `user@globex.example` | `globex-user-password` | — | date/region/product/units_sold/revenue |
+| `vic@globex.example` | `globex-vic-password` | — | as globex, **Victoria rows only** |
+| `admin@initech.example` | `initech-admin-password` | company (initech only) | date/region/revenue |
 
 Switch users by signing out and back in.
 
-A user is just **a company + an access profile + an `isAdmin` flag**. What they *see* is their profile; an admin's *reach* is derived from their company (see `docs/access-model.md`):
+A user is just **a company + an optional row profile + an `isAdmin` flag** (see `docs/access-model.md`):
 
-- **Owner admin** — an admin in the platform company (`PLATFORM_TENANT_ID`, default `easyreporting`): manages every company and authors global profile templates.
-- **Company admin** — an admin in any other company: manages only their own company's users and profiles, and can never grant access beyond what they themselves can see (the *access ceiling*).
+- **Columns** are decided by the **company**: the owner company (`PLATFORM_TENANT_ID`, default `easyreporting`) sees all; each customer company sees an owner-chosen list.
+- **Rows** are the company's own data, optionally narrowed by a row profile (e.g. one cost centre).
+- **Admin reach** is derived from the company: an admin in the owner company is an **owner admin** (every company); any other admin is a **company admin** (their own company only).
 
 ### Managing users & access
 
 Admins get an **Admin** link in the header (`/admin`):
 
-- **Users** — create/invite users, assign an access profile, toggle admin, disable/re-enable, and re-issue invite links.
-- **Access profiles** — create profiles and edit their column allow-list and row scopes. Company admins manage profiles for their own company (bounded by their access ceiling); only owner admins author **global** templates.
+- **Users** — create/invite users, assign an optional row profile, toggle admin, disable/re-enable, and re-issue invite links.
+- **Row profiles** — create profiles and edit their row scopes (e.g. `region = NSW`). Company admins manage profiles for their own company; only owner admins author **global** templates.
+- **Company columns** (owner admins only) — tick which columns each customer company can see.
 
 New users are created without a password and set their own via a one-time invite link (valid 7 days, single use). You can also mint one from the CLI:
 
@@ -101,12 +104,12 @@ All pages require sign-in. `/login` and `/invite/<token>` are the only public ro
   - **Resizable grid** — drag the gutter between cards to set column width; cards auto-wrap. Charts keep a 1:2 aspect ratio.
   - All dashboard state persists to localStorage.
 - `/data` — Data Explorer: paginated table of raw rows. Accepts `?datasetId=`, `?filterCol=`, `?filterVal=` query params.
-- `/admin` — Admin (admins only): manage users and access profiles (column allow-list + row scopes), scoped to the admin's company (owner admins span all companies). Non-admins are redirected away server-side.
+- `/admin` — Admin (admins only): manage users and row profiles, scoped to the admin's company; owner admins also set each company's visible columns. Non-admins are redirected away server-side.
 - Light/dark mode toggle and per-company white-label branding (colors, logo, font) resolved server-side.
 
 ## Notes
 
-- Access rules (profiles, column allow-lists, row scopes, user→tenant assignment) live in the metadata DB, resolved by `getUserContext` from the signed-in session. An admin UI to manage all of this (plus connecting real SQL data sources) is the next milestone.
+- Access config (per-company columns, optional row profiles + scopes, user→company assignment) lives in the metadata DB, resolved by `getUserContext` from the signed-in session and managed through the `/admin` UI. Connecting real SQL data sources is the next milestone.
 - See `docs/access-model.md` for how access control is configured and enforced.
 - See `docs/data-providers.md` for how to add a custom data source (and the one rule every provider must follow).
 - See `docs/design-system.md` for the design philosophy, token system, and per-company white-labeling model — **read it before building any UI.**

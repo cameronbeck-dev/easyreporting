@@ -3,7 +3,8 @@
 // swapping SQLite for Postgres later is a change here, not across the app.
 import { eq } from 'drizzle-orm';
 import { db } from './client';
-import { users, accessProfiles, profileColumnRules, profileRowScopes } from './schema';
+import { users, tenantColumnRules, profileRowScopes } from './schema';
+import { isPlatformTenant } from '../auth/platform';
 
 export interface RowScope {
   column: string;
@@ -56,30 +57,35 @@ export async function getResolvedUserById(userId: string): Promise<ResolvedUser 
   const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
   if (!user || user.status !== 'active') return null;
 
-  const [profile] = await db
-    .select()
-    .from(accessProfiles)
-    .where(eq(accessProfiles.id, user.profileId))
-    .limit(1);
-  if (!profile) return null;
+  // Column visibility is per company: the owner/platform tenant sees ALL columns;
+  // every other company sees only its configured allow-list (fail-closed).
+  const isOwner = isPlatformTenant(user.tenantId);
+  let allowedColumns: string[] = [];
+  if (!isOwner) {
+    const columnRules = await db
+      .select({ columnName: tenantColumnRules.columnName })
+      .from(tenantColumnRules)
+      .where(eq(tenantColumnRules.tenantId, user.tenantId));
+    allowedColumns = columnRules.map((r) => r.columnName);
+  }
 
-  const columnRules = await db
-    .select()
-    .from(profileColumnRules)
-    .where(eq(profileColumnRules.profileId, profile.id));
-
-  const rowScopeRows = await db
-    .select()
-    .from(profileRowScopes)
-    .where(eq(profileRowScopes.profileId, profile.id));
+  // Row restrictions come from the user's profile, if they have one (else: no limits).
+  let rowScopes: RowScope[] = [];
+  if (user.profileId) {
+    const rowScopeRows = await db
+      .select()
+      .from(profileRowScopes)
+      .where(eq(profileRowScopes.profileId, user.profileId));
+    rowScopes = rowScopeRows.map((r) => ({ column: r.column, values: r.values }));
+  }
 
   return {
     userId: user.id,
     email: user.email,
     tenantId: user.tenantId,
     isAdmin: user.isAdmin,
-    allColumns: profile.allColumns,
-    allowedColumns: columnRules.map((r) => r.columnName),
-    rowScopes: rowScopeRows.map((r) => ({ column: r.column, values: r.values })),
+    allColumns: isOwner,
+    allowedColumns,
+    rowScopes,
   };
 }

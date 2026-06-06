@@ -28,8 +28,6 @@ export default async function AdminProfileDetailPage({
     name: detail.name,
     description: detail.description,
     tenantId: detail.tenantId,
-    allColumns: detail.allColumns,
-    columnRules: detail.columnRules,
     rowScopes: detail.rowScopes,
   };
 

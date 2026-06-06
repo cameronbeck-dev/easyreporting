@@ -9,14 +9,16 @@ customers is hardcoded — one repo serves every instance.
 
 | Concept | Table | What it holds |
 |---|---|---|
-| **User** | `users` | A person: email, password hash + status, `tenantId` (their company), an `isAdmin` flag, and the profile assigned to them. |
+| **User** | `users` | A person: email, password hash + status, `tenantId` (their company), an `isAdmin` flag, and an *optional* row profile. |
 | **Invite** | `invites` | A one-time, expiring token (stored hashed) that lets a new user set their first password. |
-| **Access profile** | `access_profiles` | A reusable bundle of access rules. `allColumns = true` is the "see everything" shortcut. `tenantId` scopes it to one company; `null` = a global template any company may assign. |
-| **Column rule** | `profile_column_rules` | One entry per column a profile *may* see. Consulted only when `allColumns` is false. |
-| **Row scope** | `profile_row_scopes` | A constraint `column ∈ values`. Multiple scopes are AND-ed. |
+| **Company columns** | `tenant_column_rules` | The columns a company may see. The owner company has no rows here and sees **all** columns; every other company sees only what's listed (fail-closed). |
+| **Row profile** | `access_profiles` | An *optional*, reusable bundle of **row** restrictions assigned to a user. `tenantId` scopes it to one company; `null` = a global template. Carries no column rules. |
+| **Row scope** | `profile_row_scopes` | A constraint `column ∈ values` on a profile. Multiple scopes are AND-ed. |
 
-A user is just **tenant + profile + `isAdmin`**. There is no role enum: what a user can
-**see** is entirely their profile, and an admin's **reach** is *derived* from their tenant.
+A user is just **company + an optional row profile + `isAdmin`**. There is no role enum.
+**Columns** are decided by the company (owner = all, customers = a selected list);
+**rows** are the company's data, optionally narrowed by a profile; an admin's **reach** is
+*derived* from their company.
 
 Schema: `src/lib/db/schema.ts`. Resolution: `src/lib/db/config-repo.ts`.
 
@@ -27,20 +29,21 @@ in*, decided by `PLATFORM_TENANT_ID` (`src/lib/auth/platform.ts`):
 
 | | Reach |
 |---|---|
-| **Owner admin** — admin in the platform tenant (MGL) | Every company; authors **global** profile templates; no access ceiling. |
-| **Company admin** — admin in any other company | **Their own company only**; authors/assigns profiles for that company, bounded by their own access. |
+| **Owner admin** — admin in the platform tenant (MGL) | Every company; **sets each company's visible columns**; authors global row profiles; no row ceiling. |
+| **Company admin** — admin in any other company | **Their own company only**; assigns/authors row profiles for that company, bounded by their own rows. **Cannot** change which columns their company sees. |
 
 This is enforced server-side in `src/lib/auth/requireAdmin.ts` (page redirects + action
 throws) and re-checked in every `src/lib/admin/repo.ts` function — the admin UI hiding a
-control is convenience, never the security boundary. Two invariants hold everywhere:
+control is convenience, never the security boundary. The invariants:
 
+- **Columns are owner-controlled** — only owner admins set a company's column list
+  (`setTenantColumns`), so a customer's own admin can never widen their own columns.
 - **Company isolation** — a company admin can only act on users/profiles in their own
-  tenant. (The same tenant isolation that hides other companies' *data* also hides their
+  company. (The same tenant isolation that hides other companies' *data* also hides their
   *users*.)
-- **Access ceiling** — no admin can grant more than they can see themselves: not
-  `allColumns` they lack, not a column outside their allow-list, and not a row scope
-  wider than theirs. Row scopes only ever *narrow*, so restricting staff to (say) one cost
-  centre is always allowed; widening past your own ceiling is rejected.
+- **Row ceiling** — a row-restricted admin can't grant a profile that sees rows they can't.
+  Row scopes only ever *narrow*, so restricting staff to (say) one cost centre is always
+  allowed; widening past your own rows is rejected.
 
 A company admin can make co-admins **within their own company**, but can never confer owner
 status — they can't place a user in the platform tenant.
@@ -67,39 +70,35 @@ account (`authorize` accepts only `active`).
 unauthenticated → 401), and `getProvider(ctx)` wraps the data source in
 `AccessControlledProvider` — the single choke point. For every query it:
 
-1. **Isolates the tenant** — injects `tenantColumn = tenantId`. Automatic and in code, so
-   tenant isolation never depends on someone configuring it correctly.
-2. **Applies row scopes** — injects each profile row scope as an `in` filter.
-3. **Enforces the column allow-list (fail-closed)** — unless `allColumns`, only allowed
-   columns survive in schemas and rows; the tenant column is always stripped; referencing a
-   disallowed column throws `AccessError` (HTTP 403).
+1. **Isolates the company** — injects `tenantColumn = tenantId`. Automatic and in code, so
+   company isolation never depends on someone configuring it correctly.
+2. **Applies row scopes** — injects each row-profile scope as an `in` filter.
+3. **Enforces the column allow-list (fail-closed)** — the owner company's users see all
+   columns; everyone else sees only their company's configured columns. The company column
+   is always stripped; referencing a disallowed column throws `AccessError` (HTTP 403).
 
-Fail-closed means a newly-added sensitive column is invisible to restricted profiles until an
-admin explicitly grants it — mistakes hide data rather than leak it.
+The choke point (`AccessControlledProvider`) itself is unchanged from before — it still
+reads `allColumns` / `allowedColumns` / `rowScopes` off the context. Only the *source*
+changed: columns now come from the company, rows from the optional profile.
 
-## Column rules are an allow-list, not a deny-list
-
-A profile lists what it **can** see. This is the deliberate inverse of a deny-list: forgetting
-to configure a column results in *less* access, never accidental exposure.
+Fail-closed means a newly-added sensitive column is invisible to a customer company until an
+owner admin explicitly grants it — mistakes hide data rather than leak it.
 
 ## Seeding / demo config
 
-`npm run db:seed` runs migrations and writes two **global** profiles (`tenantId = null`) plus
-five login-ready demo users across two companies, all `active` with **dev-only** passwords
-(see the README table). `data/sales.csv` carries several companies' rows so isolation is
-testable; regenerate it any time with `npm run db:gen-data`.
+`npm run db:seed` runs migrations and writes per-company column lists, one demo row profile,
+and six login-ready demo users across three companies, all `active` with **dev-only**
+passwords (see the README table). `data/sales.csv` carries several companies' rows so
+isolation is testable; regenerate it with `npm run db:gen-data`.
 
-Global profiles:
-- **Full access** — `allColumns = true`.
-- **Operational — no margin** — allow-list of operational columns; every sales column
-  **except `profit_margin`** (and `tenantId`, which is always stripped).
-
-Demo users:
-- `admin@easyreporting.example` — **owner admin** (platform tenant): manages every company.
-- `staff@easyreporting.example` — member, Full access.
-- `customer@easyreporting.example` — member, Operational (no margin).
-- `admin@globex.example` — **company admin**: manages only `globex`, sees only its data.
-- `user@globex.example` — member, Operational.
+Demo setup:
+- Company columns: `globex` → date/region/product/units_sold/revenue; `initech` → date/region/revenue. The owner company `easyreporting` sees all columns.
+- Row profile **Victoria only** (`globex`) → rows where `region = Victoria`.
+- `admin@easyreporting.example` — **owner admin**: manages every company, sees all columns.
+- `staff@easyreporting.example` — member, all columns.
+- `admin@globex.example` / `user@globex.example` — globex admin + member (limited columns).
+- `vic@globex.example` — globex member on the Victoria-only profile.
+- `admin@initech.example` — initech admin (most limited columns).
 
 Switch users by signing out and back in.
 

@@ -22,13 +22,25 @@ export const users = sqliteTable('users', {
     .default('invited'),
   tenantId: text('tenant_id').notNull(),
   isAdmin: integer('is_admin', { mode: 'boolean' }).notNull().default(false),
-  profileId: text('profile_id')
-    .notNull()
-    .references(() => accessProfiles.id),
+  // Optional: a profile carries only ROW restrictions now. No profile = no row limits.
+  profileId: text('profile_id').references(() => accessProfiles.id),
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()
     .$defaultFn(() => new Date()),
 });
+
+// Per-company column visibility. The owner/platform tenant is special-cased in code
+// to see ALL columns and has no rows here; every other company sees ONLY the columns
+// listed for it (fail-closed). datasetId null = applies to every dataset.
+export const tenantColumnRules = sqliteTable(
+  'tenant_column_rules',
+  {
+    tenantId: text('tenant_id').notNull(),
+    datasetId: text('dataset_id'),
+    columnName: text('column_name').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.tenantId, t.datasetId, t.columnName] })],
+);
 
 // One-time invite tokens. Only the hash of the token is stored; the raw token
 // lives only in the invite URL handed to the user. Single-use (usedAt) + expiring.
@@ -45,35 +57,19 @@ export const invites = sqliteTable('invites', {
     .$defaultFn(() => new Date()),
 });
 
-// A reusable bundle of access rules assigned to users.
-// allColumns=true is the "see everything" shortcut for internal/admin profiles;
-// when false, column access is the fail-closed allow-list in profileColumnRules.
-// tenantId scopes the profile to one company; null = a global template any
-// tenant may assign. Only platform admins author profiles.
+// A reusable bundle of ROW restrictions assigned (optionally) to users.
+// Columns are NOT controlled here — column visibility lives on the company
+// (tenantColumnRules). tenantId scopes the profile to one company; null = a global
+// template any company may assign.
 export const accessProfiles = sqliteTable('access_profiles', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   description: text('description'),
   tenantId: text('tenant_id'),
-  allColumns: integer('all_columns', { mode: 'boolean' }).notNull().default(false),
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()
     .$defaultFn(() => new Date()),
 });
-
-// Allow-list entries: the columns a profile MAY see (only consulted when
-// the profile's allColumns is false). datasetId null = applies to every dataset.
-export const profileColumnRules = sqliteTable(
-  'profile_column_rules',
-  {
-    profileId: text('profile_id')
-      .notNull()
-      .references(() => accessProfiles.id, { onDelete: 'cascade' }),
-    datasetId: text('dataset_id'),
-    columnName: text('column_name').notNull(),
-  },
-  (t) => [primaryKey({ columns: [t.profileId, t.datasetId, t.columnName] })],
-);
 
 // Row scopes: every query for this profile is constrained so `column` is one of
 // `values` (stored as a JSON array). Multiple scopes are AND-ed together.

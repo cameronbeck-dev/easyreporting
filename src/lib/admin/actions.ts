@@ -44,7 +44,7 @@ export async function createUserAction(_prev: ActionState, formData: FormData): 
       email: String(formData.get('email') ?? ''),
       tenantId: String(formData.get('tenantId') ?? ''),
       isAdmin: bool(formData.get('isAdmin')),
-      profileId: String(formData.get('profileId') ?? ''),
+      profileId: String(formData.get('profileId') ?? '') || null,
     });
     return { inviteUrl };
   });
@@ -55,7 +55,7 @@ export async function updateUserAction(_prev: ActionState, formData: FormData): 
     const admin = await requireAdminAction();
     await repo.updateUser(admin, String(formData.get('userId') ?? ''), {
       isAdmin: bool(formData.get('isAdmin')),
-      profileId: String(formData.get('profileId') ?? ''),
+      profileId: String(formData.get('profileId') ?? '') || null,
     });
   });
 }
@@ -75,7 +75,17 @@ export async function resendInviteAction(_prev: ActionState, formData: FormData)
   });
 }
 
-// --- Profiles ------------------------------------------------------------
+// --- Company columns (owner admins; repo enforces) -----------------------
+
+export async function setTenantColumnsAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return run(['/admin/columns'], async () => {
+    const admin = await requireAdminAction();
+    const columns = formData.getAll('columns').map((c) => String(c));
+    await repo.setTenantColumns(admin, String(formData.get('tenantId') ?? ''), columns);
+  });
+}
+
+// --- Profiles (row restrictions) -----------------------------------------
 
 export async function createProfileAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   return run(['/admin/profiles'], async () => {
@@ -84,7 +94,6 @@ export async function createProfileAction(_prev: ActionState, formData: FormData
       name: String(formData.get('name') ?? ''),
       description: String(formData.get('description') ?? '') || null,
       tenantId: String(formData.get('tenantId') ?? '') || null,
-      allColumns: bool(formData.get('allColumns')),
     });
   });
 }
@@ -96,7 +105,6 @@ export async function updateProfileAction(_prev: ActionState, formData: FormData
     await repo.updateProfile(admin, id, {
       name: String(formData.get('name') ?? ''),
       description: String(formData.get('description') ?? '') || null,
-      allColumns: bool(formData.get('allColumns')),
     });
   });
 }
@@ -105,22 +113,6 @@ export async function deleteProfileAction(_prev: ActionState, formData: FormData
   return run(['/admin/profiles'], async () => {
     const admin = await requireAdminAction();
     await repo.deleteProfile(admin, String(formData.get('profileId') ?? ''));
-  });
-}
-
-export async function addColumnRuleAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const id = String(formData.get('profileId') ?? '');
-  return run([`/admin/profiles/${id}`], async () => {
-    const admin = await requireAdminAction();
-    await repo.addColumnRule(admin, id, String(formData.get('columnName') ?? ''));
-  });
-}
-
-export async function removeColumnRuleAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  const id = String(formData.get('profileId') ?? '');
-  return run([`/admin/profiles/${id}`], async () => {
-    const admin = await requireAdminAction();
-    await repo.removeColumnRule(admin, id, String(formData.get('columnName') ?? ''));
   });
 }
 

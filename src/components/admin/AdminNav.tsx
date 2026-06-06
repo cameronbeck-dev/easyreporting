@@ -3,11 +3,12 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
-export default function AdminNav() {
+export default function AdminNav({ isOwner }: { isOwner: boolean }) {
   const pathname = usePathname();
   const links = [
     { href: '/admin/users', label: 'Users' },
-    { href: '/admin/profiles', label: 'Access profiles' },
+    { href: '/admin/profiles', label: 'Row profiles' },
+    ...(isOwner ? [{ href: '/admin/columns', label: 'Company columns' }] : []),
   ];
 
   return (
