@@ -65,3 +65,4 @@ Both mocks use `tenantId = acme`. To change tenantId, edit the `tenantId` field 
 
 - Real database connections and authentication are planned for later milestones. The `getUserContext` stub in `src/lib/auth/getUserContext.ts` is the only place that needs to change — it must return the same `UserContext` shape.
 - See `docs/data-providers.md` for how to add a custom data source.
+- See `docs/design-system.md` for the design philosophy, token system, and per-company white-labeling model — **read it before building any UI.**
