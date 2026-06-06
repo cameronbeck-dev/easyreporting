@@ -7,12 +7,13 @@ import type { DataProvider } from './DataProvider';
 import { AccessControlledProvider } from './AccessControlledProvider';
 import { CsvProvider } from './CsvProvider';
 import { SqlProvider } from './SqlProvider';
-import { decryptSecret } from '../crypto/secrets';
+import { toDecryptedConnection } from './sql/pool';
 import { isPlatformTenant } from '../auth/platform';
 import { db } from '../db/client';
 import { datasets, connections } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { listTenantColumnsResolved } from '../db/config-repo';
+import { DEFAULT_TENANT_COLUMN } from './constants';
 
 export async function getProviderForDataset(
   ctx: UserContext,
@@ -20,7 +21,7 @@ export async function getProviderForDataset(
 ): Promise<DataProvider> {
   // 'sales' or unknown ids fall back to the CSV demo.
   let resolvedDatasetId = datasetId;
-  let resolvedTenantColumn = 'tenantId';
+  let resolvedTenantColumn = DEFAULT_TENANT_COLUMN;
   let sourceType: 'csv' | 'sql' = 'csv';
   let sqlDataset:
     | {
@@ -43,7 +44,7 @@ export async function getProviderForDataset(
     if (!row) {
       // Unknown id — fall back to CSV demo
       resolvedDatasetId = 'sales';
-      resolvedTenantColumn = 'tenantId';
+      resolvedTenantColumn = DEFAULT_TENANT_COLUMN;
       sourceType = 'csv';
     } else if (row.connectionId === null) {
       // CSV source with a custom tenant column
@@ -100,16 +101,7 @@ export async function getProviderForDataset(
       throw new Error(`Connection for dataset "${sqlDataset!.name}" not found.`);
     }
 
-    const password = decryptSecret(connRow.passwordEncrypted);
-    const decryptedConn = {
-      id: connRow.id,
-      host: connRow.host,
-      port: connRow.port,
-      database: connRow.database,
-      user: connRow.user,
-      password,
-      sslMode: connRow.sslMode,
-    };
+    const decryptedConn = toDecryptedConnection(connRow);
 
     innerProvider = new SqlProvider({ dataset: sqlDataset!, connection: decryptedConn });
   }

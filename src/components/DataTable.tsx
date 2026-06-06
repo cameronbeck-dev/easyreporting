@@ -1,6 +1,7 @@
 'use client';
 
 import type { RowsResult } from '@/lib/data/types';
+import { prettify } from './chartTypes';
 
 interface Props {
   result: RowsResult;
@@ -23,7 +24,7 @@ export default function DataTable({ result, onPageChange }: Props) {
                   key={col.name}
                   className={`whitespace-nowrap px-4 py-3 font-medium text-foreground ${isNumeric(col.type) ? 'text-right' : ''}`}
                 >
-                  {col.name}
+                  {prettify(col.name)}
                   <span className="ml-1 text-xs font-normal text-foreground-muted">({col.type})</span>
                 </th>
               ))}

@@ -4,7 +4,9 @@ import { useEffect, useState } from 'react';
 import type { ColumnSchema, DatasetSchema, DateBucket } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import type { ChartConfig } from './chartTypes';
-import { defaultChartTitle } from './chartTypes';
+import { defaultChartTitle, prettify, aggregationOptionLabel } from './chartTypes';
+import { inputClass } from './ui/forms';
+import { getJson } from '@/lib/api/client';
 
 interface Props {
   datasetId: string;
@@ -35,11 +37,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
   const isXDate = xType === 'date';
 
   useEffect(() => {
-    fetch(`/api/schema?datasetId=${encodeURIComponent(datasetId)}`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error('Failed to fetch schema');
-        return res.json() as Promise<DatasetSchema>;
-      })
+    getJson<DatasetSchema>(`/api/schema?datasetId=${encodeURIComponent(datasetId)}`)
       .then((schema) => {
         setColumns(schema.columns);
         if (!initial && schema.columns.length > 0) {
@@ -70,8 +68,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
     onSubmit(config);
   };
 
-  const fieldClass =
-    'w-full rounded-control border border-border bg-surface px-3 py-2 text-sm text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+  const fieldClass = `${inputClass} w-full`;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/40 p-4">
@@ -120,7 +117,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
               <label className="mb-1 block text-sm font-medium text-foreground">X Axis (Group By)</label>
               <select value={xCol} onChange={(e) => setXCol(e.target.value)} className={fieldClass}>
                 {columns.map((c) => (
-                  <option key={c.name} value={c.name}>{c.name}</option>
+                  <option key={c.name} value={c.name}>{prettify(c.name)}</option>
                 ))}
               </select>
             </div>
@@ -150,7 +147,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
                 className={fieldClass}
               >
                 {Object.values(Aggregation).map((a) => (
-                  <option key={a} value={a}>{a.toUpperCase()}</option>
+                  <option key={a} value={a}>{aggregationOptionLabel(a)}</option>
                 ))}
               </select>
             </div>
@@ -166,7 +163,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
                 className={`${fieldClass} disabled:bg-surface-muted disabled:text-foreground-muted`}
               >
                 {columns.map((c) => (
-                  <option key={c.name} value={c.name}>{c.name}</option>
+                  <option key={c.name} value={c.name}>{prettify(c.name)}</option>
                 ))}
               </select>
               {isCount && (

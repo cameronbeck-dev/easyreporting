@@ -82,7 +82,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 <form action={signOutAction}>
                   <button
                     type="submit"
-                    className="rounded-full border border-white/30 px-3 py-1.5 text-sm font-medium text-primary-foreground/90 transition-colors hover:bg-white/10"
+                    className="rounded-full border border-primary-foreground/30 px-3 py-1.5 text-sm font-medium text-primary-foreground/90 transition-colors hover:bg-primary-foreground/10"
                   >
                     Sign out
                   </button>

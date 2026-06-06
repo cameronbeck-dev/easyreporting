@@ -4,8 +4,9 @@ import { useEffect, useState } from 'react';
 import type { ColumnSchema, Filter, SummaryResult, SummaryMetric } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import type { TileConfig } from './chartTypes';
-import { metricLabel } from './chartTypes';
+import { metricLabel, prettify, aggregationOptionLabel } from './chartTypes';
 import { fieldColor } from './fieldColors';
+import { postJson } from '@/lib/api/client';
 
 interface Props {
   datasetId: string;
@@ -18,10 +19,6 @@ interface Props {
 }
 
 const COUNT_COLUMN = '__count__';
-
-function prettify(name: string): string {
-  return name.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 function tileLabel(t: TileConfig): string {
   return metricLabel(t.aggregation, t.column);
@@ -48,13 +45,7 @@ function toMetric(t: TileConfig): SummaryMetric {
 }
 
 async function fetchSummary(datasetId: string, metrics: SummaryMetric[], filters: Filter[]): Promise<number[]> {
-  const res = await fetch('/api/summary', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ datasetId, query: { metrics, filters } }),
-  });
-  if (!res.ok) throw new Error('summary');
-  const data = (await res.json()) as SummaryResult;
+  const data = await postJson<SummaryResult>('/api/summary', { datasetId, query: { metrics, filters } });
   return data.metrics.map((m) => m.value);
 }
 
@@ -178,7 +169,7 @@ export default function KpiSnapshot({
                   className="rounded-control border border-border bg-surface px-2 py-1 text-sm text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {Object.values(Aggregation).map((a) => (
-                    <option key={a} value={a}>{prettify(a)}</option>
+                    <option key={a} value={a}>{aggregationOptionLabel(a)}</option>
                   ))}
                 </select>
                 <select

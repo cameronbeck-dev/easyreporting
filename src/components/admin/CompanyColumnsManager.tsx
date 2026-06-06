@@ -5,6 +5,9 @@ import { useFormStatus } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { setTenantColumnsAction, type ActionState } from '@/lib/admin/actions';
 import { FormError } from './ui';
+import { FIELD_FOCUS, buttonClass } from '../ui/forms';
+
+const compactSelectClass = `rounded-control border border-border bg-surface px-3 py-1.5 text-sm text-foreground ${FIELD_FOCUS}`;
 
 interface Company {
   tenantId: string;
@@ -26,16 +29,12 @@ function sameSet(a: Set<string>, b: Set<string>): boolean {
 function SaveButton({ dirty }: { dirty: boolean }) {
   const { pending } = useFormStatus();
   const label = pending ? 'Saving…' : dirty ? 'Save changes' : 'Changes saved';
+  // Dirty → primary action; clean → inert "saved" state (still on shared tokens).
+  const cls = dirty
+    ? buttonClass('primary')
+    : `rounded-full px-3.5 py-1.5 text-sm font-semibold ${FIELD_FOCUS} cursor-default bg-surface-muted text-foreground-muted`;
   return (
-    <button
-      type="submit"
-      disabled={!dirty || pending}
-      className={`rounded-full px-3.5 py-1.5 text-sm font-semibold transition-opacity focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-        dirty
-          ? 'bg-primary text-primary-foreground hover:opacity-90'
-          : 'cursor-default bg-surface-muted text-foreground-muted'
-      }`}
-    >
+    <button type="submit" disabled={!dirty || pending} className={cls}>
       {label}
     </button>
   );
@@ -92,7 +91,7 @@ function CompanyCard({
                 if (e.target.value) copyFrom(e.target.value);
                 e.target.value = '';
               }}
-              className="rounded-control border border-border bg-surface px-3 py-1.5 text-sm text-foreground outline-none focus:border-primary"
+              className={compactSelectClass}
             >
               <option value="">another company…</option>
               {others.map((o) => (
@@ -182,7 +181,7 @@ export default function CompanyColumnsManager({
           <select
             value={datasetId}
             onChange={(e) => router.push(`/admin/columns?datasetId=${e.target.value}`)}
-            className="rounded-control border border-border bg-surface px-3 py-1.5 text-sm text-foreground outline-none focus:border-primary"
+            className={compactSelectClass}
           >
             {allDatasets.map((d) => (
               <option key={d.id} value={d.id}>

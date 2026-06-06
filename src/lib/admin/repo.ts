@@ -20,10 +20,12 @@ import { createInvite } from '../auth/invite';
 import { ForbiddenError, type AdminContext } from '../auth/requireAdmin';
 import { isPlatformTenant } from '../auth/platform';
 import { listSelectableColumns } from '../data/catalog';
-import { encryptSecret, decryptSecret } from '../crypto/secrets';
+import { listTenantColumnsResolved } from '../db/config-repo';
+import { encryptSecret } from '../crypto/secrets';
 import { testConnection as introspectTestConnection, listTablesAndViews, listColumns, mapSqlType } from '../data/sql/introspect';
 import type { ColumnType } from '../data/types';
-import type { DecryptedConnection } from '../data/sql/pool';
+import { type DecryptedConnection, toDecryptedConnection } from '../data/sql/pool';
+import type { RowScope } from '../auth/types';
 
 // ---------------------------------------------------------------------------
 // Guards
@@ -48,8 +50,6 @@ function assertCanEditProfile(admin: AdminContext, profileTenantId: string | nul
     throw new ForbiddenError('You can only edit your own company’s profiles.');
   }
 }
-
-type RowScope = { column: string; values: (string | number)[] };
 
 async function loadProfile(profileId: string): Promise<{ tenantId: string | null; rowScopes: RowScope[] }> {
   const [profile] = await db
@@ -228,11 +228,9 @@ export async function getColumnCatalog(admin: AdminContext, datasetId: string): 
 /** The columns currently visible to a company for a specific dataset. */
 export async function listTenantColumns(admin: AdminContext, tenantId: string, datasetId: string): Promise<string[]> {
   assertOwner(admin);
-  const rows = await db
-    .select({ columnName: tenantColumnRules.columnName })
-    .from(tenantColumnRules)
-    .where(and(eq(tenantColumnRules.tenantId, tenantId), eq(tenantColumnRules.datasetId, datasetId)));
-  return rows.map((r) => r.columnName);
+  // Same query the security layer uses to resolve a tenant's columns; the only
+  // difference here is the owner-admin gate above.
+  return listTenantColumnsResolved(tenantId, datasetId);
 }
 
 /** Replace a customer company's visible-column list for a specific dataset. Owner admins only. */
@@ -494,16 +492,7 @@ async function loadDecryptedConnection(connectionId: string): Promise<DecryptedC
     .where(eq(connections.id, connectionId))
     .limit(1);
   if (!row) throw new ForbiddenError('Connection not found.');
-  const password = decryptSecret(row.passwordEncrypted);
-  return {
-    id: row.id,
-    host: row.host,
-    port: row.port,
-    database: row.database,
-    user: row.user,
-    password,
-    sslMode: row.sslMode as 'disable' | 'require',
-  };
+  return toDecryptedConnection(row);
 }
 
 export async function testConnectionById(

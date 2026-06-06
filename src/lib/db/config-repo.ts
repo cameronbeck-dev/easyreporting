@@ -5,11 +5,9 @@ import { eq, and } from 'drizzle-orm';
 import { db } from './client';
 import { users, tenantColumnRules, profileRowScopes } from './schema';
 import { isPlatformTenant } from '../auth/platform';
+import type { RowScope } from '../auth/types';
 
-export interface RowScope {
-  column: string;
-  values: (string | number)[];
-}
+export type { RowScope };
 
 export interface ResolvedUser {
   userId: string;

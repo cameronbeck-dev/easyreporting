@@ -22,7 +22,7 @@ export default function ConnectionsManager({ connections }: { connections: Conne
       <section className="rounded-card border border-border bg-surface p-6 shadow-card">
         <h2 className="mb-4 text-lg font-semibold text-foreground">Add connection</h2>
         <form action={testAction} className="mb-4 flex flex-wrap gap-3">
-          <ConnectionFields prefix="test" />
+          <ConnectionFields />
           <div className="flex w-full items-center gap-3 pt-1">
             <SubmitButton pendingLabel="Testing…" variant="ghost">
               Test connection
@@ -35,7 +35,7 @@ export default function ConnectionsManager({ connections }: { connections: Conne
         </form>
 
         <form action={createAction} className="flex flex-col gap-3">
-          <ConnectionFields prefix="create" />
+          <ConnectionFields />
           <div>
             <SubmitButton pendingLabel="Saving…">Save connection</SubmitButton>
           </div>
@@ -57,7 +57,7 @@ export default function ConnectionsManager({ connections }: { connections: Conne
   );
 }
 
-function ConnectionFields({ prefix }: { prefix: string }) {
+function ConnectionFields() {
   return (
     <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-2">
       <label className={labelClass}>
@@ -98,7 +98,6 @@ function ConnectionFields({ prefix }: { prefix: string }) {
           <option value="require">Require</option>
         </select>
       </label>
-      <input type="hidden" name="_prefix" value={prefix} />
     </div>
   );
 }

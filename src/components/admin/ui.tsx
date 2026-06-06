@@ -4,10 +4,10 @@
 // design-system tokens (no hardcoded colors) and submit buttons show pending state.
 import { useFormStatus } from 'react-dom';
 
-export const inputClass =
-  'rounded-control border border-border bg-surface px-3 py-2 text-sm text-foreground outline-none focus:border-primary focus-visible:ring-2 focus-visible:ring-ring';
-
-export const labelClass = 'flex flex-col gap-1.5 text-sm font-medium text-foreground';
+// Form-control styling is shared app-wide; re-exported here so admin call sites keep
+// importing it from one place.
+import { buttonClass, type ButtonVariant } from '../ui/forms';
+export { inputClass, labelClass } from '../ui/forms';
 
 export function SubmitButton({
   children,
@@ -17,19 +17,12 @@ export function SubmitButton({
 }: {
   children: React.ReactNode;
   pendingLabel?: string;
-  variant?: 'primary' | 'ghost' | 'danger';
+  variant?: ButtonVariant;
   className?: string;
 }) {
   const { pending } = useFormStatus();
-  const base =
-    'rounded-full px-3.5 py-1.5 text-sm font-semibold transition-opacity disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
-  const variants = {
-    primary: 'bg-primary text-primary-foreground hover:opacity-90',
-    ghost: 'border border-border text-foreground hover:bg-surface-muted',
-    danger: 'border border-danger/40 text-danger hover:bg-danger/10',
-  } as const;
   return (
-    <button type="submit" disabled={pending} className={`${base} ${variants[variant]} ${className}`}>
+    <button type="submit" disabled={pending} className={buttonClass(variant, className)}>
       {pending && pendingLabel ? pendingLabel : children}
     </button>
   );

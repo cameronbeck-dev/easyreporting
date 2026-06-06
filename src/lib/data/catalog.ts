@@ -5,6 +5,7 @@ import { CsvProvider } from './CsvProvider';
 import { db } from '../db/client';
 import { datasets } from '../db/schema';
 import { eq } from 'drizzle-orm';
+import { DEFAULT_TENANT_COLUMN } from './constants';
 
 export interface ColumnCatalogEntry {
   name: string;
@@ -31,14 +32,13 @@ export async function listSelectableColumns(datasetId: string): Promise<ColumnCa
 }
 
 async function listCsvSelectableColumns(): Promise<ColumnCatalogEntry[]> {
-  const TENANT_COLUMN = 'tenantId';
   const provider = new CsvProvider();
   const allDatasets = await provider.listDatasets();
   const seen = new Map<string, string>();
   for (const ds of allDatasets) {
     const schema = await provider.getSchema(ds.id);
     for (const col of schema.columns) {
-      if (col.name !== TENANT_COLUMN && !seen.has(col.name)) {
+      if (col.name !== DEFAULT_TENANT_COLUMN && !seen.has(col.name)) {
         seen.set(col.name, col.type);
       }
     }

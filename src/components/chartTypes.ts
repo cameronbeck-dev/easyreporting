@@ -13,6 +13,11 @@ export interface ChartConfig {
   dateBucket?: DateBucket;
 }
 
+/** "unit_price" → "Unit Price". Shared display formatting for column/dimension names. */
+export function prettify(name: string): string {
+  return name.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 /** Human-friendly word for each aggregation, used in default chart titles. */
 const AGGREGATION_LABEL: Record<Aggregation, string> = {
   [Aggregation.Sum]: 'Total',
@@ -26,6 +31,19 @@ const AGGREGATION_LABEL: Record<Aggregation, string> = {
 export function metricLabel(aggregation: Aggregation, column: string): string {
   const measure = aggregation === Aggregation.Count ? 'records' : column;
   return `${AGGREGATION_LABEL[aggregation]} ${measure}`;
+}
+
+/** Standalone noun for an aggregation, for use as a dropdown option (not a sentence). */
+const AGGREGATION_OPTION_LABEL: Record<Aggregation, string> = {
+  [Aggregation.Sum]: 'Total',
+  [Aggregation.Avg]: 'Average',
+  [Aggregation.Count]: 'Count',
+  [Aggregation.Min]: 'Lowest',
+  [Aggregation.Max]: 'Highest',
+};
+
+export function aggregationOptionLabel(aggregation: Aggregation): string {
+  return AGGREGATION_OPTION_LABEL[aggregation];
 }
 
 /** Builds a readable default chart title, e.g. "Total revenue by month". */

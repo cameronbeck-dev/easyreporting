@@ -219,10 +219,10 @@ export class CsvProvider implements DataProvider {
     const filtered = q.filters && q.filters.length > 0 ? applyFilters(rows, q.filters) : rows;
 
     const metrics = q.metrics.map((m) => {
-      const values =
-        m.aggregation === Aggregation.Count
-          ? filtered.map(() => 0) // length is what Count uses
-          : filtered.map((r) => Number(r[m.column])).filter((v) => !isNaN(v));
+      if (m.aggregation === Aggregation.Count) {
+        return { column: m.column, aggregation: m.aggregation, value: filtered.length };
+      }
+      const values = filtered.map((r) => Number(r[m.column])).filter((v) => !isNaN(v));
       return { column: m.column, aggregation: m.aggregation, value: aggregate(values, m.aggregation) };
     });
 

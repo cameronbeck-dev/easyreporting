@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useActionState } from 'react';
 import { createProfileAction, deleteProfileAction, type ActionState } from '@/lib/admin/actions';
 import { inputClass, labelClass, SubmitButton, FormError, Pill } from './ui';
+import { buttonClass } from '../ui/forms';
 
 export interface ProfileSummaryData {
   id: string;
@@ -107,10 +108,7 @@ export default function ProfilesManager({
                   </td>
                   <td className="px-3 py-3">
                     <div className="flex items-center justify-end gap-2">
-                      <Link
-                        href={`/admin/profiles/${p.id}`}
-                        className="rounded-full border border-border px-3.5 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-surface-muted"
-                      >
+                      <Link href={`/admin/profiles/${p.id}`} className={buttonClass('ghost')}>
                         Edit rules
                       </Link>
                       <DeleteProfileButton id={p.id} />

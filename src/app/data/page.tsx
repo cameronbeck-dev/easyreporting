@@ -4,6 +4,8 @@ import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import DataTable from '@/components/DataTable';
 import type { RowsResult } from '@/lib/data/types';
+import { prettify } from '@/components/chartTypes';
+import { postJson } from '@/lib/api/client';
 
 function DataPageInner() {
   const searchParams = useSearchParams();
@@ -27,18 +29,7 @@ function DataPageInner() {
       ? [{ column: filterCol, operator: 'eq' as const, value: filterVal }]
       : [];
 
-    fetch('/api/rows', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ datasetId, query: { filters, page, pageSize } }),
-    })
-      .then(async (res) => {
-        if (!res.ok) {
-          const data = await res.json();
-          throw new Error(data.error ?? `Request failed: ${res.status}`);
-        }
-        return res.json() as Promise<RowsResult>;
-      })
+    postJson<RowsResult>('/api/rows', { datasetId, query: { filters, page, pageSize } })
       .then((data) => {
         setResult(data);
         setLoading(false);
@@ -67,7 +58,7 @@ function DataPageInner() {
       {filterCol && filterVal && (
         <div className="mb-4 flex items-center gap-2 rounded-control border border-primary/30 bg-primary/10 px-4 py-2 text-sm text-foreground">
           <span>
-            Filtered by <strong>{filterCol}</strong> = <strong>{filterVal}</strong>
+            Filtered by <strong>{prettify(filterCol)}</strong> = <strong>{filterVal}</strong>
           </span>
           <button
             onClick={clearFilter}

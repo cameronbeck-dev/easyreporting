@@ -5,9 +5,7 @@ import type { UserContext } from './types';
 import { auth } from './auth';
 import { getResolvedUserById } from '../db/config-repo';
 import { isPlatformTenant } from './platform';
-
-// The tenant identity column for the demo dataset. Configurable per connection later.
-const TENANT_COLUMN = 'tenantId';
+import { DEFAULT_TENANT_COLUMN } from '../data/constants';
 
 export async function getUserContext(): Promise<UserContext | null> {
   const session = await auth();
@@ -26,6 +24,6 @@ export async function getUserContext(): Promise<UserContext | null> {
     allColumns: resolved.allColumns,
     allowedColumns: resolved.allowedColumns,
     rowScopes: resolved.rowScopes,
-    tenantColumn: TENANT_COLUMN,
+    tenantColumn: DEFAULT_TENANT_COLUMN,
   };
 }

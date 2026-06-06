@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getUserContext } from '@/lib/auth/getUserContext';
 import { getProvider } from '@/lib/data/getProvider';
-import { AccessError } from '@/lib/data/AccessControlledProvider';
+import { errorResponse } from '@/lib/api/providerRoute';
 
 export async function GET(request: NextRequest) {
   try {
@@ -13,12 +13,8 @@ export async function GET(request: NextRequest) {
     const ctx = await getUserContext();
     if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const provider = await getProvider(ctx, datasetId);
-    const schema = await provider.getSchema(datasetId);
-    return NextResponse.json(schema);
+    return NextResponse.json(await provider.getSchema(datasetId));
   } catch (err) {
-    if (err instanceof AccessError) {
-      return NextResponse.json({ error: (err as AccessError).message }, { status: 403 });
-    }
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return errorResponse(err);
   }
 }

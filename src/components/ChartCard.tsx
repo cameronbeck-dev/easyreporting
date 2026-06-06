@@ -8,6 +8,7 @@ import type { AggregatedResult, Filter, DateBucket } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import { useChartTheme, axisStyle, tooltipStyle } from './echartsTheme';
 import { fieldColor } from './fieldColors';
+import { postJson } from '@/lib/api/client';
 
 interface Props {
   config: ChartConfig;
@@ -69,21 +70,7 @@ export default function ChartCard({
       dateBucket: effectiveBucket,
     };
 
-    fetch('/api/query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ datasetId: config.datasetId, query }),
-    })
-      .then(async (res) => {
-        if (res.status === 403) {
-          const data = await res.json();
-          throw new Error(`Access denied: ${data.error ?? 'column not permitted'}`);
-        }
-        if (!res.ok) {
-          throw new Error(`Request failed: ${res.status}`);
-        }
-        return res.json() as Promise<AggregatedResult>;
-      })
+    postJson<AggregatedResult>('/api/query', { datasetId: config.datasetId, query })
       .then((data) => {
         setResult(data);
         setLoading(false);

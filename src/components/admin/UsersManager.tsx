@@ -9,6 +9,7 @@ import {
   type ActionState,
 } from '@/lib/admin/actions';
 import { inputClass, labelClass, SubmitButton, FormError, InviteResult, Pill } from './ui';
+import { buttonClass } from '../ui/forms';
 
 export interface UserRowData {
   id: string;
@@ -147,11 +148,7 @@ function UserRow({
         <td className="px-3 py-3">
           <div className="flex flex-wrap items-center justify-end gap-1.5">
             {!isSelf && (
-              <button
-                type="button"
-                onClick={() => setEditing((v) => !v)}
-                className="rounded-full border border-border px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-surface-muted"
-              >
+              <button type="button" onClick={() => setEditing((v) => !v)} className={buttonClass('ghost')}>
                 {editing ? 'Close' : 'Edit'}
               </button>
             )}

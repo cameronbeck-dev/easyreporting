@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { ColumnSchema, DatasetSchema } from '@/lib/data/types';
+import { getJson } from '@/lib/api/client';
 
 interface SchemaState {
   columns: ColumnSchema[];
@@ -17,11 +18,7 @@ export function useSchema(datasetId: string): SchemaState {
     let cancelled = false;
     setState({ columns: [], loading: true, error: null });
 
-    fetch(`/api/schema?datasetId=${encodeURIComponent(datasetId)}`)
-      .then(async (res) => {
-        if (!res.ok) throw new Error('Failed to load schema');
-        return res.json() as Promise<DatasetSchema>;
-      })
+    getJson<DatasetSchema>(`/api/schema?datasetId=${encodeURIComponent(datasetId)}`)
       .then((schema) => {
         if (!cancelled) setState({ columns: schema.columns, loading: false, error: null });
       })

@@ -4,7 +4,9 @@ import { useEffect, useState } from 'react';
 import type { ColumnSchema, AggregatedResult } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import type { GlobalControls as Globals } from './chartTypes';
+import { prettify } from './chartTypes';
 import type { DateBucket } from '@/lib/data/types';
+import { postJson } from '@/lib/api/client';
 
 interface Props {
   datasetId: string;
@@ -18,10 +20,6 @@ interface Props {
 }
 
 const BUCKETS: DateBucket[] = ['day', 'week', 'month', 'quarter'];
-
-function prettify(name: string): string {
-  return name.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 const inputClass =
   'rounded-control border border-border bg-surface px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
@@ -47,15 +45,10 @@ export default function GlobalControls({
       return;
     }
     let cancelled = false;
-    fetch('/api/query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        datasetId,
-        query: { x: globals.focusColumn, y: globals.focusColumn, aggregation: Aggregation.Count },
-      }),
+    postJson<AggregatedResult>('/api/query', {
+      datasetId,
+      query: { x: globals.focusColumn, y: globals.focusColumn, aggregation: Aggregation.Count },
     })
-      .then((res) => (res.ok ? (res.json() as Promise<AggregatedResult>) : Promise.reject()))
       .then((data) => {
         if (!cancelled) setFocusValues(data.x.map(String).sort());
       })

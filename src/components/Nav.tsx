@@ -23,8 +23,8 @@ export default function Nav({ isAdmin = false }: { isAdmin?: boolean }) {
             aria-current={active ? 'page' : undefined}
             className={
               active
-                ? 'rounded-full bg-white/20 px-3.5 py-1.5 font-semibold text-primary-foreground'
-                : 'rounded-full px-3.5 py-1.5 text-primary-foreground/75 transition-colors hover:bg-white/10 hover:text-primary-foreground'
+                ? 'rounded-full bg-primary-foreground/20 px-3.5 py-1.5 font-semibold text-primary-foreground'
+                : 'rounded-full px-3.5 py-1.5 text-primary-foreground/75 transition-colors hover:bg-primary-foreground/10 hover:text-primary-foreground'
             }
           >
             {label}
