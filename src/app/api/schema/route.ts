@@ -11,6 +11,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'datasetId is required' }, { status: 400 });
     }
     const ctx = await getUserContext();
+    if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const provider = getProvider(ctx);
     const schema = await provider.getSchema(datasetId);
     return NextResponse.json(schema);

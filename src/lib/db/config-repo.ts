@@ -24,9 +24,32 @@ export interface ResolvedUser {
   rowScopes: RowScope[];
 }
 
-/** Look up a user by their MOCK_USER key and resolve their profile's access. */
-export async function getUserByMockKey(mockKey: string): Promise<ResolvedUser | null> {
-  const [user] = await db.select().from(users).where(eq(users.mockKey, mockKey)).limit(1);
+/** Minimal credentials record for the login flow — never leaves the auth layer. */
+export interface UserCredentials {
+  id: string;
+  email: string;
+  passwordHash: string | null;
+  status: 'invited' | 'active';
+}
+
+/** Look up a user's credentials by email (for the Credentials provider). */
+export async function getUserCredentialsByEmail(email: string): Promise<UserCredentials | null> {
+  const [user] = await db
+    .select({
+      id: users.id,
+      email: users.email,
+      passwordHash: users.passwordHash,
+      status: users.status,
+    })
+    .from(users)
+    .where(eq(users.email, email.toLowerCase()))
+    .limit(1);
+  return user ?? null;
+}
+
+/** Resolve a user (by id) into their profile's access facts. */
+export async function getResolvedUserById(userId: string): Promise<ResolvedUser | null> {
+  const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
   if (!user) return null;
 
   const [profile] = await db

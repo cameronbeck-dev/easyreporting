@@ -7,21 +7,24 @@ A multi-tenant reporting platform built with Next.js. Milestone 1 ships a CSV-ba
 ```
 Browser
   |
-  +-- GET/POST /api/*  (Next.js App Router route handlers — server only)
+  +-- middleware.ts        (Auth.js: unauthenticated page requests -> /login)
+  |
+  +-- GET/POST /api/*       (Next.js App Router route handlers — server only)
         |
         v
-  getUserContext()         (resolves the user + access profile from the metadata DB,
-        |                   keyed by MOCK_USER for now; real auth slots in here)
+  getUserContext()          (resolves the signed-in session -> user + access
+        |                    profile from the metadata DB; null -> 401)
         v
-  AccessControlledProvider (injects tenant filter + row scopes, enforces column allow-list)
+  AccessControlledProvider  (injects tenant filter + row scopes, enforces column allow-list)
         |
         v
-  CsvProvider              (parses data/sales.csv, in-memory query)
+  CsvProvider               (parses data/sales.csv, in-memory query)
         |
         v
   data/sales.csv
 
-  Metadata DB (SQLite via Drizzle) — users, profiles, column rules, row scopes
+  Metadata DB (SQLite via Drizzle) — users (+ password hashes, invites), profiles, column rules, row scopes
+  Auth: Auth.js v5 credentials, scrypt password hashing, one-time invite links
 ```
 
 ## Security Model
@@ -37,34 +40,46 @@ Access is **configuration, not code** — defined in a metadata DB and enforced 
 
 ```bash
 npm install
-npm run db:seed   # creates data/metadata.db, runs migrations, seeds demo users + profiles
+cp .env.example .env          # then set AUTH_SECRET (the file tells you how)
+npm run db:seed               # creates data/metadata.db, runs migrations, seeds demo users + profiles
 npm run dev
 ```
 
-Open http://localhost:3000.
+`AUTH_SECRET` is required (it signs the session cookie). Generate one with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+Open http://localhost:3000 — you'll be redirected to `/login`.
 
 The metadata DB defaults to a local SQLite file (`data/metadata.db`). To use a managed store, set `METADATA_DB_URL` (and optionally `METADATA_DB_AUTH_TOKEN`) to a libSQL/Turso or Postgres URL before seeding — see `docs/access-model.md`.
 
-## Switching the Mock User
+## Signing in
 
-Set the `MOCK_USER` env var before starting the dev server:
+Authentication is real (Auth.js credentials). `npm run db:seed` creates three demo users in tenant `acme`, all with **dev-only passwords** — change them before any real deployment:
+
+| Email | Password | Role | Visible columns |
+|---|---|---|---|
+| `admin@acme.example` | `admin-password` | admin | all |
+| `internal@acme.example` | `internal-password` | internal | all |
+| `customer@acme.example` | `customer-password` | external | all sales columns except `profit_margin` |
+
+Switch users by signing out and back in. Users, profiles, and their column/row rules are seeded by `npm run db:seed` (or, from PR 3, the admin UI).
+
+### Inviting a user
+
+New users are created without a password and set their own via a one-time invite link. Until the admin UI lands (PR 3), mint one from the CLI:
 
 ```bash
-# Windows PowerShell
-$env:MOCK_USER = "external"; npm run dev
-
-# macOS/Linux
-MOCK_USER=external npm run dev
+npm run db:invite -- someone@example.com
 ```
 
-| Value | Role | Profile | Visible columns |
-|---|---|---|---|
-| `internal` (default) | internal | Internal — Full | all |
-| `external` | external | External — Customer | all sales columns except `profit_margin` |
-
-Both demo users belong to `tenantId = acme`. Users, profiles, and their column/row rules are seeded by `npm run db:seed` — edit `src/lib/db/seed.ts` (or, from PR 3, the admin UI) to change them.
+This prints an invite URL (valid 7 days, single use). Opening it lets the user set a password and sign in.
 
 ## Pages
+
+All pages require sign-in. `/login` and `/invite/<token>` are the only public routes.
 
 - `/` — Dashboard:
   - **Snapshot tiles** — auto-derived headline totals, user-editable (hover → edit → pick aggregation/column), with optional compare-to-previous-period deltas.
@@ -77,7 +92,7 @@ Both demo users belong to `tenantId = acme`. Users, profiles, and their column/r
 
 ## Notes
 
-- Access rules (profiles, column allow-lists, row scopes, user→tenant assignment) live in the metadata DB, resolved by `getUserContext`. Real authentication (Auth.js + invite links) and an admin UI to manage all of this are the next milestones; the `UserContext` shape stays the same when auth slots in.
+- Access rules (profiles, column allow-lists, row scopes, user→tenant assignment) live in the metadata DB, resolved by `getUserContext` from the signed-in session. An admin UI to manage all of this (plus connecting real SQL data sources) is the next milestone.
 - See `docs/access-model.md` for how access control is configured and enforced.
 - See `docs/data-providers.md` for how to add a custom data source (and the one rule every provider must follow).
 - See `docs/design-system.md` for the design philosophy, token system, and per-company white-labeling model — **read it before building any UI.**

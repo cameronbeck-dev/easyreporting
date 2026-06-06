@@ -6,6 +6,7 @@ import { AccessError } from '@/lib/data/AccessControlledProvider';
 export async function GET() {
   try {
     const ctx = await getUserContext();
+    if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const provider = getProvider(ctx);
     const datasets = await provider.listDatasets();
     return NextResponse.json(datasets);

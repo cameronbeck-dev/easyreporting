@@ -5,7 +5,8 @@ import './globals.css';
 import Nav from '@/components/Nav';
 import ThemeToggle from '@/components/ThemeToggle';
 import { getUserContext } from '@/lib/auth/getUserContext';
-import { getBranding, readableForeground } from '@/lib/branding/getBranding';
+import { getBranding, readableForeground, DEFAULT_BRANDING } from '@/lib/branding/getBranding';
+import { signOutAction } from '@/lib/auth/actions';
 
 // Nunito: a rounded, humanist sans — warm and friendly, suits a customer
 // portal far better than a technical grotesk. Companies can still override
@@ -23,8 +24,9 @@ const noFlashTheme = `(function(){try{var t=localStorage.getItem('er-theme');if(
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   // Branding is resolved server-side from the authenticated company — never the client.
+  // Unauthenticated routes (login, invite) get the house brand and no app chrome.
   const ctx = await getUserContext();
-  const branding = await getBranding(ctx.tenantId);
+  const branding = ctx ? await getBranding(ctx.tenantId) : DEFAULT_BRANDING;
 
   const brandVars = {
     '--primary': branding.primary,
@@ -46,22 +48,37 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <script dangerouslySetInnerHTML={{ __html: noFlashTheme }} />
       </head>
       <body className="min-h-full flex flex-col bg-background font-sans text-foreground">
-        <header className="sticky top-0 z-40 flex items-center gap-6 bg-primary px-6 py-3 text-primary-foreground shadow-card">
-          <div className="flex items-center gap-2">
-            {branding.logoUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={branding.logoUrl} alt={branding.companyName} className="h-6 w-auto" />
-            ) : (
-              <span className="text-lg font-bold tracking-tight text-primary-foreground">
-                {branding.companyName}
-              </span>
-            )}
-          </div>
-          <div className="flex flex-1 items-center justify-between">
-            <Nav />
-            <ThemeToggle />
-          </div>
-        </header>
+        {ctx && (
+          <header className="sticky top-0 z-40 flex items-center gap-6 bg-primary px-6 py-3 text-primary-foreground shadow-card">
+            <div className="flex items-center gap-2">
+              {branding.logoUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={branding.logoUrl} alt={branding.companyName} className="h-6 w-auto" />
+              ) : (
+                <span className="text-lg font-bold tracking-tight text-primary-foreground">
+                  {branding.companyName}
+                </span>
+              )}
+            </div>
+            <div className="flex flex-1 items-center justify-between">
+              <Nav />
+              <div className="flex items-center gap-3">
+                <span className="hidden text-sm text-primary-foreground/80 sm:inline">
+                  {ctx.email}
+                </span>
+                <ThemeToggle />
+                <form action={signOutAction}>
+                  <button
+                    type="submit"
+                    className="rounded-full border border-white/30 px-3 py-1.5 text-sm font-medium text-primary-foreground/90 transition-colors hover:bg-white/10"
+                  >
+                    Sign out
+                  </button>
+                </form>
+              </div>
+            </div>
+          </header>
+        )}
         {children}
       </body>
     </html>

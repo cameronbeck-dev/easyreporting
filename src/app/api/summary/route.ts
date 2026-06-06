@@ -9,6 +9,7 @@ export async function POST(request: NextRequest) {
     const body = (await request.json()) as { datasetId: string; query: SummaryQuery };
     const { datasetId, query } = body;
     const ctx = await getUserContext();
+    if (!ctx) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const provider = getProvider(ctx);
     const result = await provider.querySummary(datasetId, query);
     return NextResponse.json(result);

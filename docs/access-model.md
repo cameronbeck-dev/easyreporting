@@ -9,18 +9,31 @@ customers is hardcoded — one repo serves every instance.
 
 | Concept | Table | What it holds |
 |---|---|---|
-| **User** | `users` | A person: email, `tenantId` (their company), `role`, and the profile assigned to them. |
+| **User** | `users` | A person: email, password hash + status, `tenantId` (their company), `role`, and the profile assigned to them. |
+| **Invite** | `invites` | A one-time, expiring token (stored hashed) that lets a new user set their first password. |
 | **Access profile** | `access_profiles` | A reusable bundle of access rules. `allColumns = true` is the "see everything" shortcut for internal/admin profiles. |
 | **Column rule** | `profile_column_rules` | One entry per column a profile *may* see. Consulted only when `allColumns` is false. |
 | **Row scope** | `profile_row_scopes` | A constraint `column ∈ values`. Multiple scopes are AND-ed. |
 
 Schema: `src/lib/db/schema.ts`. Resolution: `src/lib/db/config-repo.ts`.
 
+## Authentication
+
+Login is Auth.js v5 with a credentials provider; passwords are hashed with Node's built-in
+scrypt (`src/lib/auth/password.ts`). The session is a JWT cookie carrying the user id + role.
+`src/middleware.ts` redirects unauthenticated page requests to `/login`; API routes return
+401 via the `getUserContext` null check. The Auth.js config is split so middleware stays
+edge-safe: `auth.config.ts` (no DB) for the edge, `auth.ts` (Credentials + DB) for Node.
+
+New users are created without a password (`status: 'invited'`) and set one via a single-use
+invite link (`src/lib/auth/invite.ts`); only the token hash is stored. Mint one with
+`npm run db:invite -- <email>` until the admin UI can.
+
 ## How a request is secured
 
-`getUserContext()` resolves the signed-in user (for now, keyed by `MOCK_USER`) into a
-`UserContext`, and `getProvider(ctx)` wraps the data source in `AccessControlledProvider`
-— the single choke point. For every query it:
+`getUserContext()` resolves the signed-in session into a `UserContext` (or `null` when
+unauthenticated → 401), and `getProvider(ctx)` wraps the data source in
+`AccessControlledProvider` — the single choke point. For every query it:
 
 1. **Isolates the tenant** — injects `tenantColumn = tenantId`. Automatic and in code, so
    tenant isolation never depends on someone configuring it correctly.
@@ -39,15 +52,15 @@ to configure a column results in *less* access, never accidental exposure.
 
 ## Seeding / demo config
 
-`npm run db:seed` runs migrations and writes demo config that reproduces the original
-behavior:
+`npm run db:seed` runs migrations and writes demo config + three login-ready users (tenant
+`acme`, all `active` with **dev-only** passwords — see the README table):
 
-- Tenant `acme`, two users (`mockKey` `internal` and `external`).
-- **Internal — Full**: `allColumns = true`.
-- **External — Customer**: allow-list of operational columns only — every sales column
-  **except `profit_margin`** (and `tenantId`, which is always stripped).
+- **Administrator** (`admin@acme.example`): `allColumns = true`, role `admin`.
+- **Internal — Full** (`internal@acme.example`): `allColumns = true`.
+- **External — Customer** (`customer@acme.example`): allow-list of operational columns only —
+  every sales column **except `profit_margin`** (and `tenantId`, which is always stripped).
 
-Switch users with the `MOCK_USER` env var (`internal` default, or `external`).
+Switch users by signing out and back in.
 
 ## Storage / deployment
 
@@ -57,7 +70,6 @@ to use a managed store — only `src/lib/db/` changes, never call sites.
 
 ## Not yet (later PRs)
 
-- **PR 2** — real auth (Auth.js credentials + invite links) replaces the `MOCK_USER` lookup;
-  the `UserContext` shape is unchanged.
-- **PR 3** — an admin-only UI to manage users, profiles, connections, and datasets, plus
-  `connections`/`datasets` tables and the SQL-building dataset editor.
+- **PR 3** — an admin-only UI (gated on `role = admin`) to manage users, profiles, invites,
+  connections, and datasets, plus `connections`/`datasets` tables, the SQL-building dataset
+  editor, and a Postgres reference connector.

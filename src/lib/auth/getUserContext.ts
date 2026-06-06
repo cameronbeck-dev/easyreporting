@@ -1,22 +1,20 @@
-// STUB for M2: resolves a UserContext from the metadata DB, keyed by MOCK_USER.
-// Real auth (PR 2) replaces the mockKey lookup with the signed-in session;
-// the returned UserContext shape stays the same, so callers don't change.
-// To test column masking: MOCK_USER=external npm run dev
+// Resolves the signed-in user into a UserContext the security layer enforces.
+// Returns null when there is no valid session — callers (API routes) turn that
+// into a 401, and the root layout falls back to default branding.
 import type { UserContext } from './types';
-import { getUserByMockKey } from '../db/config-repo';
+import { auth } from './auth';
+import { getResolvedUserById } from '../db/config-repo';
 
 // The tenant identity column for the demo dataset. Configurable per connection later.
 const TENANT_COLUMN = 'tenantId';
 
-export async function getUserContext(): Promise<UserContext> {
-  const mockKey = process.env.MOCK_USER ?? 'internal';
+export async function getUserContext(): Promise<UserContext | null> {
+  const session = await auth();
+  const userId = session?.user?.id;
+  if (!userId) return null;
 
-  const resolved = await getUserByMockKey(mockKey);
-  if (!resolved) {
-    throw new Error(
-      `No user seeded for MOCK_USER='${mockKey}'. Run \`npm run db:seed\` to create demo users.`,
-    );
-  }
+  const resolved = await getResolvedUserById(userId);
+  if (!resolved) return null;
 
   return {
     userId: resolved.userId,

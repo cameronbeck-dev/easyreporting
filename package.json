@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "db:generate": "drizzle-kit generate",
-    "db:seed": "tsx src/lib/db/seed.ts"
+    "db:seed": "tsx src/lib/db/seed.ts",
+    "db:invite": "tsx src/lib/db/invite-cli.ts"
   },
   "dependencies": {
     "@libsql/client": "^0.17.3",
@@ -16,6 +17,7 @@
     "echarts": "^6.1.0",
     "echarts-for-react": "^3.0.6",
     "next": "^15.5.19",
+    "next-auth": "^5.0.0-beta.31",
     "papaparse": "^5.5.3",
     "react": "19.2.4",
     "react-dom": "19.2.4"

@@ -5,17 +5,35 @@ import { sqliteTable, text, integer, primaryKey } from 'drizzle-orm/sqlite-core'
 
 // A person who can sign in. tenantId scopes them to one company's data;
 // role gates admin features; profileId points at their bundle of access rules.
+// passwordHash is null until the user accepts an invite and sets a password;
+// status reflects that lifecycle.
 export const users = sqliteTable('users', {
   id: text('id').primaryKey(),
   email: text('email').notNull().unique(),
-  // Stable lookup key for the current MOCK_USER stub (e.g. 'internal'/'external').
-  // Removed once real auth (PR 2) resolves users by session instead.
-  mockKey: text('mock_key').unique(),
+  passwordHash: text('password_hash'),
+  status: text('status', { enum: ['invited', 'active'] })
+    .notNull()
+    .default('invited'),
   tenantId: text('tenant_id').notNull(),
   role: text('role', { enum: ['admin', 'internal', 'external'] }).notNull(),
   profileId: text('profile_id')
     .notNull()
     .references(() => accessProfiles.id),
+  createdAt: integer('created_at', { mode: 'timestamp' })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+// One-time invite tokens. Only the hash of the token is stored; the raw token
+// lives only in the invite URL handed to the user. Single-use (usedAt) + expiring.
+export const invites = sqliteTable('invites', {
+  id: text('id').primaryKey(),
+  userId: text('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  tokenHash: text('token_hash').notNull().unique(),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+  usedAt: integer('used_at', { mode: 'timestamp' }),
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()
     .$defaultFn(() => new Date()),
