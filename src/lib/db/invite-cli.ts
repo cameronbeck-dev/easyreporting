@@ -24,7 +24,7 @@ async function main() {
       id,
       email,
       status: 'invited',
-      tenantId: 'acme',
+      tenantId: 'easyreporting',
       role: 'external',
       profileId: EXTERNAL_PROFILE,
     });

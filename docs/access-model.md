@@ -53,11 +53,11 @@ to configure a column results in *less* access, never accidental exposure.
 ## Seeding / demo config
 
 `npm run db:seed` runs migrations and writes demo config + three login-ready users (tenant
-`acme`, all `active` with **dev-only** passwords — see the README table):
+`easyreporting`, all `active` with **dev-only** passwords — see the README table):
 
-- **Administrator** (`admin@acme.example`): `allColumns = true`, role `admin`.
-- **Internal — Full** (`internal@acme.example`): `allColumns = true`.
-- **External — Customer** (`customer@acme.example`): allow-list of operational columns only —
+- **Administrator** (`admin@easyreporting.example`): `allColumns = true`, role `admin`.
+- **Internal — Full** (`internal@easyreporting.example`): `allColumns = true`.
+- **External — Customer** (`customer@easyreporting.example`): allow-list of operational columns only —
   every sales column **except `profit_margin`** (and `tenantId`, which is always stripped).
 
 Switch users by signing out and back in.

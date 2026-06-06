@@ -57,13 +57,13 @@ The metadata DB defaults to a local SQLite file (`data/metadata.db`). To use a m
 
 ## Signing in
 
-Authentication is real (Auth.js credentials). `npm run db:seed` creates three demo users in tenant `acme`, all with **dev-only passwords** — change them before any real deployment:
+Authentication is real (Auth.js credentials). `npm run db:seed` creates three demo users in tenant `easyreporting`, all with **dev-only passwords** — change them before any real deployment:
 
 | Email | Password | Role | Visible columns |
 |---|---|---|---|
-| `admin@acme.example` | `admin-password` | admin | all |
-| `internal@acme.example` | `internal-password` | internal | all |
-| `customer@acme.example` | `customer-password` | external | all sales columns except `profit_margin` |
+| `admin@easyreporting.example` | `admin-password` | admin | all |
+| `internal@easyreporting.example` | `internal-password` | internal | all |
+| `customer@easyreporting.example` | `customer-password` | external | all sales columns except `profit_margin` |
 
 Switch users by signing out and back in. Users, profiles, and their column/row rules are seeded by `npm run db:seed` (or, from PR 3, the admin UI).
 

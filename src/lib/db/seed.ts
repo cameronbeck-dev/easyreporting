@@ -1,5 +1,5 @@
 // Seeds the metadata DB with demo config + login-ready users.
-// Reproduces the original access behavior: tenant `acme`, an internal profile
+// Reproduces the original access behavior: tenant `easyreporting`, an internal profile
 // that sees everything, an external profile that sees every sales column EXCEPT
 // profit_margin, and an admin. All three demo users are `active` with known dev
 // passwords (printed below). Idempotent: clears config tables and re-inserts.
@@ -51,37 +51,37 @@ async function main() {
   await db.insert(users).values([
     {
       id: 'user-admin',
-      email: 'admin@acme.example',
+      email: 'admin@easyreporting.example',
       passwordHash: await hashPassword(DEMO_PASSWORD.admin),
       status: 'active' as const,
-      tenantId: 'acme',
+      tenantId: 'easyreporting',
       role: 'admin' as const,
       profileId: ADMIN_PROFILE,
     },
     {
       id: 'user-internal',
-      email: 'internal@acme.example',
+      email: 'internal@easyreporting.example',
       passwordHash: await hashPassword(DEMO_PASSWORD.internal),
       status: 'active' as const,
-      tenantId: 'acme',
+      tenantId: 'easyreporting',
       role: 'internal' as const,
       profileId: INTERNAL_PROFILE,
     },
     {
       id: 'user-external',
-      email: 'customer@acme.example',
+      email: 'customer@easyreporting.example',
       passwordHash: await hashPassword(DEMO_PASSWORD.external),
       status: 'active' as const,
-      tenantId: 'acme',
+      tenantId: 'easyreporting',
       role: 'external' as const,
       profileId: EXTERNAL_PROFILE,
     },
   ]);
 
   console.log('Seeded metadata DB: 3 profiles, 3 users. Dev logins:');
-  console.log('  admin@acme.example    /', DEMO_PASSWORD.admin);
-  console.log('  internal@acme.example /', DEMO_PASSWORD.internal);
-  console.log('  customer@acme.example /', DEMO_PASSWORD.external);
+  console.log('  admin@easyreporting.example    /', DEMO_PASSWORD.admin);
+  console.log('  internal@easyreporting.example /', DEMO_PASSWORD.internal);
+  console.log('  customer@easyreporting.example /', DEMO_PASSWORD.external);
 }
 
 main()
