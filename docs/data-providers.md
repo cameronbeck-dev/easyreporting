@@ -9,6 +9,7 @@ interface DataProvider {
   listDatasets(): Promise<Dataset[]>;
   getSchema(datasetId: string): Promise<DatasetSchema>;
   queryAggregated(datasetId: string, q: AggregatedQuery): Promise<AggregatedResult>;
+  querySummary(datasetId: string, q: SummaryQuery): Promise<SummaryResult>;
   queryRows(datasetId: string, q: RowsQuery): Promise<RowsResult>;
 }
 ```
@@ -17,8 +18,13 @@ interface DataProvider {
 
 - `listDatasets` — return the list of available datasets (id + name).
 - `getSchema` — return the column list with inferred or declared types for a dataset.
-- `queryAggregated` — group rows by `q.x`, aggregate `q.y` using `q.aggregation`, apply `q.filters`. Return x-axis values and one or more series.
+- `queryAggregated` — group rows by `q.x`, aggregate `q.y` using `q.aggregation`, apply `q.filters`. When `q.dateBucket` is set and `q.x` is a date column, bucket dates into that grain. Return x-axis values and one or more series.
+- `querySummary` — compute each headline metric in `q.metrics` (`Count` ignores its column) over rows matching `q.filters`. Return one value per metric.
 - `queryRows` — apply `q.filters`, paginate (1-based `q.page`, `q.pageSize`), return typed rows with total count.
+
+### The one rule every provider must follow: honor injected filters
+
+Security works by the wrapper **appending** filters to `q.filters` before your method runs (see below). Your provider must apply **every** filter in `q.filters` as an AND. In particular, support the `in` operator (`{ column, operator: 'in', value: [...] }`) — row isolation and profile row scopes are expressed with it. A provider that silently ignores a filter would leak rows, so this is the security-critical contract.
 
 ## Implementing a Custom Provider
 
@@ -73,11 +79,13 @@ Route handler
 ```
 
 `AccessControlledProvider` will:
-1. Inject a tenant equality filter into every query before delegating to the inner provider.
-2. Strip denied and tenant columns from schema and row results.
-3. Throw `AccessError` (HTTP 403) if the client attempts to reference an inaccessible column.
+1. Inject a tenant equality filter into every query, **plus** any profile row scopes as `in` filters, before delegating to the inner provider.
+2. Enforce a **fail-closed column allow-list**: unless the user's profile grants all columns, only explicitly-allowed columns survive in schema and row results. The tenant column is always stripped.
+3. Throw `AccessError` (HTTP 403) if the client references a column it cannot access (in `q.x`, `q.y`, a metric, or a user-supplied filter).
 
-Putting security logic inside a provider would duplicate it inconsistently and risk gaps. Keep providers focused on data retrieval only.
+The user's access facts (allow-list, row scopes, tenant) come from the metadata DB via `getUserContext` — see `docs/access-model.md`. None of this is hardcoded.
+
+Putting security logic inside a provider would duplicate it inconsistently and risk gaps. Keep providers focused on data retrieval only — and remember the one rule above: apply every filter you are given.
 
 ## Registering a New Provider
 

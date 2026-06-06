@@ -10,32 +10,40 @@ Browser
   +-- GET/POST /api/*  (Next.js App Router route handlers — server only)
         |
         v
-  getUserContext()         (reads MOCK_USER env var; real auth slots in here)
-        |
+  getUserContext()         (resolves the user + access profile from the metadata DB,
+        |                   keyed by MOCK_USER for now; real auth slots in here)
         v
-  AccessControlledProvider (injects tenant filter + column masking)
+  AccessControlledProvider (injects tenant filter + row scopes, enforces column allow-list)
         |
         v
   CsvProvider              (parses data/sales.csv, in-memory query)
         |
         v
   data/sales.csv
+
+  Metadata DB (SQLite via Drizzle) — users, profiles, column rules, row scopes
 ```
 
 ## Security Model
 
-- **Row isolation**: every API query has a tenant equality filter injected server-side by `AccessControlledProvider`. The client cannot override or omit the tenant filter.
-- **Column masking**: columns in `columnPolicy.denied` are stripped from schema responses and row results. Queries referencing denied columns return HTTP 403.
-- The `tenantColumn` itself (`tenantId`) is also stripped from all query results, so it is never exposed to the client.
+Access is **configuration, not code** — defined in a metadata DB and enforced at one server-side choke point (`AccessControlledProvider`). See `docs/access-model.md` for the full model.
+
+- **Row isolation**: every API query gets a tenant equality filter injected server-side. The client cannot override or omit it.
+- **Row scopes**: a profile can further constrain rows (`column ∈ values`), injected as `in` filters.
+- **Column allow-list (fail-closed)**: unless a profile grants all columns, only explicitly-allowed columns survive in schema and row results. A column that isn't granted is invisible — mistakes hide data rather than leak it. Queries referencing a disallowed column return HTTP 403.
+- The `tenantColumn` (`tenantId`) is always stripped from results, so it is never exposed to the client.
 
 ## Setup & Running
 
 ```bash
 npm install
+npm run db:seed   # creates data/metadata.db, runs migrations, seeds demo users + profiles
 npm run dev
 ```
 
 Open http://localhost:3000.
+
+The metadata DB defaults to a local SQLite file (`data/metadata.db`). To use a managed store, set `METADATA_DB_URL` (and optionally `METADATA_DB_AUTH_TOKEN`) to a libSQL/Turso or Postgres URL before seeding — see `docs/access-model.md`.
 
 ## Switching the Mock User
 
@@ -49,12 +57,12 @@ $env:MOCK_USER = "external"; npm run dev
 MOCK_USER=external npm run dev
 ```
 
-| Value | Role | Denied columns |
-|---|---|---|
-| `internal` (default) | internal | none |
-| `external` | external | `profit_margin` |
+| Value | Role | Profile | Visible columns |
+|---|---|---|---|
+| `internal` (default) | internal | Internal — Full | all |
+| `external` | external | External — Customer | all sales columns except `profit_margin` |
 
-Both mocks use `tenantId = acme`. To change tenantId, edit the `tenantId` field in `src/lib/auth/getUserContext.ts`.
+Both demo users belong to `tenantId = acme`. Users, profiles, and their column/row rules are seeded by `npm run db:seed` — edit `src/lib/db/seed.ts` (or, from PR 3, the admin UI) to change them.
 
 ## Pages
 
@@ -69,6 +77,7 @@ Both mocks use `tenantId = acme`. To change tenantId, edit the `tenantId` field 
 
 ## Notes
 
-- Real database connections and authentication are planned for later milestones. The `getUserContext` stub in `src/lib/auth/getUserContext.ts` is the only place that needs to change — it must return the same `UserContext` shape.
-- See `docs/data-providers.md` for how to add a custom data source.
+- Access rules (profiles, column allow-lists, row scopes, user→tenant assignment) live in the metadata DB, resolved by `getUserContext`. Real authentication (Auth.js + invite links) and an admin UI to manage all of this are the next milestones; the `UserContext` shape stays the same when auth slots in.
+- See `docs/access-model.md` for how access control is configured and enforced.
+- See `docs/data-providers.md` for how to add a custom data source (and the one rule every provider must follow).
 - See `docs/design-system.md` for the design philosophy, token system, and per-company white-labeling model — **read it before building any UI.**

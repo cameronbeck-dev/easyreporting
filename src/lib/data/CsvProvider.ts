@@ -95,6 +95,11 @@ function applyFilters(rows: TypedRow[], filters: Filter[]): TypedRow[] {
       const cellValue = row[f.column];
       const filterVal = f.value;
 
+      if (f.operator === 'in') {
+        const list = Array.isArray(filterVal) ? filterVal : [filterVal];
+        return list.some((v) => String(cellValue).toLowerCase() === String(v).toLowerCase());
+      }
+
       if (f.operator === 'contains') {
         return String(cellValue).toLowerCase().includes(String(filterVal).toLowerCase());
       }

@@ -1,27 +1,31 @@
-// STUB for M1: returns a mock UserContext based on MOCK_USER env var.
-// Real auth slots in here later, returning the same UserContext shape.
+// STUB for M2: resolves a UserContext from the metadata DB, keyed by MOCK_USER.
+// Real auth (PR 2) replaces the mockKey lookup with the signed-in session;
+// the returned UserContext shape stays the same, so callers don't change.
 // To test column masking: MOCK_USER=external npm run dev
-// To change tenantId: edit the tenantId field in the relevant mock below.
 import type { UserContext } from './types';
+import { getUserByMockKey } from '../db/config-repo';
+
+// The tenant identity column for the demo dataset. Configurable per connection later.
+const TENANT_COLUMN = 'tenantId';
 
 export async function getUserContext(): Promise<UserContext> {
-  const mockUser = process.env.MOCK_USER ?? 'internal';
+  const mockKey = process.env.MOCK_USER ?? 'internal';
 
-  if (mockUser === 'external') {
-    return {
-      userId: 'u-external',
-      tenantId: 'acme',
-      role: 'external',
-      columnPolicy: { allowAll: true, denied: ['profit_margin'] },
-      tenantColumn: 'tenantId',
-    };
+  const resolved = await getUserByMockKey(mockKey);
+  if (!resolved) {
+    throw new Error(
+      `No user seeded for MOCK_USER='${mockKey}'. Run \`npm run db:seed\` to create demo users.`,
+    );
   }
 
   return {
-    userId: 'u-internal',
-    tenantId: 'acme',
-    role: 'internal',
-    columnPolicy: { allowAll: true, denied: [] },
-    tenantColumn: 'tenantId',
+    userId: resolved.userId,
+    email: resolved.email,
+    tenantId: resolved.tenantId,
+    role: resolved.role,
+    allColumns: resolved.allColumns,
+    allowedColumns: resolved.allowedColumns,
+    rowScopes: resolved.rowScopes,
+    tenantColumn: TENANT_COLUMN,
   };
 }

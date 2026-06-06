@@ -20,22 +20,41 @@ export class AccessError extends Error {
   }
 }
 
+// The single security choke point. Every provider is wrapped in this, so any
+// data source (CSV today, SQL later, a hand-written connector) inherits the
+// same rules for free: a fail-closed column allow-list and non-bypassable row
+// isolation. The wrapped provider's only obligation is to honor injected filters.
 export class AccessControlledProvider implements DataProvider {
   constructor(
     private inner: DataProvider,
     private ctx: UserContext,
   ) {}
 
+  // Fail-closed: the tenant column is never visible; otherwise allColumns grants
+  // everything, and without it only explicitly-allowed columns pass.
   private isAllowedColumn(name: string): boolean {
-    return name !== this.ctx.tenantColumn && !this.ctx.columnPolicy.denied.includes(name);
+    if (name === this.ctx.tenantColumn) return false;
+    if (this.ctx.allColumns) return true;
+    return this.ctx.allowedColumns.includes(name);
   }
 
-  private tenantFilter(): Filter {
-    return {
-      column: this.ctx.tenantColumn,
-      operator: 'eq',
-      value: this.ctx.tenantId,
-    };
+  private assertColumn(name: string): void {
+    if (!this.isAllowedColumn(name)) {
+      throw new AccessError(`Column '${name}' is not accessible`);
+    }
+  }
+
+  // Server-trusted filters appended to every query: tenant isolation first, then
+  // any profile row scopes. These bypass the allow-list check by design — a scope
+  // may key off a column the user cannot otherwise see.
+  private securityFilters(): Filter[] {
+    const filters: Filter[] = [
+      { column: this.ctx.tenantColumn, operator: 'eq', value: this.ctx.tenantId },
+    ];
+    for (const scope of this.ctx.rowScopes) {
+      filters.push({ column: scope.column, operator: 'in', value: scope.values });
+    }
+    return filters;
   }
 
   async listDatasets(): Promise<Dataset[]> {
@@ -51,23 +70,17 @@ export class AccessControlledProvider implements DataProvider {
   }
 
   async queryAggregated(datasetId: string, q: AggregatedQuery): Promise<AggregatedResult> {
-    if (!this.isAllowedColumn(q.x)) {
-      throw new AccessError(`Column '${q.x}' is not accessible`);
+    this.assertColumn(q.x);
+    if (q.aggregation !== Aggregation.Count) {
+      this.assertColumn(q.y);
     }
-    if (q.aggregation !== Aggregation.Count && !this.isAllowedColumn(q.y)) {
-      throw new AccessError(`Column '${q.y}' is not accessible`);
-    }
-    if (q.filters) {
-      for (const f of q.filters) {
-        if (!this.isAllowedColumn(f.column)) {
-          throw new AccessError(`Column '${f.column}' is not accessible`);
-        }
-      }
+    for (const f of q.filters ?? []) {
+      this.assertColumn(f.column);
     }
 
     const delegatedQuery: AggregatedQuery = {
       ...q,
-      filters: [...(q.filters ?? []), this.tenantFilter()],
+      filters: [...(q.filters ?? []), ...this.securityFilters()],
     };
 
     return this.inner.queryAggregated(datasetId, delegatedQuery);
@@ -76,38 +89,30 @@ export class AccessControlledProvider implements DataProvider {
   async querySummary(datasetId: string, q: SummaryQuery): Promise<SummaryResult> {
     for (const m of q.metrics) {
       // Count doesn't read a column; other aggregations must reference an allowed one.
-      if (m.aggregation !== Aggregation.Count && !this.isAllowedColumn(m.column)) {
-        throw new AccessError(`Column '${m.column}' is not accessible`);
+      if (m.aggregation !== Aggregation.Count) {
+        this.assertColumn(m.column);
       }
     }
-    if (q.filters) {
-      for (const f of q.filters) {
-        if (!this.isAllowedColumn(f.column)) {
-          throw new AccessError(`Column '${f.column}' is not accessible`);
-        }
-      }
+    for (const f of q.filters ?? []) {
+      this.assertColumn(f.column);
     }
 
     const delegatedQuery: SummaryQuery = {
       ...q,
-      filters: [...(q.filters ?? []), this.tenantFilter()],
+      filters: [...(q.filters ?? []), ...this.securityFilters()],
     };
 
     return this.inner.querySummary(datasetId, delegatedQuery);
   }
 
   async queryRows(datasetId: string, q: RowsQuery): Promise<RowsResult> {
-    if (q.filters) {
-      for (const f of q.filters) {
-        if (!this.isAllowedColumn(f.column)) {
-          throw new AccessError(`Column '${f.column}' is not accessible`);
-        }
-      }
+    for (const f of q.filters ?? []) {
+      this.assertColumn(f.column);
     }
 
     const delegatedQuery: RowsQuery = {
       ...q,
-      filters: [...(q.filters ?? []), this.tenantFilter()],
+      filters: [...(q.filters ?? []), ...this.securityFilters()],
     };
 
     const result = await this.inner.queryRows(datasetId, delegatedQuery);

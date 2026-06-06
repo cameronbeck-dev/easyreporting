@@ -16,12 +16,13 @@ export interface DatasetSchema {
   columns: ColumnSchema[];
 }
 
-export type FilterOperator = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains';
+export type FilterOperator = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains' | 'in';
 
 export interface Filter {
   column: string;
   operator: FilterOperator;
-  value: string | number | boolean;
+  // 'in' takes an array (column must be one of the values); all others take a scalar.
+  value: string | number | boolean | (string | number)[];
 }
 
 export enum Aggregation {
