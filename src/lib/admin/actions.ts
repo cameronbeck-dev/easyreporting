@@ -218,12 +218,27 @@ export async function addRowScopeAction(_prev: ActionState, formData: FormData):
   const id = String(formData.get('profileId') ?? '');
   return run([`/admin/profiles/${id}`], async () => {
     const admin = await requireAdminAction();
-    const values = String(formData.get('values') ?? '')
-      .split(',')
-      .map((v) => v.trim())
+    // Values come from a multi-select of real column values (one entry per checkbox).
+    const values = formData
+      .getAll('values')
+      .map((v) => String(v).trim())
       .filter(Boolean);
     await repo.addRowScope(admin, id, String(formData.get('column') ?? ''), values);
   });
+}
+
+// --- Row-scope editor suggestions (read-only; called imperatively from the client) ---
+
+/** Columns the admin may scope on for a dataset (their visible schema). */
+export async function getScopeColumns(datasetId: string): Promise<{ name: string; type: string }[]> {
+  const admin = await requireAdminAction();
+  return repo.listScopeColumns(admin, datasetId);
+}
+
+/** Distinct values of a column, for the row-scope value picker. */
+export async function getScopeValues(datasetId: string, column: string): Promise<(string | number)[]> {
+  const admin = await requireAdminAction();
+  return repo.listScopeValues(admin, datasetId, column);
 }
 
 export async function removeRowScopeAction(_prev: ActionState, formData: FormData): Promise<ActionState> {

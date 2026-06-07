@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { requireAdminPage } from '@/lib/auth/requireAdmin';
 import { getProfileDetail } from '@/lib/admin/repo';
+import { listAllDatasets } from '@/lib/data/getProvider';
 import { ForbiddenError } from '@/lib/auth/requireAdmin';
 import ProfileEditor, { type ProfileDetailData } from '@/components/admin/ProfileEditor';
 
@@ -22,6 +23,8 @@ export default async function AdminProfileDetailPage({
     throw err;
   }
   if (!detail) notFound();
+
+  const datasets = await listAllDatasets();
 
   const profile: ProfileDetailData = {
     id: detail.id,
@@ -45,7 +48,7 @@ export default async function AdminProfileDetailPage({
           {profile.tenantId === null ? 'Global template' : `Tenant: ${profile.tenantId}`}
         </p>
       </div>
-      <ProfileEditor profile={profile} />
+      <ProfileEditor profile={profile} datasets={datasets} />
     </div>
   );
 }

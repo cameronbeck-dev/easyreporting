@@ -21,6 +21,8 @@ import { ForbiddenError, type AdminContext } from '../auth/requireAdmin';
 import { isPlatformTenant } from '../auth/platform';
 import { listSelectableColumns } from '../data/catalog';
 import { listTenantColumnsResolved } from '../db/config-repo';
+import { getProviderForDataset } from '../data/resolveDataset';
+import { Aggregation } from '../data/types';
 import { encryptSecret } from '../crypto/secrets';
 import { testConnection as introspectTestConnection, listTablesAndViews, listColumns, mapSqlType } from '../data/sql/introspect';
 import type { ColumnType } from '../data/types';
@@ -395,6 +397,41 @@ export async function removeRowScope(admin: AdminContext, profileId: string, sco
   const { tenantId } = await loadProfile(profileId);
   assertCanEditProfile(admin, tenantId);
   await db.delete(profileRowScopes).where(eq(profileRowScopes.id, scopeId));
+}
+
+// Suggestions for the row-scope editor. Both go through the admin's own
+// access-controlled provider, so a company admin only ever sees columns and values
+// within their own tenant + row ceiling (no cross-tenant leak), and the value list
+// is naturally bounded by what the admin themselves may grant.
+const SCOPE_VALUES_LIMIT = 200;
+
+/** Columns an admin may build a row scope on for a dataset (their visible schema). */
+export async function listScopeColumns(
+  admin: AdminContext,
+  datasetId: string,
+): Promise<{ name: string; type: ColumnType }[]> {
+  const provider = await getProviderForDataset(admin, datasetId);
+  const schema = await provider.getSchema(datasetId);
+  return schema.columns.map((c) => ({ name: c.name, type: c.type }));
+}
+
+/** Distinct values of a column the admin can see, for picking row-scope values. */
+export async function listScopeValues(
+  admin: AdminContext,
+  datasetId: string,
+  column: string,
+): Promise<(string | number)[]> {
+  const provider = await getProviderForDataset(admin, datasetId);
+  // Count-by-column yields the distinct values on the X axis (already access-filtered
+  // and ordered by the provider); the counts themselves are discarded.
+  const result = await provider.queryAggregated(datasetId, {
+    x: column,
+    y: column,
+    aggregation: Aggregation.Count,
+  });
+  return result.x
+    .filter((v) => v !== '' && v !== null && v !== undefined)
+    .slice(0, SCOPE_VALUES_LIMIT);
 }
 
 // ---------------------------------------------------------------------------

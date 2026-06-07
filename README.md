@@ -101,7 +101,7 @@ A user is just **a company + an optional row profile + an `isAdmin` flag** (see 
 Admins get an **Admin** link in the header (`/admin`):
 
 - **Users** — create/invite users, assign an optional row profile, toggle admin, disable/re-enable, and re-issue invite links.
-- **Row profiles** — create profiles and edit their row scopes (e.g. `region = NSW`). Company admins manage profiles for their own company; only owner admins author **global** templates.
+- **Row profiles** — create profiles and edit their row scopes (e.g. `region = NSW`). Scope values are picked from the column's actual values (sourced through the admin's own access-controlled view, so a company admin only sees their own tenant's values), preventing typo'd zero-row scopes. Company admins manage profiles for their own company; only owner admins author **global** templates.
 - **Company columns** (owner admins only) — tick which columns each customer company can see.
 
 New users are created without a password and set their own via a one-time invite link (valid 7 days, single use). You can also mint one from the CLI:
@@ -119,7 +119,8 @@ All pages require sign-in. `/login` and `/invite/<token>` are the only public ro
   - **Charts** — add/edit/remove line/area/bar visualizations; per-chart date granularity (day/week/month/quarter); click a point to drill into the Data page filtered.
   - **Global controls** (collapsible) — date range, time granularity, dimension focus, and compare, all applied to every tile + chart at once.
   - **Resizable grid** — drag the gutter between cards to set column width; cards auto-wrap. Charts keep a 1:2 aspect ratio.
-  - All dashboard state persists to localStorage.
+  - **Saved per user, per dataset** — charts, tiles, and filters persist server-side for each user and dataset; until you customise it you see sensible defaults, and **Reset to default** restores them. Grid width / panel state stay device-local.
+- **Dataset switcher** (header) — when more than the built-in demo dataset exists, pick the active dataset; the Dashboard and Data Explorer follow it via `?datasetId=`.
 - `/data` — Data Explorer: paginated table of raw rows. Accepts `?datasetId=`, `?filterCol=`, `?filterVal=` query params.
 - `/admin` — Admin (admins only): manage users and row profiles, scoped to the admin's company; owner admins also set each company's visible columns. Non-admins are redirected away server-side.
 - Light/dark mode toggle and per-company white-label branding (colors, logo, font) resolved server-side.
