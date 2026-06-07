@@ -72,6 +72,13 @@ export interface GlobalControls {
   compare: boolean;
 }
 
+/** A user's persisted dashboard for one dataset (charts + tiles + filters). */
+export interface DashboardLayout {
+  charts: ChartConfig[];
+  tiles: TileConfig[];
+  globals: GlobalControls;
+}
+
 export const DEFAULT_GLOBALS: GlobalControls = {
   dateFrom: null,
   dateTo: null,

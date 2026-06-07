@@ -5,8 +5,10 @@ import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import './globals.css';
 import Nav from '@/components/Nav';
+import DatasetSwitcher from '@/components/DatasetSwitcher';
 import ThemeToggle from '@/components/ThemeToggle';
 import { getUserContext } from '@/lib/auth/getUserContext';
+import { listAllDatasets } from '@/lib/data/getProvider';
 import { getBranding, readableForeground, DEFAULT_BRANDING } from '@/lib/branding/getBranding';
 import { signOutAction } from '@/lib/auth/actions';
 
@@ -39,6 +41,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   }
 
   const branding = ctx ? await getBranding(ctx.tenantId) : DEFAULT_BRANDING;
+  const datasets = ctx ? await listAllDatasets() : [];
 
   const brandVars = {
     '--primary': branding.primary,
@@ -73,7 +76,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
               )}
             </div>
             <div className="flex flex-1 items-center justify-between">
-              <Nav isAdmin={ctx.isAdmin} />
+              <div className="flex items-center gap-4">
+                <Nav isAdmin={ctx.isAdmin} />
+                <DatasetSwitcher datasets={datasets} />
+              </div>
               <div className="flex items-center gap-3">
                 <span className="hidden text-sm text-primary-foreground/80 sm:inline">
                   {ctx.email}

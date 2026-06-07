@@ -3,6 +3,7 @@
 // For now it is populated by the seed script.
 import { sqliteTable, text, integer, primaryKey } from 'drizzle-orm/sqlite-core';
 import type { ColumnType } from '../data/types';
+import type { DashboardLayout } from '../../components/chartTypes';
 
 // A person who can sign in. tenantId scopes them to one company's data;
 // profileId points at their bundle of access rules; isAdmin grants the admin UI.
@@ -105,6 +106,25 @@ export const accessProfiles = sqliteTable('access_profiles', {
     .notNull()
     .$defaultFn(() => new Date()),
 });
+
+// A user's personal saved dashboard for one dataset. No row = the user hasn't
+// customised it, so the app shows computed defaults; "reset to default" deletes the
+// row. layoutJson holds charts + tiles + global filters (purely client-side view
+// chrome like grid column width is NOT stored here). Cascades when the user is removed.
+export const dashboards = sqliteTable(
+  'dashboards',
+  {
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    datasetId: text('dataset_id').notNull(),
+    layoutJson: text('layout_json', { mode: 'json' }).notNull().$type<DashboardLayout>(),
+    updatedAt: integer('updated_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.datasetId] })],
+);
 
 // Row scopes: every query for this profile is constrained so `column` is one of
 // `values` (stored as a JSON array). Multiple scopes are AND-ed together.

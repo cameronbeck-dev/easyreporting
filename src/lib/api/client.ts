@@ -32,3 +32,21 @@ export async function getJson<T>(url: string): Promise<T> {
   if (!res.ok) throw new Error(await extractError(res));
   return res.json() as Promise<T>;
 }
+
+/** PUT a JSON body and parse the JSON response, throwing a readable Error on failure. */
+export async function putJson<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<T>;
+}
+
+/** DELETE and parse the JSON response, throwing a readable Error on failure. */
+export async function delJson<T>(url: string): Promise<T> {
+  const res = await fetch(url, { method: 'DELETE' });
+  if (!res.ok) throw new Error(await extractError(res));
+  return res.json() as Promise<T>;
+}

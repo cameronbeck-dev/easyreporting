@@ -1,26 +1,28 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import ChartCard from '@/components/ChartCard';
 import AddChartDialog from '@/components/AddChartDialog';
 import KpiSnapshot from '@/components/KpiSnapshot';
 import GlobalControls from '@/components/GlobalControls';
 import { useSchema } from '@/components/useSchema';
 import { buildGlobalFilters, firstDateColumn, previousPeriod } from '@/components/dashboardUtils';
-import type { ChartConfig, GlobalControls as Globals, TileConfig } from '@/components/chartTypes';
+import type { ChartConfig, GlobalControls as Globals, TileConfig, DashboardLayout } from '@/components/chartTypes';
 import { DEFAULT_GLOBALS } from '@/components/chartTypes';
 import type { ColumnSchema, Filter } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
+import { getJson, putJson, delJson } from '@/lib/api/client';
 
-const DEFAULT_DATASET_ID = 'sales';
-const KEY_CHARTS = 'easyreporting-charts';
-const KEY_GLOBALS = 'easyreporting-globals';
-const KEY_TILES = 'easyreporting-tiles';
+// Grid column width + controls-open are device/view chrome (not dashboard content),
+// so they stay in localStorage. Charts, tiles, and global filters are the dashboard
+// itself and persist per-user, per-dataset on the server.
 const KEY_COLMIN = 'easyreporting-colmin';
 const KEY_CONTROLS = 'easyreporting-controls-open';
 
 const COL_MIN = 260;
 const COL_MAX = 720;
+const SAVE_DEBOUNCE_MS = 600;
 
 type DialogState = { mode: 'add' } | { mode: 'edit'; config: ChartConfig } | null;
 
@@ -33,52 +35,98 @@ function readJSON<T>(key: string): T | null {
   }
 }
 
-function defaultTiles(columns: ColumnSchema[]): TileConfig[] {
-  const numeric = columns.filter((c) => c.type === 'number');
+// First-run defaults derived from the (masked) schema: a record count + the sum of
+// each numeric column, capped at four tiles, and no charts.
+function defaultLayout(columns: ColumnSchema[]): DashboardLayout {
   const tiles: TileConfig[] = [{ id: 'tile-records', column: '__count__', aggregation: Aggregation.Count }];
-  for (const c of numeric) {
+  for (const c of columns.filter((c) => c.type === 'number')) {
     tiles.push({ id: `tile-${c.name}`, column: c.name, aggregation: Aggregation.Sum });
   }
-  return tiles.slice(0, 4);
+  return { charts: [], tiles: tiles.slice(0, 4), globals: DEFAULT_GLOBALS };
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
-export default function Dashboard() {
-  const { columns } = useSchema(DEFAULT_DATASET_ID);
+function DashboardInner() {
+  const searchParams = useSearchParams();
+  const datasetId = searchParams.get('datasetId') ?? 'sales';
+
+  const { columns, loading: schemaLoading } = useSchema(datasetId);
   const dateColumn = firstDateColumn(columns);
 
   const [charts, setCharts] = useState<ChartConfig[]>([]);
   const [globals, setGlobals] = useState<Globals>(DEFAULT_GLOBALS);
-  const [tiles, setTiles] = useState<TileConfig[] | null>(null);
+  const [tiles, setTiles] = useState<TileConfig[]>([]);
+  const [ready, setReady] = useState(false);
+
   const [colMin, setColMin] = useState(320);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [dialog, setDialog] = useState<DialogState>(null);
-  const [hydrated, setHydrated] = useState(false);
+  const [prefsHydrated, setPrefsHydrated] = useState(false);
 
-  // Hydrate persisted state once on mount.
+  // The last layout we know matches the server, so we only save real changes (and
+  // never persist the computed first-run defaults as if the user had customised them).
+  const baselineRef = useRef<string>('');
+  const loadedForRef = useRef<string | null>(null);
+
+  // Device-local view chrome.
   useEffect(() => {
-    setCharts(readJSON<ChartConfig[]>(KEY_CHARTS) ?? []);
-    setGlobals(readJSON<Globals>(KEY_GLOBALS) ?? DEFAULT_GLOBALS);
-    setTiles(readJSON<TileConfig[]>(KEY_TILES)); // null if never set → defaults below
     setColMin(readJSON<number>(KEY_COLMIN) ?? 320);
     setControlsOpen(readJSON<boolean>(KEY_CONTROLS) ?? false);
-    setHydrated(true);
+    setPrefsHydrated(true);
   }, []);
+  useEffect(() => { if (prefsHydrated) localStorage.setItem(KEY_COLMIN, JSON.stringify(colMin)); }, [colMin, prefsHydrated]);
+  useEffect(() => { if (prefsHydrated) localStorage.setItem(KEY_CONTROLS, JSON.stringify(controlsOpen)); }, [controlsOpen, prefsHydrated]);
 
-  // First-run default tiles, derived from the (masked) schema.
+  // Reset load state whenever the active dataset changes.
   useEffect(() => {
-    if (hydrated && tiles === null && columns.length > 0) {
-      setTiles(defaultTiles(columns));
-    }
-  }, [hydrated, tiles, columns]);
+    setReady(false);
+    loadedForRef.current = null;
+  }, [datasetId]);
 
-  // Persist.
-  useEffect(() => { if (hydrated) localStorage.setItem(KEY_CHARTS, JSON.stringify(charts)); }, [charts, hydrated]);
-  useEffect(() => { if (hydrated) localStorage.setItem(KEY_GLOBALS, JSON.stringify(globals)); }, [globals, hydrated]);
-  useEffect(() => { if (hydrated && tiles) localStorage.setItem(KEY_TILES, JSON.stringify(tiles)); }, [tiles, hydrated]);
-  useEffect(() => { if (hydrated) localStorage.setItem(KEY_COLMIN, JSON.stringify(colMin)); }, [colMin, hydrated]);
-  useEffect(() => { if (hydrated) localStorage.setItem(KEY_CONTROLS, JSON.stringify(controlsOpen)); }, [controlsOpen, hydrated]);
+  // Load the saved dashboard (or first-run defaults) once the schema is resolved.
+  useEffect(() => {
+    if (schemaLoading) return;
+    if (loadedForRef.current === datasetId) return;
+    loadedForRef.current = datasetId;
+
+    let cancelled = false;
+    const applyLayout = (layout: DashboardLayout) => {
+      if (cancelled) return;
+      setCharts(layout.charts);
+      setTiles(layout.tiles);
+      setGlobals(layout.globals);
+      baselineRef.current = JSON.stringify(layout);
+      setReady(true);
+    };
+
+    getJson<{ layout: DashboardLayout | null }>(`/api/dashboard?datasetId=${encodeURIComponent(datasetId)}`)
+      .then(({ layout }) => applyLayout(layout ?? defaultLayout(columns)))
+      .catch(() => applyLayout(defaultLayout(columns)));
+
+    return () => { cancelled = true; };
+  }, [datasetId, schemaLoading, columns]);
+
+  // Persist real changes (debounced). Skips the initial load and the untouched defaults.
+  useEffect(() => {
+    if (!ready) return;
+    const current = JSON.stringify({ charts, tiles, globals });
+    if (current === baselineRef.current) return;
+    const t = setTimeout(() => {
+      baselineRef.current = current;
+      putJson(`/api/dashboard`, { datasetId, layout: { charts, tiles, globals } }).catch(() => {});
+    }, SAVE_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [ready, charts, tiles, globals, datasetId]);
+
+  const resetToDefault = () => {
+    const layout = defaultLayout(columns);
+    setCharts(layout.charts);
+    setTiles(layout.tiles);
+    setGlobals(layout.globals);
+    baselineRef.current = JSON.stringify(layout);
+    delJson(`/api/dashboard?datasetId=${encodeURIComponent(datasetId)}`).catch(() => {});
+  };
 
   // Global filters → charts + tiles.
   const globalFilters: Filter[] = buildGlobalFilters(globals, dateColumn);
@@ -140,7 +188,7 @@ export default function Dashboard() {
   return (
     <main className="flex-1 px-6 py-8">
       <GlobalControls
-        datasetId={DEFAULT_DATASET_ID}
+        datasetId={datasetId}
         columns={columns}
         dateColumn={dateColumn}
         globals={globals}
@@ -151,9 +199,9 @@ export default function Dashboard() {
       />
 
       <KpiSnapshot
-        datasetId={DEFAULT_DATASET_ID}
+        datasetId={datasetId}
         columns={columns}
-        tiles={tiles ?? []}
+        tiles={tiles}
         onTilesChange={setTiles}
         globalFilters={globalFilters}
         compareFilters={compareFilters}
@@ -164,15 +212,23 @@ export default function Dashboard() {
           <h2 className="text-lg font-bold tracking-tight text-foreground">Reports</h2>
           <p className="text-sm text-foreground-muted">Build a view to explore the numbers behind your snapshot.</p>
         </div>
-        <button
-          onClick={() => setDialog({ mode: 'add' })}
-          className="rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-card transition-colors hover:bg-primary-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-        >
-          + Add Chart
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={resetToDefault}
+            className="rounded-full border border-border px-4 py-2.5 text-sm font-medium text-foreground-muted transition-colors hover:bg-surface-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Reset to default
+          </button>
+          <button
+            onClick={() => setDialog({ mode: 'add' })}
+            className="rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-card transition-colors hover:bg-primary-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          >
+            + Add Chart
+          </button>
+        </div>
       </div>
 
-      {hydrated && charts.length === 0 && (
+      {ready && charts.length === 0 && (
         <div className="rounded-card border border-dashed border-border bg-surface/60 py-16 text-center">
           <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-2xl">
             📊
@@ -221,12 +277,20 @@ export default function Dashboard() {
 
       {dialog && (
         <AddChartDialog
-          datasetId={DEFAULT_DATASET_ID}
+          datasetId={datasetId}
           initial={dialog.mode === 'edit' ? dialog.config : undefined}
           onSubmit={submitChart}
           onClose={() => setDialog(null)}
         />
       )}
     </main>
+  );
+}
+
+export default function Dashboard() {
+  return (
+    <Suspense fallback={<div className="px-6 py-8 text-sm text-foreground-muted">Loading…</div>}>
+      <DashboardInner />
+    </Suspense>
   );
 }
