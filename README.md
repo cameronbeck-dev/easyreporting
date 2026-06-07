@@ -125,6 +125,23 @@ All pages require sign-in. `/login` and `/invite/<token>` are the only public ro
 - `/admin` — Admin (admins only): manage users and row profiles, scoped to the admin's company; owner admins also set each company's visible columns. Non-admins are redirected away server-side.
 - Light/dark mode toggle and per-company white-label branding (colors, logo, font) resolved server-side.
 
+## Testing
+
+```bash
+npm test            # run all suites once
+npm run test:watch  # watch mode
+```
+
+Tests live in `tests/` mirroring `src/`. Integration tests (config-repo) use an in-memory libSQL database — no external services required.
+
+Suites:
+- `tests/lib/data/dateBuckets.test.ts` — `formatBucketKey` (day/month/quarter/week, edge cases)
+- `tests/lib/data/CsvProvider.test.ts` — all 8 filter operators, aggregate functions, empty-set behavior
+- `tests/lib/data/sql/identifiers.test.ts` — `quoteIdent`, `assertKnown`
+- `tests/lib/data/sql/buildQuery.test.ts` — `buildWhere`/`buildAggregated`/`buildSummary`/`buildRows`
+- `tests/lib/data/AccessControlledProvider.test.ts` — column visibility, security filter injection, row scopes, fail-closed
+- `tests/lib/db/config-repo.test.ts` — `getResolvedUserById`, `listTenantColumnsResolved` (integration)
+
 ## Notes
 
 - Access config (per-company per-dataset columns, optional row profiles + scopes, user→company assignment) lives in the metadata DB, resolved per-dataset in `resolveDataset.ts` and managed through the `/admin` UI. SQL connections and datasets are managed by owner admins under `/admin/connections` and `/admin/datasets`.
