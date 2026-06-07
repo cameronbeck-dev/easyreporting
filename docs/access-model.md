@@ -108,7 +108,7 @@ The metadata DB defaults to a local SQLite file (`data/metadata.db`) via libSQL.
 `METADATA_DB_URL` (and optionally `METADATA_DB_AUTH_TOKEN`) at a libSQL/Turso or Postgres URL
 to use a managed store — only `src/lib/db/` changes, never call sites.
 
-## SQL data sources (PR 3b)
+## SQL data sources
 
 `connections` and `datasets` tables hold Postgres connection metadata. Connection passwords are
 AES-256-GCM encrypted at rest using `APP_ENCRYPTION_KEY` (server-side only; never returned to

@@ -146,11 +146,6 @@ variables (e.g. under `[data-theme="dark"]`), selected per user/company default 
 optional user toggle. Because components only read semantic tokens, **no component needs
 dark-mode-specific code.**
 
-> Migration note: the current code (`layout.tsx`, components) still uses hardcoded Tailwind
-> palette classes like `bg-gray-50` and `text-blue-600`. These predate this system and
-> should be migrated to semantic tokens (`bg-background`, `text-primary`) when each surface
-> is next touched. New code uses tokens from the start.
-
 ---
 
 ## 6. White-labeling / theming model
@@ -261,14 +256,15 @@ Ordered to answer first, explore second:
    and a glance, not a wall of inputs. Expandable when they want to change something.
 2. **Overview** — snapshot KPI tiles: headline totals computed server-side through the
    access-controlled provider. Tiles are **user-editable** (hover → edit → pick
-   aggregation + column) and persist locally. Optional compare shows ▲/▼ % vs the prior
+   aggregation + column) and persist server-side per user. Optional compare shows ▲/▼ % vs the prior
    equal-length period (sign + arrow + color, never color alone).
 3. **Reports** — the chart grid. Cards **auto-wrap** (`auto-fill` minmax) and the column
    width is **user-draggable** via the gutter between cards, with live feedback. Charts hold
    a **1:2 aspect ratio** (height tracks width).
 
-All dashboard state (tiles, charts, globals, grid width, controls open) persists per browser
-today; server-side per-user persistence is the production path.
+Dashboard content (tiles, charts, global filters) persists **server-side per user, per
+dataset** — see `src/lib/dashboards/repo.ts`. Device-local preferences (grid column width,
+whether the controls panel is open) stay in the browser.
 
 ---
 
