@@ -15,6 +15,7 @@ import type { DecryptedConnection } from './sql/pool';
 import { getPool } from './sql/pool';
 import { listColumns } from './sql/introspect';
 import { buildAggregated, buildSummary, buildRows } from './sql/buildQuery';
+import { formatBucketKey } from './dateBuckets';
 
 interface DatasetRow {
   id: string;
@@ -81,8 +82,17 @@ export class SqlProvider implements DataProvider {
     const pool = await getPool(this.connection);
     const result = await pool.query(text, values);
 
+    // When the X column is a bucketed date, label buckets with the shared formatter
+    // so SQL output matches CSV (e.g. "2024-Q1"), not a raw ISO timestamp.
+    const xCol = columns.find((c) => c.name === q.x);
+    const bucketing = !!q.dateBucket && xCol?.type === 'date';
+
     const xValues: (string | number)[] = result.rows.map((r: Record<string, unknown>) => {
       const v = r['x'];
+      if (bucketing) {
+        const d = v instanceof Date ? v : new Date(String(v));
+        return isNaN(d.getTime()) ? String(v) : formatBucketKey(d, q.dateBucket!);
+      }
       return v instanceof Date ? v.toISOString() : (v as string | number);
     });
     const data: number[] = result.rows.map((r: Record<string, unknown>) => Number(r['y']));

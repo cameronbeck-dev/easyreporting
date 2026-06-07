@@ -17,6 +17,7 @@ import type {
   Filter,
 } from './types';
 import { Aggregation } from './types';
+import { formatBucketKey } from './dateBuckets';
 
 type RawRow = Record<string, string>;
 type TypedRow = Record<string, unknown>;
@@ -130,23 +131,12 @@ function applyFilters(rows: TypedRow[], filters: Filter[]): TypedRow[] {
   });
 }
 
-// Bucket a date string into a chronologically-sortable, human-readable key.
-// Uses UTC throughout so date-only strings don't drift across time zones.
+// Bucket a date string into a chronologically-sortable, human-readable key,
+// using the shared formatter so labels match the SQL provider exactly.
 function bucketKey(dateStr: string, bucket: DateBucket): string {
   const d = new Date(dateStr);
   if (isNaN(d.getTime())) return dateStr;
-  const y = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(d.getUTCDate()).padStart(2, '0');
-
-  if (bucket === 'day') return `${y}-${mm}-${dd}`;
-  if (bucket === 'month') return `${y}-${mm}`;
-  if (bucket === 'quarter') return `${y}-Q${Math.floor(d.getUTCMonth() / 3) + 1}`;
-  // week → Monday of that week (ISO-style), as a YYYY-MM-DD start date
-  const offsetToMonday = (d.getUTCDay() + 6) % 7;
-  const monday = new Date(d);
-  monday.setUTCDate(d.getUTCDate() - offsetToMonday);
-  return monday.toISOString().slice(0, 10);
+  return formatBucketKey(d, bucket);
 }
 
 function aggregate(values: number[], agg: Aggregation): number {
@@ -187,9 +177,11 @@ export class CsvProvider implements DataProvider {
       groups.get(key)!.push(row);
     }
 
-    // Chronological order for dates (bucketed or raw); insertion order otherwise.
+    // Order to match the SQL provider's ORDER BY x: dates/strings sort
+    // lexicographically (ISO keys are chronological); numeric x sorts numerically.
     const keys = Array.from(groups.keys());
-    if (bucketing || xType === 'date') keys.sort();
+    if (xType === 'number') keys.sort((a, b) => Number(a) - Number(b));
+    else keys.sort();
 
     const xValues: (string | number)[] = [];
     const dataPoints: number[] = [];
