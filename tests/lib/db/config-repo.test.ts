@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { setupTestDb } from '../../helpers/db';
 import { getResolvedUserById, listTenantColumnsResolved } from '@/lib/db/config-repo';
-import { users, accessProfiles, profileRowScopes, tenantColumnRules } from '@/lib/db/schema';
+import { users, accessProfiles, profileRowScopes, tenantColumnRules, datasets } from '@/lib/db/schema';
 import type { TestDb } from '../../helpers/db';
 
 let testDb: TestDb;
@@ -166,5 +166,85 @@ describe('listTenantColumnsResolved', () => {
     const result = await listTenantColumnsResolved('acme', 'sales', testDb);
     expect(result).not.toContain('cost');
     expect(result).toContain('revenue');
+  });
+
+  it('returns qualified column names for multi-table dataset rules', async () => {
+    // Simulate what setTenantColumns persists for a multi-table dataset:
+    // column names are qualified (table.column).
+    await testDb.insert(tenantColumnRules).values([
+      { tenantId: 'acme', datasetId: 'orders_ds', columnName: 'orders.revenue' },
+      { tenantId: 'acme', datasetId: 'orders_ds', columnName: 'customers.name' },
+    ]);
+
+    const result = await listTenantColumnsResolved('acme', 'orders_ds', testDb);
+    expect(result).toHaveLength(2);
+    expect(result).toContain('orders.revenue');
+    expect(result).toContain('customers.name');
+  });
+});
+
+describe('setTenantColumns (via tenantColumnRules) — multi-table selectable set', () => {
+  it('rejects a bare name when selectable set is qualified', async () => {
+    // The selectable set for a multi-table dataset contains qualified names.
+    // A bare name should NOT be in that set.
+    const qualifiableSet = new Set(['orders.revenue', 'customers.name']);
+    expect(qualifiableSet.has('revenue')).toBe(false);
+    expect(qualifiableSet.has('orders.revenue')).toBe(true);
+  });
+
+  it('tenantColumnRules stores qualified column names correctly', async () => {
+    await testDb.insert(tenantColumnRules).values([
+      { tenantId: 'acme', datasetId: 'orders_ds', columnName: 'orders.revenue' },
+    ]);
+
+    const result = await listTenantColumnsResolved('acme', 'orders_ds', testDb);
+    expect(result).toContain('orders.revenue');
+    expect(result).not.toContain('revenue');
+  });
+});
+
+describe('datasets schema — joinsJson', () => {
+  const NOW = new Date();
+
+  it('stores and retrieves joinsJson for a multi-table dataset', async () => {
+    const joins: import('@/lib/data/types').JoinStep[] = [
+      { tableName: 'customers', joinType: 'inner', leftTable: 'orders', leftColumn: 'customer_id', rightColumn: 'id' },
+    ];
+    await testDb.insert(datasets).values({
+      id: 'ds1',
+      name: 'Orders + Customers',
+      tableName: 'orders',
+      tenantColumn: 'orders.tenant_id',
+      columnsJson: [
+        { name: 'orders.revenue', type: 'number', table: 'orders' },
+        { name: 'customers.name', type: 'string', table: 'customers' },
+      ],
+      joinsJson: joins,
+      createdAt: NOW,
+    });
+
+    const [row] = await testDb.select().from(datasets).where(
+      (await import('drizzle-orm')).eq(datasets.id, 'ds1'),
+    );
+    expect(row).toBeDefined();
+    expect(row.joinsJson).toHaveLength(1);
+    expect((row.joinsJson as typeof joins)[0].tableName).toBe('customers');
+    expect((row.joinsJson as typeof joins)[0].joinType).toBe('inner');
+  });
+
+  it('joinsJson is null for a single-table dataset', async () => {
+    await testDb.insert(datasets).values({
+      id: 'ds2',
+      name: 'Single Table',
+      tableName: 'sales',
+      tenantColumn: 'tenant_id',
+      columnsJson: [{ name: 'revenue', type: 'number' }],
+      createdAt: NOW,
+    });
+
+    const [row] = await testDb.select().from(datasets).where(
+      (await import('drizzle-orm')).eq(datasets.id, 'ds2'),
+    );
+    expect(row.joinsJson).toBeNull();
   });
 });

@@ -142,6 +142,21 @@ Suites:
 - `tests/lib/data/AccessControlledProvider.test.ts` — column visibility, security filter injection, row scopes, fail-closed
 - `tests/lib/db/config-repo.test.ts` — `getResolvedUserById`, `listTenantColumnsResolved` (integration)
 
+## UI-Driven Table Joins
+
+SQL datasets support chained multi-table joins configured through the admin UI (`/admin/datasets`).
+
+**Key rules:**
+- **INNER or LEFT JOINs only.** N tables can be chained in order (step 2's left table can be step 1's joined table, etc.).
+- **Manual key pairing.** Each join step requires: join type, left table, left column, right table, right column.
+- **Tenant column on the base table.** The tenant/company column must be on the first (base) table. It is stored qualified (e.g. `orders.tenant_id`) for multi-table datasets.
+- **Qualified column names.** All columns in multi-table datasets are stored and referenced as `table.column` (e.g. `orders.revenue`). Single-table datasets keep bare names (fully backward-compatible).
+- **Joins are immutable.** To change the join structure, delete and recreate the dataset. This keeps the data model simple and auditable.
+- **Column allow-list.** When granting columns to a company (`/admin/columns`), qualified names appear as "Revenue (Orders)" in the UI but are stored and compared as `orders.revenue`.
+- **Dashboard labels.** Qualified column names display as "Column (Table)" format (e.g. `orders.revenue` → "Revenue (Orders)").
+
+The security choke point (`AccessControlledProvider`) works identically for single-table and multi-table datasets — column comparisons are string-exact on whatever name format is stored.
+
 ## Notes
 
 - Access config (per-company per-dataset columns, optional row profiles + scopes, user→company assignment) lives in the metadata DB, resolved per-dataset in `resolveDataset.ts` and managed through the `/admin` UI. SQL connections and datasets are managed by owner admins under `/admin/connections` and `/admin/datasets`.

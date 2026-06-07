@@ -25,7 +25,7 @@ import { getProviderForDataset } from '../data/resolveDataset';
 import { Aggregation } from '../data/types';
 import { encryptSecret } from '../crypto/secrets';
 import { testConnection as introspectTestConnection, listTablesAndViews, listColumns, mapSqlType } from '../data/sql/introspect';
-import type { ColumnType } from '../data/types';
+import type { ColumnType, JoinStep } from '../data/types';
 import { type DecryptedConnection, toDecryptedConnection } from '../data/sql/pool';
 import type { RowScope } from '../auth/types';
 
@@ -611,13 +611,18 @@ export interface DatasetAdminRow {
   createdAt: Date;
 }
 
+export type JoinStepInput = JoinStep;
+
 export interface CreateDatasetInput {
   name: string;
   connectionId: string;
   schemaName: string;
   tableName: string;
   tenantColumn: string;
+  joins: JoinStepInput[];
 }
+
+const VALID_JOIN_TYPES = new Set<string>(['inner', 'left']);
 
 export async function createDataset(
   admin: AdminContext,
@@ -629,7 +634,7 @@ export async function createDataset(
 
   const conn = await loadDecryptedConnection(input.connectionId);
 
-  // Validate the table exists.
+  // Validate the base table exists.
   const tables = await listTablesAndViews(conn, input.schemaName);
   const tableNames = new Set(tables.map((t) => t.name));
   if (!tableNames.has(input.tableName)) {
@@ -638,27 +643,144 @@ export async function createDataset(
     );
   }
 
-  // Introspect columns.
-  const rawCols = await listColumns(conn, input.schemaName, input.tableName);
-  const colNames = new Set(rawCols.map((c) => c.name));
+  const joins = input.joins ?? [];
 
-  // Require a valid tenant column.
-  const tenantColumn = input.tenantColumn.trim();
-  if (!tenantColumn) {
+  if (joins.length === 0) {
+    // Single-table path (unchanged): bare column names, bare tenantColumn.
+    const rawCols = await listColumns(conn, input.schemaName, input.tableName);
+    const colNames = new Set(rawCols.map((c) => c.name));
+
+    const tenantColumn = input.tenantColumn.trim();
+    if (!tenantColumn) {
+      throw new ForbiddenError(
+        'Pick which column identifies the company (tenant) for this dataset.',
+      );
+    }
+    if (!colNames.has(tenantColumn)) {
+      throw new ForbiddenError(
+        `Tenant column "${tenantColumn}" does not exist in the table.`,
+      );
+    }
+
+    const columnsJson = rawCols.map((c) => ({
+      name: c.name,
+      type: mapSqlType(c.sqlType),
+    }));
+
+    const id = randomUUID();
+    await db.insert(datasets).values({
+      id,
+      name,
+      connectionId: input.connectionId,
+      tableName: input.tableName,
+      tenantColumn,
+      columnsJson,
+    });
+    return id;
+  }
+
+  // Multi-table path: validate each join step in order, build qualified columnsJson.
+  const seenTables = new Set<string>([input.tableName]);
+  const validatedJoins: JoinStep[] = [];
+
+  for (let i = 0; i < joins.length; i++) {
+    const step = joins[i];
+
+    if (!step.tableName || !step.joinType || !step.leftTable || !step.leftColumn || !step.rightColumn) {
+      throw new ForbiddenError(`Join step ${i + 1} is missing required fields.`);
+    }
+
+    // Validate joinType against the allow-list.
+    if (!VALID_JOIN_TYPES.has(step.joinType)) {
+      throw new ForbiddenError(`Invalid join type "${step.joinType}" in step ${i + 1}. Must be "inner" or "left".`);
+    }
+
+    // Validate the joined table exists.
+    if (!tableNames.has(step.tableName)) {
+      throw new ForbiddenError(
+        `Join step ${i + 1}: table "${step.tableName}" does not exist in schema "${input.schemaName}".`,
+      );
+    }
+
+    // No duplicate joined tables.
+    if (seenTables.has(step.tableName)) {
+      throw new ForbiddenError(
+        `Join step ${i + 1}: table "${step.tableName}" is already used (no duplicate tables).`,
+      );
+    }
+
+    // leftTable must be the base table or an already-joined table (no forward/self refs).
+    if (!seenTables.has(step.leftTable)) {
+      throw new ForbiddenError(
+        `Join step ${i + 1}: leftTable "${step.leftTable}" is not the base table or a previously joined table.`,
+      );
+    }
+
+    // Validate leftColumn exists on leftTable.
+    const leftCols = await listColumns(conn, input.schemaName, step.leftTable);
+    const leftColNames = new Set(leftCols.map((c) => c.name));
+    if (!leftColNames.has(step.leftColumn)) {
+      throw new ForbiddenError(
+        `Join step ${i + 1}: column "${step.leftColumn}" does not exist in table "${step.leftTable}".`,
+      );
+    }
+
+    // Validate rightColumn exists on the joined table.
+    const rightCols = await listColumns(conn, input.schemaName, step.tableName);
+    const rightColNames = new Set(rightCols.map((c) => c.name));
+    if (!rightColNames.has(step.rightColumn)) {
+      throw new ForbiddenError(
+        `Join step ${i + 1}: column "${step.rightColumn}" does not exist in table "${step.tableName}".`,
+      );
+    }
+
+    seenTables.add(step.tableName);
+    validatedJoins.push({
+      tableName: step.tableName,
+      joinType: step.joinType as 'inner' | 'left',
+      leftTable: step.leftTable,
+      leftColumn: step.leftColumn,
+      rightColumn: step.rightColumn,
+    });
+  }
+
+  // Build qualified columnsJson: introspect base + each joined table.
+  const qualifiedCols: { name: string; type: ColumnType; table: string }[] = [];
+
+  const baseCols = await listColumns(conn, input.schemaName, input.tableName);
+  for (const c of baseCols) {
+    qualifiedCols.push({
+      name: `${input.tableName}.${c.name}`,
+      type: mapSqlType(c.sqlType),
+      table: input.tableName,
+    });
+  }
+
+  for (const step of validatedJoins) {
+    const joinCols = await listColumns(conn, input.schemaName, step.tableName);
+    for (const c of joinCols) {
+      qualifiedCols.push({
+        name: `${step.tableName}.${c.name}`,
+        type: mapSqlType(c.sqlType),
+        table: step.tableName,
+      });
+    }
+  }
+
+  // Validate the bare tenant column exists on the base table, then store it qualified.
+  const baseTenantColumn = input.tenantColumn.trim();
+  if (!baseTenantColumn) {
     throw new ForbiddenError(
       'Pick which column identifies the company (tenant) for this dataset.',
     );
   }
-  if (!colNames.has(tenantColumn)) {
+  const baseColNames = new Set(baseCols.map((c) => c.name));
+  if (!baseColNames.has(baseTenantColumn)) {
     throw new ForbiddenError(
-      `Tenant column "${tenantColumn}" does not exist in the table.`,
+      `Tenant column "${baseTenantColumn}" does not exist in the base table "${input.tableName}".`,
     );
   }
-
-  const columnsJson = rawCols.map((c) => ({
-    name: c.name,
-    type: mapSqlType(c.sqlType),
-  }));
+  const qualifiedTenantColumn = `${input.tableName}.${baseTenantColumn}`;
 
   const id = randomUUID();
   await db.insert(datasets).values({
@@ -666,8 +788,9 @@ export async function createDataset(
     name,
     connectionId: input.connectionId,
     tableName: input.tableName,
-    tenantColumn,
-    columnsJson,
+    tenantColumn: qualifiedTenantColumn,
+    columnsJson: qualifiedCols,
+    joinsJson: validatedJoins,
   });
   return id;
 }

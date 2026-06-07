@@ -15,6 +15,13 @@
       "when": 1780793944429,
       "tag": "0001_cultured_eternity",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1780816082318,
+      "tag": "0002_wonderful_firestar",
+      "breakpoints": true
     }
   ]
 }

@@ -24,6 +24,23 @@ export class AccessError extends Error {
 // data source (CSV today, SQL later, a hand-written connector) inherits the
 // same rules for free: a fail-closed column allow-list and non-bypassable row
 // isolation. The wrapped provider's only obligation is to honor injected filters.
+//
+// NAME COMPARISON NOTE: All column name comparisons here are string-exact and work
+// for BOTH bare names (single-table datasets, e.g. "revenue") and qualified names
+// (multi-table datasets, e.g. "orders.revenue"). The qualified name is what is stored
+// in columnsJson and in ctx.tenantColumn for multi-table datasets, so the same logic
+// applies in both cases without any special-casing.
+//
+// MULTI-TABLE ROW PROJECTION: For multi-table datasets, buildRows emits an explicit
+// SELECT projection (e.g. `"orders"."revenue" AS "orders.revenue"`) so that result
+// row keys are the qualified names stored in columnsJson. This means the key-stripping
+// logic in queryRows below works correctly: allowed/disallowed checks compare against
+// the stored qualified names, which match the result row keys.
+//
+// TENANT FILTER + ROW SCOPES: ctx.tenantColumn is the bare column name for single-table
+// datasets and a qualified name (e.g. "orders.tenant_id") for multi-table datasets.
+// scope.column is stored as-is from the admin UI (qualified for multi-table). Both are
+// passed directly into buildWhere via securityFilters, and quoteIdent handles the dot.
 export class AccessControlledProvider implements DataProvider {
   constructor(
     private inner: DataProvider,
@@ -32,6 +49,7 @@ export class AccessControlledProvider implements DataProvider {
 
   // Fail-closed: the tenant column is never visible; otherwise allColumns grants
   // everything, and without it only explicitly-allowed columns pass.
+  // Column names are string-exact: bare for single-table, qualified for multi-table.
   private isAllowedColumn(name: string): boolean {
     if (name === this.ctx.tenantColumn) return false;
     if (this.ctx.allColumns) return true;

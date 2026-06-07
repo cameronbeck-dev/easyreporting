@@ -1,6 +1,7 @@
 import type { Filter, AggregatedQuery, RowsQuery, SummaryQuery } from '../types';
 import { Aggregation } from '../types';
 import type { ColumnSchema } from '../types';
+import type { TableSource, JoinStep } from '../types';
 import { quoteIdent, assertKnown } from './identifiers';
 
 export interface BuiltQuery {
@@ -12,6 +13,38 @@ export interface BuiltQuery {
 // SQL text — it must be validated against this fixed allow-list, never trusted
 // from the (runtime-untyped) request body.
 const ALLOWED_DATE_BUCKETS = new Set(['day', 'week', 'month', 'quarter']);
+
+// Fixed allow-list for JOIN types. The stored joinType string is NEVER interpolated
+// directly — it is mapped through this table at query-build time.
+const JOIN_SQL: Record<string, string> = {
+  inner: 'INNER JOIN',
+  left: 'LEFT JOIN',
+};
+
+/**
+ * Builds the FROM clause (and optional JOINs) for a TableSource.
+ * For single-table sources (joins=[]) returns exactly:
+ *   FROM "schema"."base"
+ * For multi-table sources appends one JOIN line per step.
+ */
+export function buildFrom(src: TableSource): string {
+  const base = `FROM ${quoteIdent(src.schemaName)}.${quoteIdent(src.tableName)}`;
+  if (src.joins.length === 0) return base;
+
+  const joinLines = src.joins.map((j: JoinStep) => {
+    const joinKeyword = JOIN_SQL[j.joinType];
+    if (!joinKeyword) {
+      throw new Error(`Invalid joinType: "${j.joinType}"`);
+    }
+    return (
+      `${joinKeyword} ${quoteIdent(src.schemaName)}.${quoteIdent(j.tableName)}` +
+      ` ON ${quoteIdent(j.tableName)}.${quoteIdent(j.rightColumn)}` +
+      ` = ${quoteIdent(j.leftTable)}.${quoteIdent(j.leftColumn)}`
+    );
+  });
+
+  return [base, ...joinLines].join(' ');
+}
 
 export function buildWhere(
   filters: Filter[],
@@ -77,12 +110,14 @@ function aggExpr(col: string, aggregation: Aggregation): string {
 }
 
 export function buildAggregated(
-  schemaName: string,
-  tableName: string,
+  src: TableSource,
   q: AggregatedQuery,
   allowedCols: Set<string>,
   columns: ColumnSchema[],
 ): BuiltQuery {
+  assertKnown(q.x, allowedCols);
+  assertKnown(q.y, allowedCols);
+
   const filters = q.filters ?? [];
   const { clause, values } = buildWhere(filters, allowedCols, 1);
 
@@ -99,7 +134,7 @@ export function buildAggregated(
 
   const text = [
     `SELECT ${xExpr} AS x, ${yExpr} AS y`,
-    `FROM ${quoteIdent(schemaName)}.${quoteIdent(tableName)}`,
+    buildFrom(src),
     clause,
     `GROUP BY ${xExpr}`,
     `ORDER BY x`,
@@ -111,11 +146,14 @@ export function buildAggregated(
 }
 
 export function buildSummary(
-  schemaName: string,
-  tableName: string,
+  src: TableSource,
   q: SummaryQuery,
   allowedCols: Set<string>,
 ): BuiltQuery {
+  for (const m of q.metrics) {
+    assertKnown(m.column, allowedCols);
+  }
+
   const filters = q.filters ?? [];
   const { clause, values } = buildWhere(filters, allowedCols, 1);
 
@@ -123,7 +161,7 @@ export function buildSummary(
 
   const text = [
     `SELECT ${exprs.join(', ')}`,
-    `FROM ${quoteIdent(schemaName)}.${quoteIdent(tableName)}`,
+    buildFrom(src),
     clause,
   ]
     .filter(Boolean)
@@ -133,10 +171,11 @@ export function buildSummary(
 }
 
 export function buildRows(
-  schemaName: string,
-  tableName: string,
+  src: TableSource,
   q: RowsQuery,
   allowedCols: Set<string>,
+  storedColumns?: { name: string; table?: string }[],
+  tenantColumn?: string,
 ): { dataQuery: BuiltQuery; countQuery: BuiltQuery } {
   const filters = q.filters ?? [];
   const { clause, values } = buildWhere(filters, allowedCols, 1);
@@ -145,9 +184,37 @@ export function buildRows(
   const limitIdx = values.length + 1;
   const offsetIdx = values.length + 2;
 
+  const fromClause = buildFrom(src);
+
+  let selectClause: string;
+  if (src.joins.length > 0 && storedColumns) {
+    // Multi-table: emit explicit projection so result-row keys equal the stored
+    // qualified names (table.column). The tenant column is omitted from the
+    // projection — AccessControlledProvider strips it post-query anyway, but
+    // excluding it here keeps result rows clean.
+    const projections = storedColumns
+      .filter((c) => c.name !== tenantColumn)
+      .map((c) => {
+        if (c.table) {
+          // Qualified name stored as "table.column" — emit "table"."col" AS "table.col"
+          // The AS alias uses the literal qualified name (with dot) as a double-quoted string,
+          // so result row keys equal the stored qualified names.
+          const dot = c.name.indexOf('.');
+          const tbl = c.name.slice(0, dot);
+          const col = c.name.slice(dot + 1);
+          const aliasLiteral = `"${c.name.replace(/"/g, '""')}"`;
+          return `${quoteIdent(tbl)}.${quoteIdent(col)} AS ${aliasLiteral}`;
+        }
+        return `${quoteIdent(c.name)} AS ${quoteIdent(c.name)}`;
+      });
+    selectClause = projections.length > 0 ? `SELECT ${projections.join(', ')}` : 'SELECT *';
+  } else {
+    selectClause = 'SELECT *';
+  }
+
   const dataText = [
-    `SELECT *`,
-    `FROM ${quoteIdent(schemaName)}.${quoteIdent(tableName)}`,
+    selectClause,
+    fromClause,
     clause,
     `LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
   ]
@@ -156,7 +223,7 @@ export function buildRows(
 
   const countText = [
     `SELECT COUNT(*) AS total`,
-    `FROM ${quoteIdent(schemaName)}.${quoteIdent(tableName)}`,
+    fromClause,
     clause,
   ]
     .filter(Boolean)

@@ -9,6 +9,7 @@ import type {
   RowsResult,
   SummaryQuery,
   SummaryResult,
+  JoinStep,
 } from './types';
 import { Aggregation } from './types';
 import type { DecryptedConnection } from './sql/pool';
@@ -21,7 +22,8 @@ interface DatasetRow {
   id: string;
   name: string;
   tableName: string;
-  columnsJson: { name: string; type: import('./types').ColumnType }[];
+  columnsJson: { name: string; type: import('./types').ColumnType; table?: string }[];
+  joins: JoinStep[];
 }
 
 const SCHEMA_NAME = 'public';
@@ -43,16 +45,54 @@ export class SqlProvider implements DataProvider {
     return this.dataset.columnsJson.map((c) => ({ name: c.name, type: c.type }));
   }
 
+  private isMultiTable(): boolean {
+    return this.dataset.joins.length > 0;
+  }
+
   private async validateStoredColumnsExist(): Promise<void> {
-    const live = await listColumns(this.connection, SCHEMA_NAME, this.dataset.tableName);
-    const liveNames = new Set(live.map((c) => c.name));
-    const stored = this.dataset.columnsJson.map((c) => c.name);
-    const missing = stored.filter((n) => !liveNames.has(n));
-    if (missing.length > 0) {
-      throw new Error(
-        `Dataset "${this.dataset.name}": columns no longer exist in the table: ${missing.join(', ')}`,
-      );
+    if (this.isMultiTable()) {
+      // For multi-table datasets, introspect base + each joined table and build a
+      // set of qualified names (table.column) to compare against stored qualified names.
+      const liveQualified = new Set<string>();
+
+      const baseCols = await listColumns(this.connection, SCHEMA_NAME, this.dataset.tableName);
+      for (const c of baseCols) {
+        liveQualified.add(`${this.dataset.tableName}.${c.name}`);
+      }
+
+      for (const join of this.dataset.joins) {
+        const joinCols = await listColumns(this.connection, SCHEMA_NAME, join.tableName);
+        for (const c of joinCols) {
+          liveQualified.add(`${join.tableName}.${c.name}`);
+        }
+      }
+
+      const stored = this.dataset.columnsJson.map((c) => c.name);
+      const missing = stored.filter((n) => !liveQualified.has(n));
+      if (missing.length > 0) {
+        throw new Error(
+          `Dataset "${this.dataset.name}": columns no longer exist in the tables: ${missing.join(', ')}`,
+        );
+      }
+    } else {
+      const live = await listColumns(this.connection, SCHEMA_NAME, this.dataset.tableName);
+      const liveNames = new Set(live.map((c) => c.name));
+      const stored = this.dataset.columnsJson.map((c) => c.name);
+      const missing = stored.filter((n) => !liveNames.has(n));
+      if (missing.length > 0) {
+        throw new Error(
+          `Dataset "${this.dataset.name}": columns no longer exist in the table: ${missing.join(', ')}`,
+        );
+      }
     }
+  }
+
+  private buildTableSource() {
+    return {
+      schemaName: SCHEMA_NAME,
+      tableName: this.dataset.tableName,
+      joins: this.dataset.joins,
+    };
   }
 
   async listDatasets(): Promise<Dataset[]> {
@@ -72,8 +112,7 @@ export class SqlProvider implements DataProvider {
     const allowedCols = this.getAllowedCols();
     const columns = this.getColumns();
     const { text, values } = buildAggregated(
-      SCHEMA_NAME,
-      this.dataset.tableName,
+      this.buildTableSource(),
       q,
       allowedCols,
       columns,
@@ -113,7 +152,7 @@ export class SqlProvider implements DataProvider {
     await this.validateStoredColumnsExist();
 
     const allowedCols = this.getAllowedCols();
-    const { text, values } = buildSummary(SCHEMA_NAME, this.dataset.tableName, q, allowedCols);
+    const { text, values } = buildSummary(this.buildTableSource(), q, allowedCols);
 
     const pool = await getPool(this.connection);
     const result = await pool.query(text, values);
@@ -134,10 +173,10 @@ export class SqlProvider implements DataProvider {
 
     const allowedCols = this.getAllowedCols();
     const { dataQuery, countQuery } = buildRows(
-      SCHEMA_NAME,
-      this.dataset.tableName,
+      this.buildTableSource(),
       q,
       allowedCols,
+      this.dataset.columnsJson,
     );
 
     const pool = await getPool(this.connection);

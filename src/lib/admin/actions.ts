@@ -166,12 +166,27 @@ export async function introspectColumnsAction(_prev: ActionState, formData: Form
 export async function createDatasetAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   return run(['/admin/datasets'], async () => {
     const admin = await requireAdminAction();
+
+    // Parse the ordered joins array from the form payload.
+    // Each join step is submitted as joins[N].field (e.g. joins[0].tableName).
+    // We collect all unique indices then build the array in order.
+    const joinsRaw = formData.get('joinsJson');
+    let joins: import('@/lib/data/types').JoinStep[] = [];
+    if (joinsRaw) {
+      try {
+        joins = JSON.parse(String(joinsRaw));
+      } catch {
+        joins = [];
+      }
+    }
+
     await repo.createDataset(admin, {
       name: String(formData.get('name') ?? ''),
       connectionId: String(formData.get('connectionId') ?? ''),
       schemaName: String(formData.get('schemaName') ?? 'public'),
       tableName: String(formData.get('tableName') ?? ''),
       tenantColumn: String(formData.get('tenantColumn') ?? ''),
+      joins,
     });
   });
 }

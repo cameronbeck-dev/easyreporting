@@ -1,5 +1,19 @@
 export type ColumnType = 'string' | 'number' | 'date' | 'boolean';
 
+export interface JoinStep {
+  tableName: string;
+  joinType: 'inner' | 'left';
+  leftTable: string;
+  leftColumn: string;
+  rightColumn: string;
+}
+
+export interface TableSource {
+  schemaName: string;
+  tableName: string;
+  joins: JoinStep[];
+}
+
 export interface ColumnSchema {
   name: string;
   type: ColumnType;

@@ -2,7 +2,7 @@
 // This is where admin-defined access lives once the admin UI lands (PR 3).
 // For now it is populated by the seed script.
 import { sqliteTable, text, integer, primaryKey } from 'drizzle-orm/sqlite-core';
-import type { ColumnType } from '../data/types';
+import type { ColumnType, JoinStep } from '../data/types';
 import type { DashboardLayout } from '../../components/chartTypes';
 
 // A person who can sign in. tenantId scopes them to one company's data;
@@ -87,7 +87,9 @@ export const datasets = sqliteTable('datasets', {
   tenantColumn: text('tenant_column').notNull(),
   columnsJson: text('columns_json', { mode: 'json' })
     .notNull()
-    .$type<{ name: string; type: ColumnType }[]>(),
+    .$type<{ name: string; type: ColumnType; table?: string }[]>(),
+  joinsJson: text('joins_json', { mode: 'json' })
+    .$type<JoinStep[]>(),
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()
     .$defaultFn(() => new Date()),

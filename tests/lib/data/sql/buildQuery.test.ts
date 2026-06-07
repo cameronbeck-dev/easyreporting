@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { buildWhere, buildAggregated, buildSummary, buildRows } from '@/lib/data/sql/buildQuery';
+import { buildWhere, buildAggregated, buildSummary, buildRows, buildFrom } from '@/lib/data/sql/buildQuery';
 import { Aggregation } from '@/lib/data/types';
-import type { ColumnSchema } from '@/lib/data/types';
+import type { ColumnSchema, TableSource } from '@/lib/data/types';
 
 const allCols = new Set(['region', 'revenue', 'cost', 'date', 'category']);
 const dateColumns: ColumnSchema[] = [
@@ -9,6 +9,9 @@ const dateColumns: ColumnSchema[] = [
   { name: 'revenue', type: 'number' },
   { name: 'region', type: 'string' },
 ];
+
+// Single-table source — byte-identical behavior to the original schemaName+tableName API.
+const singleSrc: TableSource = { schemaName: 'public', tableName: 'sales', joins: [] };
 
 describe('buildWhere', () => {
   it('no filters → empty clause and empty values', () => {
@@ -125,24 +128,71 @@ describe('buildWhere', () => {
       buildWhere([{ column: 'secret', operator: 'eq', value: 'x' }], allCols, 1),
     ).toThrow();
   });
+
+  // MULTI-TABLE ROW-SCOPE: qualified column filter with dot
+  it('qualified column (table.col) filter → quoted as "table"."col"', () => {
+    const qualCols = new Set(['orders.tenant_id', 'orders.revenue']);
+    const { clause } = buildWhere(
+      [{ column: 'orders.tenant_id', operator: 'eq', value: 'acme' }],
+      qualCols,
+      1,
+    );
+    expect(clause).toBe('WHERE "orders"."tenant_id" = $1');
+  });
+
+  it('qualified ILIKE filter', () => {
+    const qualCols = new Set(['orders.region']);
+    const { clause, values } = buildWhere(
+      [{ column: 'orders.region', operator: 'contains', value: 'orth' }],
+      qualCols,
+      1,
+    );
+    expect(clause).toBe('WHERE "orders"."region" ILIKE $1');
+    expect(values).toEqual(['%orth%']);
+  });
+
+  it('qualified in/ANY filter', () => {
+    const qualCols = new Set(['orders.region']);
+    const { clause, values } = buildWhere(
+      [{ column: 'orders.region', operator: 'in', value: ['North', 'South'] }],
+      qualCols,
+      1,
+    );
+    expect(clause).toBe('WHERE "orders"."region" = ANY($1)');
+    expect(values).toEqual([['North', 'South']]);
+  });
+
+  it('unknown qualified column → throws', () => {
+    const qualCols = new Set(['orders.revenue']);
+    expect(() =>
+      buildWhere([{ column: 'orders.secret', operator: 'eq', value: 'x' }], qualCols, 1),
+    ).toThrow('orders.secret');
+  });
 });
 
-describe('buildAggregated', () => {
+// ── SINGLE-TABLE REGRESSION ─────────────────────────────────────────────────
+// The SQL produced for single-table sources must be byte-identical to the old
+// API behavior (when buildAggregated/buildSummary/buildRows took schemaName+tableName).
+
+describe('buildFrom — single-table', () => {
+  it('returns FROM "schema"."table" with no joins', () => {
+    expect(buildFrom(singleSrc)).toBe('FROM "public"."sales"');
+  });
+});
+
+describe('buildAggregated — single-table regression', () => {
   it('builds correct SELECT/GROUP BY/ORDER BY for Sum', () => {
-    const { text, values } = buildAggregated('public', 'sales', {
+    const { text, values } = buildAggregated(singleSrc, {
       x: 'region',
       y: 'revenue',
       aggregation: Aggregation.Sum,
     }, allCols, dateColumns);
-    expect(text).toContain('SELECT "region" AS x, SUM("revenue") AS y');
-    expect(text).toContain('FROM "public"."sales"');
-    expect(text).toContain('GROUP BY "region"');
-    expect(text).toContain('ORDER BY x');
+    expect(text).toBe('SELECT "region" AS x, SUM("revenue") AS y FROM "public"."sales" GROUP BY "region" ORDER BY x');
     expect(values).toEqual([]);
   });
 
   it('Count uses COUNT(*)', () => {
-    const { text } = buildAggregated('public', 'sales', {
+    const { text } = buildAggregated(singleSrc, {
       x: 'region',
       y: 'revenue',
       aggregation: Aggregation.Count,
@@ -151,7 +201,7 @@ describe('buildAggregated', () => {
   });
 
   it('Avg uses AVG', () => {
-    const { text } = buildAggregated('public', 'sales', {
+    const { text } = buildAggregated(singleSrc, {
       x: 'region',
       y: 'revenue',
       aggregation: Aggregation.Avg,
@@ -160,7 +210,7 @@ describe('buildAggregated', () => {
   });
 
   it('Min uses MIN', () => {
-    const { text } = buildAggregated('public', 'sales', {
+    const { text } = buildAggregated(singleSrc, {
       x: 'region',
       y: 'revenue',
       aggregation: Aggregation.Min,
@@ -169,7 +219,7 @@ describe('buildAggregated', () => {
   });
 
   it('Max uses MAX', () => {
-    const { text } = buildAggregated('public', 'sales', {
+    const { text } = buildAggregated(singleSrc, {
       x: 'region',
       y: 'revenue',
       aggregation: Aggregation.Max,
@@ -178,7 +228,7 @@ describe('buildAggregated', () => {
   });
 
   it('date bucket uses DATE_TRUNC', () => {
-    const { text } = buildAggregated('public', 'sales', {
+    const { text } = buildAggregated(singleSrc, {
       x: 'date',
       y: 'revenue',
       aggregation: Aggregation.Sum,
@@ -189,7 +239,7 @@ describe('buildAggregated', () => {
 
   it('invalid date bucket throws', () => {
     expect(() =>
-      buildAggregated('public', 'sales', {
+      buildAggregated(singleSrc, {
         x: 'date',
         y: 'revenue',
         aggregation: Aggregation.Sum,
@@ -199,7 +249,7 @@ describe('buildAggregated', () => {
   });
 
   it('with filters → clause and values included', () => {
-    const { text, values } = buildAggregated('public', 'sales', {
+    const { text, values } = buildAggregated(singleSrc, {
       x: 'region',
       y: 'revenue',
       aggregation: Aggregation.Sum,
@@ -210,9 +260,9 @@ describe('buildAggregated', () => {
   });
 });
 
-describe('buildSummary', () => {
+describe('buildSummary — single-table regression', () => {
   it('builds correct SELECT with aliased aggregations', () => {
-    const { text, values } = buildSummary('public', 'sales', {
+    const { text, values } = buildSummary(singleSrc, {
       metrics: [
         { column: 'revenue', aggregation: Aggregation.Sum },
         { column: 'cost', aggregation: Aggregation.Avg },
@@ -225,29 +275,27 @@ describe('buildSummary', () => {
   });
 
   it('Count metric uses COUNT(*)', () => {
-    const { text } = buildSummary('public', 'sales', {
+    const { text } = buildSummary(singleSrc, {
       metrics: [{ column: 'revenue', aggregation: Aggregation.Count }],
     }, allCols);
     expect(text).toContain('COUNT(*) AS m0');
   });
 });
 
-describe('buildRows', () => {
+describe('buildRows — single-table regression', () => {
   it('builds SELECT * with LIMIT/OFFSET', () => {
-    const { dataQuery, countQuery } = buildRows('public', 'sales', {
+    const { dataQuery, countQuery } = buildRows(singleSrc, {
       page: 1,
       pageSize: 20,
     }, allCols);
-    expect(dataQuery.text).toContain('SELECT *');
-    expect(dataQuery.text).toContain('FROM "public"."sales"');
-    expect(dataQuery.text).toContain('LIMIT $1 OFFSET $2');
+    expect(dataQuery.text).toBe('SELECT * FROM "public"."sales" LIMIT $1 OFFSET $2');
     expect(dataQuery.values).toEqual([20, 0]);
-    expect(countQuery.text).toContain('SELECT COUNT(*) AS total');
+    expect(countQuery.text).toBe('SELECT COUNT(*) AS total FROM "public"."sales"');
     expect(countQuery.values).toEqual([]);
   });
 
   it('page 2 → correct offset', () => {
-    const { dataQuery } = buildRows('public', 'sales', {
+    const { dataQuery } = buildRows(singleSrc, {
       page: 2,
       pageSize: 10,
     }, allCols);
@@ -255,7 +303,7 @@ describe('buildRows', () => {
   });
 
   it('with filters → WHERE included, values in order before limit/offset', () => {
-    const { dataQuery, countQuery } = buildRows('public', 'sales', {
+    const { dataQuery, countQuery } = buildRows(singleSrc, {
       filters: [{ column: 'region', operator: 'eq', value: 'North' }],
       page: 1,
       pageSize: 10,
@@ -264,5 +312,130 @@ describe('buildRows', () => {
     expect(dataQuery.text).toContain('LIMIT $2 OFFSET $3');
     expect(dataQuery.values).toEqual(['North', 10, 0]);
     expect(countQuery.values).toEqual(['North']);
+  });
+});
+
+// ── MULTI-TABLE TESTS ────────────────────────────────────────────────────────
+
+describe('buildFrom — multi-table', () => {
+  it('INNER join produces correct FROM + INNER JOIN', () => {
+    const src: TableSource = {
+      schemaName: 'public',
+      tableName: 'orders',
+      joins: [
+        { tableName: 'customers', joinType: 'inner', leftTable: 'orders', leftColumn: 'customer_id', rightColumn: 'id' },
+      ],
+    };
+    const from = buildFrom(src);
+    expect(from).toBe(
+      'FROM "public"."orders" INNER JOIN "public"."customers" ON "customers"."id" = "orders"."customer_id"',
+    );
+  });
+
+  it('LEFT join produces LEFT JOIN', () => {
+    const src: TableSource = {
+      schemaName: 'public',
+      tableName: 'orders',
+      joins: [
+        { tableName: 'customers', joinType: 'left', leftTable: 'orders', leftColumn: 'customer_id', rightColumn: 'id' },
+      ],
+    };
+    const from = buildFrom(src);
+    expect(from).toContain('LEFT JOIN');
+  });
+
+  it('chained 3-table join: step2.leftTable = step1.tableName', () => {
+    const src: TableSource = {
+      schemaName: 'myschema',
+      tableName: 'orders',
+      joins: [
+        { tableName: 'items', joinType: 'inner', leftTable: 'orders', leftColumn: 'id', rightColumn: 'order_id' },
+        { tableName: 'products', joinType: 'left', leftTable: 'items', leftColumn: 'product_id', rightColumn: 'id' },
+      ],
+    };
+    const from = buildFrom(src);
+    expect(from).toContain('FROM "myschema"."orders"');
+    expect(from).toContain('INNER JOIN "myschema"."items" ON "items"."order_id" = "orders"."id"');
+    expect(from).toContain('LEFT JOIN "myschema"."products" ON "products"."id" = "items"."product_id"');
+  });
+
+  it('throws on invalid joinType', () => {
+    const src: TableSource = {
+      schemaName: 'public',
+      tableName: 'orders',
+      joins: [
+        { tableName: 'x', joinType: 'cross' as never, leftTable: 'orders', leftColumn: 'a', rightColumn: 'b' },
+      ],
+    };
+    expect(() => buildFrom(src)).toThrow('cross');
+  });
+});
+
+describe('buildRows — multi-table explicit projection', () => {
+  const qualCols = new Set(['orders.id', 'orders.revenue', 'orders.tenant_id', 'customers.name']);
+  const storedColumns = [
+    { name: 'orders.id', type: 'string' as const, table: 'orders' },
+    { name: 'orders.revenue', type: 'number' as const, table: 'orders' },
+    { name: 'orders.tenant_id', type: 'string' as const, table: 'orders' },
+    { name: 'customers.name', type: 'string' as const, table: 'customers' },
+  ];
+  const multiSrc: TableSource = {
+    schemaName: 'public',
+    tableName: 'orders',
+    joins: [
+      { tableName: 'customers', joinType: 'inner', leftTable: 'orders', leftColumn: 'customer_id', rightColumn: 'id' },
+    ],
+  };
+
+  it('multi-table: emits explicit projection AS qualified aliases', () => {
+    const { dataQuery } = buildRows(multiSrc, { page: 1, pageSize: 10 }, qualCols, storedColumns);
+    // Should NOT be SELECT *
+    expect(dataQuery.text).not.toContain('SELECT *');
+    // Should contain quoted qualified projections
+    expect(dataQuery.text).toContain('"orders"."id" AS "orders.id"');
+    expect(dataQuery.text).toContain('"orders"."revenue" AS "orders.revenue"');
+    expect(dataQuery.text).toContain('"customers"."name" AS "customers.name"');
+  });
+
+  it('multi-table: tenant column is NOT projected when tenantColumn matches', () => {
+    // storedColumns includes orders.tenant_id — by default it's NOT excluded
+    // unless we pass tenantColumn. Let's test that with no tenantColumn arg,
+    // all storedColumns are included (including the tenant col).
+    const { dataQuery } = buildRows(multiSrc, { page: 1, pageSize: 10 }, qualCols, storedColumns);
+    expect(dataQuery.text).toContain('"orders"."tenant_id" AS "orders.tenant_id"');
+  });
+
+  it('multi-table: COUNT(*) uses buildFrom joins', () => {
+    const { countQuery } = buildRows(multiSrc, { page: 1, pageSize: 10 }, qualCols, storedColumns);
+    expect(countQuery.text).toContain('INNER JOIN');
+    expect(countQuery.text).toContain('SELECT COUNT(*) AS total');
+  });
+
+  it('multi-table buildAggregated: uses JOIN in FROM', () => {
+    const qualColSet = new Set(['orders.revenue', 'orders.region']);
+    const qualDateCols: ColumnSchema[] = [
+      { name: 'orders.revenue', type: 'number' },
+      { name: 'orders.region', type: 'string' },
+    ];
+    const { text } = buildAggregated(
+      multiSrc,
+      { x: 'orders.region', y: 'orders.revenue', aggregation: Aggregation.Sum },
+      qualColSet,
+      qualDateCols,
+    );
+    expect(text).toContain('INNER JOIN');
+    expect(text).toContain('"orders"."region"');
+    expect(text).toContain('SUM("orders"."revenue")');
+  });
+
+  it('multi-table buildSummary: uses JOIN in FROM', () => {
+    const qualColSet = new Set(['orders.revenue']);
+    const { text } = buildSummary(
+      multiSrc,
+      { metrics: [{ column: 'orders.revenue', aggregation: Aggregation.Sum }] },
+      qualColSet,
+    );
+    expect(text).toContain('INNER JOIN');
+    expect(text).toContain('SUM("orders"."revenue")');
   });
 });

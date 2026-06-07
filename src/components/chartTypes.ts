@@ -13,8 +13,20 @@ export interface ChartConfig {
   dateBucket?: DateBucket;
 }
 
-/** "unit_price" → "Unit Price". Shared display formatting for column/dimension names. */
+/**
+ * "unit_price" → "Unit Price". Shared display formatting for column/dimension names.
+ * For qualified names (multi-table datasets) like "orders.revenue", formats as
+ * "Revenue (Orders)" to show the source table. Bare names are unchanged in behavior.
+ */
 export function prettify(name: string): string {
+  const dot = name.indexOf('.');
+  if (dot !== -1) {
+    const table = name.slice(0, dot);
+    const col = name.slice(dot + 1);
+    const prettyCol = col.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    const prettyTable = table.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+    return `${prettyCol} (${prettyTable})`;
+  }
   return name.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 

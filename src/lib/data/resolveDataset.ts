@@ -4,6 +4,7 @@
 // point always applies.
 import type { UserContext } from '../auth/types';
 import type { DataProvider } from './DataProvider';
+import type { JoinStep } from './types';
 import { AccessControlledProvider } from './AccessControlledProvider';
 import { CsvProvider } from './CsvProvider';
 import { SqlProvider } from './SqlProvider';
@@ -29,7 +30,8 @@ export async function getProviderForDataset(
         name: string;
         tableName: string;
         connectionId: string;
-        columnsJson: { name: string; type: import('./types').ColumnType }[];
+        columnsJson: { name: string; type: import('./types').ColumnType; table?: string }[];
+        joins: JoinStep[];
       }
     | null = null;
   let sqlConnectionId: string | null = null;
@@ -67,7 +69,8 @@ export async function getProviderForDataset(
         name: row.name,
         tableName: row.tableName!,
         connectionId: row.connectionId,
-        columnsJson: row.columnsJson as { name: string; type: import('./types').ColumnType }[],
+        columnsJson: row.columnsJson as { name: string; type: import('./types').ColumnType; table?: string }[],
+        joins: (row.joinsJson ?? []) as JoinStep[],
       };
     }
   }
