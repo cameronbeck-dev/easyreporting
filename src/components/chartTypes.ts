@@ -4,7 +4,7 @@ import type { DateBucket } from '@/lib/data/types';
 export interface ChartConfig {
   id: string;
   title: string;
-  type: 'line' | 'area' | 'bar';
+  type: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'donut';
   datasetId: string;
   x: string;
   y: string;

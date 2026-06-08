@@ -26,7 +26,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
   const [error, setError] = useState<string | null>(null);
 
   const [title, setTitle] = useState(initial?.title ?? '');
-  const [chartType, setChartType] = useState<'line' | 'area' | 'bar'>(initial?.type ?? 'bar');
+  const [chartType, setChartType] = useState<'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'donut'>(initial?.type ?? 'bar');
   const [xCol, setXCol] = useState(initial?.x ?? '');
   const [yCol, setYCol] = useState(initial?.y ?? '');
   const [aggregation, setAggregation] = useState<Aggregation>(initial?.aggregation ?? Aggregation.Sum);
@@ -35,6 +35,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
   const isCount = aggregation === Aggregation.Count;
   const xType = columns.find((c) => c.name === xCol)?.type;
   const isXDate = xType === 'date';
+  const isPieType = chartType === 'pie' || chartType === 'donut';
 
   useEffect(() => {
     getJson<DatasetSchema>(`/api/schema?datasetId=${encodeURIComponent(datasetId)}`)
@@ -63,7 +64,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
       x: xCol,
       y: yCol,
       aggregation,
-      dateBucket: isXDate && bucket !== 'global' ? bucket : undefined,
+      dateBucket: isXDate && !isPieType && bucket !== 'global' ? bucket : undefined,
     };
     onSubmit(config);
   };
@@ -104,12 +105,15 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
               <label className="mb-1 block text-sm font-medium text-foreground">Chart Type</label>
               <select
                 value={chartType}
-                onChange={(e) => setChartType(e.target.value as 'line' | 'area' | 'bar')}
+                onChange={(e) => setChartType(e.target.value as 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'donut')}
                 className={fieldClass}
               >
                 <option value="bar">Bar</option>
                 <option value="line">Line</option>
                 <option value="area">Area</option>
+                <option value="scatter">Scatter</option>
+                <option value="pie">Pie</option>
+                <option value="donut">Donut</option>
               </select>
             </div>
 
@@ -122,7 +126,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
               </select>
             </div>
 
-            {isXDate && (
+            {isXDate && !isPieType && (
               <div>
                 <label className="mb-1 block text-sm font-medium text-foreground">Time Grouping</label>
                 <select

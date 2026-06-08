@@ -116,7 +116,7 @@ All pages require sign-in. `/login` and `/invite/<token>` are the only public ro
 
 - `/` — Dashboard:
   - **Snapshot tiles** — auto-derived headline totals, user-editable (hover → edit → pick aggregation/column), with optional compare-to-previous-period deltas.
-  - **Charts** — add/edit/remove line/area/bar visualizations; per-chart date granularity (day/week/month/quarter); click a point to drill into the Data page filtered.
+  - **Charts** — add/edit/remove line/area/bar/scatter/pie/donut visualizations; per-chart date granularity (day/week/month/quarter, not applicable to pie/donut); click a point to drill into the Data page filtered. Stacked/combo chart types are pending multi-series support.
   - **Global controls** (collapsible) — date range, time granularity, dimension focus, and compare, all applied to every tile + chart at once.
   - **Resizable grid** — drag the gutter between cards to set column width; cards auto-wrap. Charts keep a 1:2 aspect ratio.
   - **Saved per user, per dataset** — charts, tiles, and filters persist server-side for each user and dataset; until you customise it you see sensible defaults, and **Reset to default** restores them. Grid width / panel state stay device-local.

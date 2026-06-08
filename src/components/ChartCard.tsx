@@ -6,8 +6,9 @@ import ReactECharts from 'echarts-for-react';
 import type { ChartConfig } from './chartTypes';
 import type { AggregatedResult, Filter, DateBucket } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
-import { useChartTheme, axisStyle, tooltipStyle } from './echartsTheme';
+import { useChartTheme } from './echartsTheme';
 import { fieldColor } from './fieldColors';
+import { buildChartOption } from './buildChartOption';
 import { postJson } from '@/lib/api/client';
 
 interface Props {
@@ -84,51 +85,7 @@ export default function ChartCard({
 
   const getEChartsOption = () => {
     if (!result || !theme) return {};
-
-    const seriesType = config.type === 'bar' ? 'bar' : 'line';
-    const series = result.series.map((s) => {
-      const color = fieldColor(s.name === 'Count' ? 'records' : s.name);
-      return {
-        name: s.name,
-        type: seriesType,
-        data: s.data,
-        smooth: seriesType === 'line',
-        symbol: 'circle',
-        symbolSize: 6,
-        itemStyle: {
-          color,
-          ...(config.type === 'bar' ? { borderRadius: [4, 4, 0, 0] } : {}),
-        },
-        lineStyle: { color },
-        ...(config.type === 'bar' ? { barMaxWidth: 28 } : {}),
-        ...(config.type === 'area' ? { areaStyle: { color, opacity: 0.16 } } : {}),
-      };
-    });
-
-    return {
-      color: theme.color,
-      // containLabel already reserves room for the axis labels — keep these
-      // margins small so the plot fills the card instead of doubling the gutter.
-      grid: { top: 12, right: 16, bottom: 4, left: 4, containLabel: true },
-      tooltip: {
-        trigger: 'axis',
-        ...tooltipStyle(theme),
-        axisPointer: { lineStyle: { color: theme.axisLine } },
-      },
-      xAxis: {
-        type: 'category',
-        data: result.x,
-        boundaryGap: config.type === 'bar',
-        ...axisStyle(theme),
-      },
-      yAxis: {
-        type: 'value',
-        ...axisStyle(theme),
-        axisLine: { show: false },
-        splitLine: { lineStyle: { color: theme.splitLine, type: 'dashed' } },
-      },
-      series,
-    };
+    return buildChartOption(config, result, theme);
   };
 
   const onChartClick = (params: { name: string }) => {
