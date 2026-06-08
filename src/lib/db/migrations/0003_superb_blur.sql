@@ -1,0 +1,1 @@
+ALTER TABLE `datasets` ADD `computed_fields_json` text;

@@ -140,7 +140,26 @@ Suites:
 - `tests/lib/data/sql/identifiers.test.ts` — `quoteIdent`, `assertKnown`
 - `tests/lib/data/sql/buildQuery.test.ts` — `buildWhere`/`buildAggregated`/`buildSummary`/`buildRows`
 - `tests/lib/data/AccessControlledProvider.test.ts` — column visibility, security filter injection, row scopes, fail-closed
+- `tests/lib/data/computed/parser.test.ts` — valid expressions, error cases, injection rejection
+- `tests/lib/data/computed/evaluator.test.ts` — arithmetic, null propagation, aggregation helpers
+- `tests/lib/data/computed/AccessControlledProvider.computed.test.ts` — computed field visibility, aggregated/summary/rows queries, row cap, behavior-preserving
+- `tests/lib/admin/repo.computed.test.ts` — createDataset + computed fields, addComputedField, removeComputedField
 - `tests/lib/db/config-repo.test.ts` — `getResolvedUserById`, `listTenantColumnsResolved` (integration)
+
+## Computed / Derived Fields
+
+Owner admins can define **computed fields** on SQL datasets — virtual numeric columns derived from arithmetic expressions over real source columns.
+
+**Key rules:**
+
+- **Arithmetic only:** `+`, `-`, `*`, `/`, parentheses, unary minus, numeric literals, and bare or qualified column references (e.g. `revenue - cost`, `orders.revenue / orders.quantity`). No SQL, no `eval`, no injection surface.
+- **Measure only:** computed fields appear in the **Y axis** and **summary metric** pickers; they are excluded from the **X axis** (group-by) picker. Aggregation type `COUNT` is rejected for computed fields.
+- **Owner-defined:** set per dataset in the admin UI (`/admin/datasets`). Each field has a name (dot-free, no reserved chars, unique vs all source and computed names) and an expression.
+- **Fail-closed masking:** a computed field is visible only when **all** its dependency columns are allowed for the requesting company. A masked dependency makes the whole field invisible — schema, row results, query validation. Querying a dep-masked computed field returns the same error as a nonexistent column.
+- **In-app evaluation:** expressions are evaluated in JavaScript after fetching source rows — no SQL is generated from user expressions. For aggregations, all matching rows are fetched (up to 100 000; a `ComputedRowCapError` is thrown if exceeded). Row browsing evaluates per-page, so it is not subject to the cap.
+- **No computed-of-computed:** expressions may only reference real source columns.
+
+**Admin UI:** `/admin/datasets` shows a "Computed fields" section per dataset. Enter a field name and expression; a live parser shows detected column references or parse errors before submission. Existing computed fields can be removed individually.
 
 ## UI-Driven Table Joins
 

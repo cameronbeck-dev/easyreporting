@@ -17,6 +17,7 @@ export interface TableSource {
 export interface ColumnSchema {
   name: string;
   type: ColumnType;
+  isComputed?: boolean;
 }
 
 export interface Dataset {

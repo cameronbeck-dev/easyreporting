@@ -28,6 +28,8 @@ import { testConnection as introspectTestConnection, listTablesAndViews, listCol
 import type { ColumnType, JoinStep } from '../data/types';
 import { type DecryptedConnection, toDecryptedConnection } from '../data/sql/pool';
 import type { RowScope } from '../auth/types';
+import type { ComputedField } from '../data/computed/types';
+import { parseComputedExpression, ComputedParseError } from '../data/computed/parser';
 
 // ---------------------------------------------------------------------------
 // Guards
@@ -608,6 +610,7 @@ export interface DatasetAdminRow {
   connectionId: string | null;
   tableName: string | null;
   tenantColumn: string;
+  computedFields: ComputedField[];
   createdAt: Date;
 }
 
@@ -620,6 +623,7 @@ export interface CreateDatasetInput {
   tableName: string;
   tenantColumn: string;
   joins: JoinStepInput[];
+  computedFields?: { name: string; expression: string }[];
 }
 
 const VALID_JOIN_TYPES = new Set<string>(['inner', 'left']);
@@ -667,6 +671,8 @@ export async function createDataset(
       type: mapSqlType(c.sqlType),
     }));
 
+    const computedFields = validateComputedFields(input.computedFields ?? [], columnsJson.map((c) => c.name), tenantColumn);
+
     const id = randomUUID();
     await db.insert(datasets).values({
       id,
@@ -675,6 +681,7 @@ export async function createDataset(
       tableName: input.tableName,
       tenantColumn,
       columnsJson,
+      computedFieldsJson: computedFields.length > 0 ? computedFields : null,
     });
     return id;
   }
@@ -782,6 +789,8 @@ export async function createDataset(
   }
   const qualifiedTenantColumn = `${input.tableName}.${baseTenantColumn}`;
 
+  const computedFields = validateComputedFields(input.computedFields ?? [], qualifiedCols.map((c) => c.name), qualifiedTenantColumn);
+
   const id = randomUUID();
   await db.insert(datasets).values({
     id,
@@ -791,6 +800,7 @@ export async function createDataset(
     tenantColumn: qualifiedTenantColumn,
     columnsJson: qualifiedCols,
     joinsJson: validatedJoins,
+    computedFieldsJson: computedFields.length > 0 ? computedFields : null,
   });
   return id;
 }
@@ -804,16 +814,62 @@ export async function listDatasetsAdmin(admin: AdminContext): Promise<DatasetAdm
       connectionId: datasets.connectionId,
       tableName: datasets.tableName,
       tenantColumn: datasets.tenantColumn,
+      computedFieldsJson: datasets.computedFieldsJson,
       createdAt: datasets.createdAt,
     })
     .from(datasets);
-  return rows;
+  return rows.map((r) => ({
+    ...r,
+    computedFields: (r.computedFieldsJson ?? []) as ComputedField[],
+  }));
 }
 
 export async function deleteDataset(admin: AdminContext, datasetId: string): Promise<void> {
   assertOwner(admin);
   await db.delete(tenantColumnRules).where(eq(tenantColumnRules.datasetId, datasetId));
   await db.delete(datasets).where(eq(datasets.id, datasetId));
+}
+
+export async function addComputedField(
+  admin: AdminContext,
+  datasetId: string,
+  input: { name: string; expression: string },
+): Promise<void> {
+  assertOwner(admin);
+  const [row] = await db.select().from(datasets).where(eq(datasets.id, datasetId)).limit(1);
+  if (!row) throw new ForbiddenError('Dataset not found.');
+
+  const existing = (row.computedFieldsJson ?? []) as ComputedField[];
+  const sourceColNames = (row.columnsJson as { name: string }[]).map((c) => c.name);
+
+  const newFields = validateComputedFields(
+    [...existing.map((f) => ({ name: f.name, expression: f.expression })), input],
+    sourceColNames,
+    row.tenantColumn,
+  );
+
+  await db
+    .update(datasets)
+    .set({ computedFieldsJson: newFields })
+    .where(eq(datasets.id, datasetId));
+}
+
+export async function removeComputedField(
+  admin: AdminContext,
+  datasetId: string,
+  fieldName: string,
+): Promise<void> {
+  assertOwner(admin);
+  const [row] = await db.select().from(datasets).where(eq(datasets.id, datasetId)).limit(1);
+  if (!row) throw new ForbiddenError('Dataset not found.');
+
+  const existing = (row.computedFieldsJson ?? []) as ComputedField[];
+  const updated = existing.filter((f) => f.name !== fieldName);
+
+  await db
+    .update(datasets)
+    .set({ computedFieldsJson: updated.length > 0 ? updated : null })
+    .where(eq(datasets.id, datasetId));
 }
 
 // ---------------------------------------------------------------------------
@@ -823,4 +879,46 @@ export async function deleteDataset(admin: AdminContext, datasetId: string): Pro
 function buildInviteUrl(token: string): string {
   const base = process.env.APP_URL ?? 'http://localhost:3000';
   return `${base}/invite/${token}`;
+}
+
+function validateComputedFields(
+  inputs: { name: string; expression: string }[],
+  sourceColNames: string[],
+  tenantColumn: string,
+): ComputedField[] {
+  const result: ComputedField[] = [];
+  const usedNames = new Set<string>();
+  const allSourceNames = new Set(sourceColNames);
+
+  for (const input of inputs) {
+    const name = input.name.trim();
+    if (!name) throw new ForbiddenError('Computed field name must not be empty.');
+    if (name.includes('.')) throw new ForbiddenError(`Computed field name "${name}" must not contain a dot.`);
+    if (/['"`;]/.test(name)) throw new ForbiddenError(`Computed field name "${name}" contains invalid characters.`);
+    if (usedNames.has(name) || allSourceNames.has(name)) {
+      throw new ForbiddenError(`Computed field name "${name}" conflicts with an existing column or computed field name.`);
+    }
+    usedNames.add(name);
+
+    let parseResult: { ast: import('../data/computed/types').Expr; dependencies: string[] };
+    try {
+      parseResult = parseComputedExpression(input.expression, sourceColNames);
+    } catch (err: unknown) {
+      if (err instanceof ComputedParseError) {
+        throw new ForbiddenError(`Computed field "${name}": ${err.message}`);
+      }
+      throw err;
+    }
+
+    const { dependencies } = parseResult;
+    if (dependencies.includes(tenantColumn)) {
+      throw new ForbiddenError(
+        `Computed field "${name}" references the tenant column "${tenantColumn}", which is always masked and would permanently hide this field.`,
+      );
+    }
+
+    result.push({ name, type: 'number', expression: input.expression, dependencies });
+  }
+
+  return result;
 }

@@ -15,6 +15,7 @@ import { datasets, connections } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { listTenantColumnsResolved } from '../db/config-repo';
 import { DEFAULT_TENANT_COLUMN } from './constants';
+import type { ComputedField } from './computed/types';
 
 export async function getProviderForDataset(
   ctx: UserContext,
@@ -35,6 +36,7 @@ export async function getProviderForDataset(
       }
     | null = null;
   let sqlConnectionId: string | null = null;
+  let resolvedComputedFields: ComputedField[] = [];
 
   if (datasetId !== 'sales') {
     const [row] = await db
@@ -53,6 +55,7 @@ export async function getProviderForDataset(
       resolvedDatasetId = row.id;
       resolvedTenantColumn = row.tenantColumn;
       sourceType = 'csv';
+      resolvedComputedFields = (row.computedFieldsJson ?? []) as ComputedField[];
     } else {
       // SQL source
       if (!row.tenantColumn || !row.tenantColumn.trim()) {
@@ -72,6 +75,7 @@ export async function getProviderForDataset(
         columnsJson: row.columnsJson as { name: string; type: import('./types').ColumnType; table?: string }[],
         joins: (row.joinsJson ?? []) as JoinStep[],
       };
+      resolvedComputedFields = (row.computedFieldsJson ?? []) as ComputedField[];
     }
   }
 
@@ -109,5 +113,5 @@ export async function getProviderForDataset(
     innerProvider = new SqlProvider({ dataset: sqlDataset!, connection: decryptedConn });
   }
 
-  return new AccessControlledProvider(innerProvider, dsCtx);
+  return new AccessControlledProvider(innerProvider, dsCtx, resolvedComputedFields);
 }

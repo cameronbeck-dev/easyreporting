@@ -198,6 +198,25 @@ export async function deleteDatasetAction(_prev: ActionState, formData: FormData
   });
 }
 
+export async function addComputedFieldAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const datasetId = String(formData.get('datasetId') ?? '');
+  return run(['/admin/datasets'], async () => {
+    const admin = await requireAdminAction();
+    await repo.addComputedField(admin, datasetId, {
+      name: String(formData.get('name') ?? ''),
+      expression: String(formData.get('expression') ?? ''),
+    });
+  });
+}
+
+export async function removeComputedFieldAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const datasetId = String(formData.get('datasetId') ?? '');
+  return run(['/admin/datasets'], async () => {
+    const admin = await requireAdminAction();
+    await repo.removeComputedField(admin, datasetId, String(formData.get('fieldName') ?? ''));
+  });
+}
+
 // --- Profiles (row restrictions) -----------------------------------------
 
 export async function createProfileAction(_prev: ActionState, formData: FormData): Promise<ActionState> {

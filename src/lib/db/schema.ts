@@ -3,6 +3,7 @@
 // For now it is populated by the seed script.
 import { sqliteTable, text, integer, primaryKey } from 'drizzle-orm/sqlite-core';
 import type { ColumnType, JoinStep } from '../data/types';
+import type { ComputedField } from '../data/computed/types';
 import type { DashboardLayout } from '../../components/chartTypes';
 
 // A person who can sign in. tenantId scopes them to one company's data;
@@ -90,6 +91,8 @@ export const datasets = sqliteTable('datasets', {
     .$type<{ name: string; type: ColumnType; table?: string }[]>(),
   joinsJson: text('joins_json', { mode: 'json' })
     .$type<JoinStep[]>(),
+  computedFieldsJson: text('computed_fields_json', { mode: 'json' })
+    .$type<ComputedField[]>(),
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()
     .$defaultFn(() => new Date()),

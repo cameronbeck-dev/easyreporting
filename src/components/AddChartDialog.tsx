@@ -36,6 +36,8 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
   const xType = columns.find((c) => c.name === xCol)?.type;
   const isXDate = xType === 'date';
   const isPieType = chartType === 'pie' || chartType === 'donut';
+  const xColumns = columns.filter((c) => !c.isComputed);
+  const yColumns = columns;
 
   useEffect(() => {
     getJson<DatasetSchema>(`/api/schema?datasetId=${encodeURIComponent(datasetId)}`)
@@ -120,7 +122,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
             <div>
               <label className="mb-1 block text-sm font-medium text-foreground">X Axis (Group By)</label>
               <select value={xCol} onChange={(e) => setXCol(e.target.value)} className={fieldClass}>
-                {columns.map((c) => (
+                {xColumns.map((c) => (
                   <option key={c.name} value={c.name}>{prettify(c.name)}</option>
                 ))}
               </select>
@@ -166,7 +168,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
                 disabled={isCount}
                 className={`${fieldClass} disabled:bg-surface-muted disabled:text-foreground-muted`}
               >
-                {columns.map((c) => (
+                {yColumns.map((c) => (
                   <option key={c.name} value={c.name}>{prettify(c.name)}</option>
                 ))}
               </select>

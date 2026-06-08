@@ -6,11 +6,15 @@ import {
   deleteDatasetAction,
   introspectTablesAction,
   introspectColumnsAction,
+  addComputedFieldAction,
+  removeComputedFieldAction,
   type ActionState,
 } from '@/lib/admin/actions';
 import { SubmitButton, FormError, inputClass, labelClass } from './ui';
 import type { DatasetAdminRow, ConnectionRow } from '@/lib/admin/repo';
 import type { JoinStep } from '@/lib/data/types';
+import type { ComputedField } from '@/lib/data/computed/types';
+import { parseComputedExpression } from '@/lib/data/computed/parser';
 
 interface ColumnEntry {
   name: string;
@@ -404,24 +408,102 @@ export default function DatasetsManager({
   );
 }
 
+function ComputedFieldsSection({ dataset }: { dataset: DatasetAdminRow }) {
+  const [addState, addAction] = useActionState<ActionState, FormData>(addComputedFieldAction, {});
+  const [removeState, removeAction] = useActionState<ActionState, FormData>(removeComputedFieldAction, {});
+  const [name, setName] = useState('');
+  const [expression, setExpression] = useState('');
+
+  let parsePreview: string | null = null;
+  let parseError: string | null = null;
+  if (expression.trim()) {
+    try {
+      const { dependencies } = parseComputedExpression(expression, []);
+      parsePreview = dependencies.length > 0 ? `References: ${dependencies.join(', ')}` : 'No column references';
+    } catch (err) {
+      parseError = err instanceof Error ? err.message : 'Parse error';
+    }
+  }
+
+  return (
+    <div className="mt-3 flex flex-col gap-2">
+      <h4 className="text-xs font-semibold text-foreground-muted uppercase tracking-wide">Computed fields</h4>
+
+      {dataset.computedFields.length > 0 && (
+        <div className="flex flex-col gap-1">
+          {dataset.computedFields.map((f: ComputedField) => (
+            <div key={f.name} className="flex items-center justify-between gap-2 rounded-control border border-border bg-background px-3 py-2 text-sm">
+              <div>
+                <span className="font-medium text-foreground">{f.name}</span>
+                <span className="ml-2 font-mono text-xs text-foreground-muted">{f.expression}</span>
+              </div>
+              <form action={removeAction}>
+                <input type="hidden" name="datasetId" value={dataset.id} />
+                <input type="hidden" name="fieldName" value={f.name} />
+                <button type="submit" className="text-xs text-danger hover:underline">Remove</button>
+              </form>
+            </div>
+          ))}
+          {removeState.error && <p className="text-xs text-danger">{removeState.error}</p>}
+        </div>
+      )}
+
+      <form action={addAction} className="flex flex-col gap-2">
+        <input type="hidden" name="datasetId" value={dataset.id} />
+        <div className="grid grid-cols-2 gap-2">
+          <label className={labelClass}>
+            Field name
+            <input
+              name="name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className={inputClass}
+              placeholder="margin"
+            />
+          </label>
+          <label className={labelClass}>
+            Expression
+            <input
+              name="expression"
+              value={expression}
+              onChange={(e) => setExpression(e.target.value)}
+              className={inputClass}
+              placeholder="revenue - cost"
+            />
+          </label>
+        </div>
+        {parsePreview && <p className="text-xs text-foreground-muted">{parsePreview}</p>}
+        {parseError && <p className="text-xs text-danger">{parseError}</p>}
+        <div>
+          <SubmitButton variant="ghost" pendingLabel="Adding…">Add computed field</SubmitButton>
+        </div>
+        {addState.error && <p className="text-xs text-danger">{addState.error}</p>}
+      </form>
+    </div>
+  );
+}
+
 function DatasetItem({ dataset }: { dataset: DatasetAdminRow }) {
   const [state, action] = useActionState<ActionState, FormData>(deleteDatasetAction, {});
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 py-3">
-      <div>
-        <p className="font-medium text-foreground">{dataset.name}</p>
-        <p className="text-sm text-foreground-muted">
-          {dataset.tableName ?? 'CSV'} — tenant column: {dataset.tenantColumn}
-        </p>
-        {state.error && <p className="text-xs text-danger">{state.error}</p>}
+    <div className="flex flex-col gap-2 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="font-medium text-foreground">{dataset.name}</p>
+          <p className="text-sm text-foreground-muted">
+            {dataset.tableName ?? 'CSV'} — tenant column: {dataset.tenantColumn}
+          </p>
+          {state.error && <p className="text-xs text-danger">{state.error}</p>}
+        </div>
+        <form action={action}>
+          <input type="hidden" name="datasetId" value={dataset.id} />
+          <SubmitButton variant="danger" pendingLabel="Deleting…">
+            Delete
+          </SubmitButton>
+        </form>
       </div>
-      <form action={action}>
-        <input type="hidden" name="datasetId" value={dataset.id} />
-        <SubmitButton variant="danger" pendingLabel="Deleting…">
-          Delete
-        </SubmitButton>
-      </form>
+      <ComputedFieldsSection dataset={dataset} />
     </div>
   );
 }
