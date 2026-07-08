@@ -15,7 +15,7 @@ Browser
   getUserContext()          (resolves the signed-in session -> user + access
         |                    profile from the metadata DB; null -> 401)
         v
-  getProvider(ctx, datasetId)  (resolveDataset.ts: picks CSV or SQL, applies
+  getProvider(ctx, datasetId)  (resolveDataset.ts: picks CSV / SQL / file, applies
         |                        per-dataset tenant column + column allow-list)
         v
   AccessControlledProvider  (injects tenant filter + row scopes, enforces column allow-list)
@@ -24,9 +24,11 @@ Browser
   CsvProvider               (parses data/sales.csv, in-memory query)
     OR
   SqlProvider               (Postgres via pg; pooled; identifier-safe SQL builders)
+    OR
+  DuckDbProvider            (embedded DuckDB over a Parquet file — folder-dropped CSV/Excel)
         |
         v
-  data/sales.csv  OR  Postgres table/view
+  data/sales.csv  OR  Postgres table/view  OR  data/warehouse/<id>.parquet
 
   Metadata DB (SQLite via Drizzle) — users (+ password hashes, invites), per-company
     per-dataset column rules, optional row profiles + scopes, SQL connections
@@ -116,12 +118,12 @@ All pages require sign-in. `/login` and `/invite/<token>` are the only public ro
 
 - `/` — Dashboard:
   - **Snapshot tiles** — auto-derived headline totals, user-editable (hover → edit → pick aggregation/column), with optional compare-to-previous-period deltas.
-  - **Charts** — add/edit/remove line/area/bar/scatter/pie/donut visualizations; per-chart date granularity (day/week/month/quarter, not applicable to pie/donut); click a point to drill into the Data page filtered. Stacked/combo chart types are pending multi-series support.
+  - **Charts** — add/edit/remove line/area/bar/scatter/pie/donut visualizations; per-chart date granularity (day/week/month/quarter, not applicable to pie/donut); click a point to drill into the Data page filtered; **Export** downloads the numbers behind the chart as CSV (X dimension + one column per series). Stacked/combo chart types are pending multi-series support.
   - **Global controls** (collapsible) — date range, time granularity, dimension focus, and compare, all applied to every tile + chart at once.
   - **Resizable grid** — drag the gutter between cards to set column width; cards auto-wrap. Charts keep a 1:2 aspect ratio.
   - **Saved per user, per dataset** — charts, tiles, and filters persist server-side for each user and dataset; until you customise it you see sensible defaults, and **Reset to default** restores them. Grid width / panel state stay device-local.
 - **Dataset switcher** (header) — when more than the built-in demo dataset exists, pick the active dataset; the Dashboard and Data Explorer follow it via `?datasetId=`.
-- `/data` — Data Explorer: paginated table of raw rows. Accepts `?datasetId=`, `?filterCol=`, `?filterVal=` query params.
+- `/data` — Data Explorer: paginated table of raw rows. Accepts `?datasetId=`, `?filterCol=`, `?filterVal=` query params. **Export CSV** downloads the currently-filtered view (up to 50,000 rows; larger sets are flagged as truncated). The export runs through the same `AccessControlledProvider` choke point as the on-screen table, so tenant isolation, row scopes, and the fail-closed column allow-list apply identically — a company never exports a column or row it cannot see.
 - `/admin` — Admin (admins only): manage users and row profiles, scoped to the admin's company; owner admins also set each company's visible columns. Non-admins are redirected away server-side.
 - Light/dark mode toggle and per-company white-label branding (colors, logo, font) resolved server-side.
 
@@ -137,14 +139,49 @@ Tests live in `tests/` mirroring `src/`. Integration tests (config-repo) use an 
 Suites:
 - `tests/lib/data/dateBuckets.test.ts` — `formatBucketKey` (day/month/quarter/week, edge cases)
 - `tests/lib/data/CsvProvider.test.ts` — all 8 filter operators, aggregate functions, empty-set behavior
+- `tests/lib/data/export/toCsv.test.ts` — CSV serialization: `rowsToCsv` (prettified headers, provider column order / no stripped-column leak, null cells, quoting, empty result) and `aggregatedToCsv` (X + per-series columns, multi-series, missing points, Count label)
 - `tests/lib/data/sql/identifiers.test.ts` — `quoteIdent`, `assertKnown`
 - `tests/lib/data/sql/buildQuery.test.ts` — `buildWhere`/`buildAggregated`/`buildSummary`/`buildRows`
+- `tests/lib/data/duck/buildDuckQuery.test.ts` — DuckDB SQL builders (read_parquet source, `IN`/`ILIKE`, date-bucket `strftime`, LIMIT/OFFSET, allow-list enforcement)
+- `tests/lib/data/duck/mapDuckType.test.ts` — DuckDB → `ColumnType` mapping (numeric/date/boolean families, conservative fallback)
+- `tests/lib/data/duck/DuckDbProvider.test.ts` — integration over a real Parquet: value coercion (BIGINT/DECIMAL → number, DATE → string), aggregation, month bucketing, filters, summary, pagination
 - `tests/lib/data/AccessControlledProvider.test.ts` — column visibility, security filter injection, row scopes, fail-closed
 - `tests/lib/data/computed/parser.test.ts` — valid expressions, error cases, injection rejection
 - `tests/lib/data/computed/evaluator.test.ts` — arithmetic, null propagation, aggregation helpers
 - `tests/lib/data/computed/AccessControlledProvider.computed.test.ts` — computed field visibility, aggregated/summary/rows queries, row cap, behavior-preserving
 - `tests/lib/admin/repo.computed.test.ts` — createDataset + computed fields, addComputedField, removeComputedField
 - `tests/lib/db/config-repo.test.ts` — `getResolvedUserById`, `listTenantColumnsResolved` (integration)
+
+## File-backed datasets (drop a folder of CSV/Excel)
+
+Load large CSV/Excel files as datasets without a database. Drop a folder of files under
+`data/datasets/<id>/` and run:
+
+```bash
+npm run db:sync-files
+```
+
+Each subfolder becomes one dataset (its files unioned by column name). See
+`data/datasets/README.md` for the full convention and the optional `dataset.json` sidecar.
+
+**How it works — slow ingest, fast queries:**
+
+- **Ingest (`db:sync-files`):** DuckDB *streams* each file into one compressed Parquet
+  file under `data/warehouse/<id>.parquet` (a 200 MB+ source file is never held wholly in
+  memory), infers the column schema, and upserts the dataset into the metadata DB.
+- **Query:** `DuckDbProvider` runs columnar SQL over the Parquet, so charts and the data
+  table stay fast on large files. It implements the same `DataProvider` interface and is
+  wrapped by the **same `AccessControlledProvider`** — tenant isolation, row scopes, and
+  the fail-closed column allow-list are identical to the CSV/SQL paths.
+
+**Multi-tenancy:** the tenant lives in a **column inside the files** (default `tenantId`,
+overridable per folder). Sync **refuses** a dataset whose files lack that column
+(fail-closed) — a dataset that can't be isolated must never be queryable. After syncing,
+non-owner companies see no columns until an admin grants them (`/admin/columns`).
+
+> DuckDB (`@duckdb/node-api`) is a native, server-only module, kept out of the client
+> bundle via `serverExternalPackages` in `next.config.ts`. Source drops and
+> `data/warehouse/` are git-ignored.
 
 ## Computed / Derived Fields
 

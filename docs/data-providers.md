@@ -91,7 +91,32 @@ Putting security logic inside a provider would duplicate it inconsistently and r
 
 Edit `src/lib/data/resolveDataset.ts` to add a new branch. The resolver picks the inner
 provider based on the dataset row's `connectionId` and any driver-specific fields, then wraps
-it in `AccessControlledProvider` before returning.
+it in `AccessControlledProvider` before returning. Current discriminator:
+
+- `connectionId != null` → `SqlProvider`
+- `connectionId == null && parquetPath != null` → `DuckDbProvider` (file-backed)
+- `connectionId == null && parquetPath == null` → `CsvProvider` (the `sales` demo)
+
+## Implementing the File Provider (DuckDB)
+
+`src/lib/data/DuckDbProvider.ts` serves folder-dropped CSV/Excel files that
+`scripts/sync-files.ts` has materialised into one Parquet file per dataset (streamed at
+sync time so large files never load into memory). Key points:
+
+- **Single embedded engine.** `src/lib/data/duck/connection.ts` holds one lazily-created,
+  process-lifetime DuckDB connection, loaded via a dynamic `import()` so the native module
+  (`@duckdb/node-api`) is never pulled into a client bundle (also listed in
+  `serverExternalPackages`).
+- **Identifier vs value safety** mirrors the SQL provider: `buildDuckQuery.ts` reuses
+  `quoteIdent`/`assertKnown`, parameterises every value (`$1`, `$2`, …), and short-circuits
+  an empty `in` to `FALSE`. It differs from Postgres only where the dialect does: the source
+  is `read_parquet(<path>)`, `in` expands to `IN ($1, $2, …)` rather than `= ANY($1)`, and
+  date buckets use `date_trunc` + `strftime`.
+- **Value coercion.** DuckDB returns BIGINT/HUGEINT as JS BigInt and DECIMAL/DATE as value
+  objects; results are coerced back to plain numbers/strings by the column's declared type
+  (`coerceByType`) so callers get ordinary JS values.
+- **Same guarantee.** Like `SqlProvider`, it returns raw, unmasked data and honours injected
+  filters; tenant isolation and the column allow-list are applied by `AccessControlledProvider`.
 
 ## Implementing a Postgres Provider
 

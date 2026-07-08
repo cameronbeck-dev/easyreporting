@@ -1,0 +1,15 @@
+order_date,region,category,quantity,amount,tenantId
+2024-01-08,New South Wales,Freight,12,1450.00,globex
+2024-01-19,Victoria,Warehousing,4,860.50,globex
+2024-02-03,Queensland,Freight,7,990.00,globex
+2024-02-21,Victoria,Freight,9,1210.75,globex
+2024-03-11,New South Wales,Last Mile,15,540.00,globex
+2024-03-27,Western Australia,Warehousing,6,1320.00,globex
+2024-01-14,Queensland,Freight,20,2600.00,initech
+2024-02-09,New South Wales,Freight,3,410.00,initech
+2024-02-28,Queensland,Last Mile,11,720.00,initech
+2024-03-18,Victoria,Warehousing,8,1540.00,initech
+2024-01-05,New South Wales,Freight,25,3100.00,easyreporting
+2024-02-16,Western Australia,Freight,14,1880.00,easyreporting
+2024-03-02,Victoria,Last Mile,18,960.00,easyreporting
+2024-03-29,Queensland,Warehousing,5,1150.00,easyreporting

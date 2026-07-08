@@ -9,7 +9,8 @@ import { Aggregation } from '@/lib/data/types';
 import { useChartTheme } from './echartsTheme';
 import { fieldColor } from './fieldColors';
 import { buildChartOption } from './buildChartOption';
-import { postJson } from '@/lib/api/client';
+import { aggregatedToCsv } from '@/lib/data/export/toCsv';
+import { postJson, downloadText } from '@/lib/api/client';
 
 interface Props {
   config: ChartConfig;
@@ -94,6 +95,15 @@ export default function ChartCard({
     );
   };
 
+  const canExport = !loading && !error && result !== null && result.x.length > 0;
+
+  const handleExport = () => {
+    if (!result) return;
+    const csv = aggregatedToCsv(config, result);
+    const name = (config.title || 'chart').replace(/[^a-zA-Z0-9._-]+/g, '_') || 'chart';
+    downloadText(`${name}.csv`, csv);
+  };
+
   return (
     <div className="group/card relative flex flex-col gap-3 overflow-hidden rounded-card border border-border bg-surface p-4 shadow-card">
       {/* Field-colored accent strip */}
@@ -108,6 +118,15 @@ export default function ChartCard({
           {config.title}
         </h3>
         <div className="flex items-center gap-1">
+          <button
+            onClick={handleExport}
+            disabled={!canExport}
+            className="rounded-control px-2 py-1 text-xs text-foreground-muted transition-colors hover:bg-surface-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Export chart data as CSV"
+            title="Export chart data as CSV"
+          >
+            Export
+          </button>
           <button
             onClick={onEdit}
             className="rounded-control px-2 py-1 text-xs text-foreground-muted transition-colors hover:bg-surface-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"

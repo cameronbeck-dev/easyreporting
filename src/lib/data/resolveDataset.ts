@@ -8,6 +8,7 @@ import type { JoinStep } from './types';
 import { AccessControlledProvider } from './AccessControlledProvider';
 import { CsvProvider } from './CsvProvider';
 import { SqlProvider } from './SqlProvider';
+import { DuckDbProvider } from './DuckDbProvider';
 import { toDecryptedConnection } from './sql/pool';
 import { isPlatformTenant } from '../auth/platform';
 import { db } from '../db/client';
@@ -24,7 +25,15 @@ export async function getProviderForDataset(
   // 'sales' or unknown ids fall back to the CSV demo.
   let resolvedDatasetId = datasetId;
   let resolvedTenantColumn = DEFAULT_TENANT_COLUMN;
-  let sourceType: 'csv' | 'sql' = 'csv';
+  let sourceType: 'csv' | 'sql' | 'file' = 'csv';
+  let fileDataset:
+    | {
+        id: string;
+        name: string;
+        parquetPath: string;
+        columnsJson: { name: string; type: import('./types').ColumnType }[];
+      }
+    | null = null;
   let sqlDataset:
     | {
         id: string;
@@ -50,6 +59,19 @@ export async function getProviderForDataset(
       resolvedDatasetId = 'sales';
       resolvedTenantColumn = DEFAULT_TENANT_COLUMN;
       sourceType = 'csv';
+    } else if (row.connectionId === null && row.parquetPath) {
+      // File-backed source: a folder of CSV/Excel files materialised to Parquet,
+      // served by DuckDB. The tenant column is a real column inside the files.
+      resolvedDatasetId = row.id;
+      resolvedTenantColumn = row.tenantColumn;
+      sourceType = 'file';
+      fileDataset = {
+        id: row.id,
+        name: row.name,
+        parquetPath: row.parquetPath,
+        columnsJson: row.columnsJson as { name: string; type: import('./types').ColumnType }[],
+      };
+      resolvedComputedFields = (row.computedFieldsJson ?? []) as ComputedField[];
     } else if (row.connectionId === null) {
       // CSV source with a custom tenant column
       resolvedDatasetId = row.id;
@@ -96,6 +118,8 @@ export async function getProviderForDataset(
 
   if (sourceType === 'csv') {
     innerProvider = new CsvProvider();
+  } else if (sourceType === 'file') {
+    innerProvider = new DuckDbProvider({ dataset: fileDataset! });
   } else {
     // SQL: load the connection, decrypt the password, build the provider.
     const [connRow] = await db
