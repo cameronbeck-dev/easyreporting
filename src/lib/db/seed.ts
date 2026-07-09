@@ -14,13 +14,6 @@ import { getPlatformTenantId } from '../auth/platform';
 const OWNER = getPlatformTenantId(); // 'easyreporting' by default
 const VIC_PROFILE = 'profile-globex-vic';
 
-// Per-company visible columns (owner sees all, so it has none here). Excludes the
-// always-stripped company id; note no cost/profit_margin for customers.
-const TENANT_COLUMNS: Record<string, string[]> = {
-  globex: ['date', 'region', 'product', 'units_sold', 'revenue'],
-  initech: ['date', 'region', 'revenue'],
-};
-
 // Dev-only credentials. Documented in README; change before any real deployment.
 const PW = {
   owner: 'owner-password',
@@ -41,12 +34,12 @@ async function main() {
   await db.delete(users);
   await db.delete(accessProfiles);
 
-  // Per-company column visibility — scoped to the 'sales' CSV demo dataset.
-  for (const [tenantId, columns] of Object.entries(TENANT_COLUMNS)) {
-    await db.insert(tenantColumnRules).values(columns.map((columnName) => ({ tenantId, datasetId: 'sales', columnName })));
-  }
+  // No column grants are seeded: there are no datasets until the owner imports one
+  // (Admin → Import) or connects a SQL source, after which the owner grants each customer
+  // company its visible columns (Admin → Company columns).
 
-  // A demo row profile: globex users on this profile only see Victoria rows.
+  // A demo row profile: globex users on this profile only see Victoria rows (applies to
+  // any dataset that has a `region` column).
   await db.insert(accessProfiles).values([
     { id: VIC_PROFILE, name: 'Victoria only', description: 'Rows where region = Victoria.', tenantId: 'globex' },
   ]);
@@ -70,9 +63,9 @@ async function main() {
   console.log(`  admin@${OWNER}.example   /`, PW.owner, '(OWNER admin — all companies, all columns)');
   console.log(`  staff@${OWNER}.example   /`, PW.ownerStaff, '(member, all columns)');
   console.log('  admin@globex.example   /', PW.globexAdmin, '(globex admin)');
-  console.log('  user@globex.example    /', PW.globexUser, '(globex member — date/region/product/units/revenue)');
-  console.log('  vic@globex.example     /', PW.globexVic, '(globex member — Victoria rows only)');
-  console.log('  admin@initech.example  /', PW.initechAdmin, '(initech admin — date/region/revenue)');
+  console.log('  user@globex.example    /', PW.globexUser, '(globex member)');
+  console.log('  vic@globex.example     /', PW.globexVic, '(globex member — Victoria rows only, via profile)');
+  console.log('  admin@initech.example  /', PW.initechAdmin, '(initech admin)');
 }
 
 main()

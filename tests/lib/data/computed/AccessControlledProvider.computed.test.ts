@@ -133,16 +133,18 @@ describe('getSchema — computed fields', () => {
     expect(schema.columns.map((c) => c.name)).not.toContain('margin');
   });
 
-  it('omits computed field when dep is the tenant column', async () => {
+  it('includes a computed field depending on the tenant column (now a visible dimension)', async () => {
     const tenantDepField: ComputedField = {
-      name: 'bad_field',
+      name: 'tenant_field',
       type: 'number',
       expression: 'tenant_id',
       dependencies: ['tenant_id'],
     };
-    const provider = new AccessControlledProvider(makeStub({}), makeCtx(), [tenantDepField]);
+    // allColumns=false so only the (now-visible) tenant column backs this field.
+    const ctx = makeCtx({ allColumns: false, allowedColumns: ['revenue'] });
+    const provider = new AccessControlledProvider(makeStub({}), ctx, [tenantDepField]);
     const schema = await provider.getSchema('sales');
-    expect(schema.columns.map((c) => c.name)).not.toContain('bad_field');
+    expect(schema.columns.map((c) => c.name)).toContain('tenant_field');
   });
 
   it('includes only fields whose deps all pass (mixed deps)', async () => {
@@ -300,8 +302,9 @@ describe('queryRows — computed columns', () => {
     const provider = new AccessControlledProvider(makeStub({}), ctx, [revenueDoubled]);
     const result = await provider.queryRows('sales', { page: 1, pageSize: 10 });
     for (const row of result.rows) {
+      // 'cost' is a genuinely masked, non-allowed dep — it must not leak. (tenant_id is a
+      // visible dimension now, so it is expected to be present.)
       expect('cost' in row).toBe(false);
-      expect('tenant_id' in row).toBe(false);
       expect('double_revenue' in row).toBe(true);
     }
   });
@@ -367,10 +370,10 @@ describe('behavior-preserving: zero computed fields → existing path unchanged'
     const ctx = makeCtx({ allColumns: false, allowedColumns: ['revenue'] });
     const provider = new AccessControlledProvider(makeStub(captured), ctx);
     const result = await provider.queryRows('sales', { page: 1, pageSize: 10 });
-    expect(result.columns.map((c) => c.name)).toEqual(['revenue']);
+    // tenant_id is always visible; cost stays hidden (not granted).
+    expect(result.columns.map((c) => c.name)).toEqual(['tenant_id', 'revenue']);
     for (const row of result.rows) {
       expect('cost' in row).toBe(false);
-      expect('tenant_id' in row).toBe(false);
     }
   });
 

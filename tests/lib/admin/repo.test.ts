@@ -32,7 +32,6 @@ vi.mock('@/lib/crypto/secrets', () => ({
   decryptSecret: vi.fn((s: string) => s.replace(/^enc:/, '')),
 }));
 
-import { setupTestDb } from '../../helpers/db';
 import type { TestDb } from '../../helpers/db';
 import * as introspect from '@/lib/data/sql/introspect';
 import { connections, datasets } from '@/lib/db/schema';

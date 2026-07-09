@@ -80,11 +80,10 @@ export const connections = sqliteTable('connections', {
 // A dataset backed by a SQL connection + table/view, OR a folder of CSV/Excel files
 // materialised to Parquet (see scripts/sync-files.ts).
 // Source is discriminated in resolveDataset.ts:
-//   connectionId != null                      → SQL
-//   connectionId == null && parquetPath != null → file-backed (DuckDB over Parquet)
-//   connectionId == null && parquetPath == null → the built-in CSV demo ('sales')
+//   connectionId != null   → SQL
+//   parquetPath != null    → file-backed (DuckDB over Parquet)
 // id is server-generated for SQL datasets (crypto.randomUUID()) and the folder-derived
-// slug for file datasets; 'sales' is synthesized and never stored.
+// slug for file datasets.
 export const datasets = sqliteTable('datasets', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),

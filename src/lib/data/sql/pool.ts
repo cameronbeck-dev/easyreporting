@@ -50,9 +50,11 @@ export async function getPool(conn: DecryptedConnection): Promise<PgPool> {
   let pgModule: any;
   try {
     // pg is an optional dependency (only needed for SQL datasets). A non-literal
-    // specifier keeps the type-checker from requiring @types/pg to be installed.
+    // specifier keeps the type-checker from requiring @types/pg to be installed;
+    // webpackIgnore stops the bundler from turning it into a context module (which emits
+    // a "Critical dependency" warning) and loads it natively at runtime.
     const pkg = 'pg';
-    pgModule = await import(pkg);
+    pgModule = await import(/* webpackIgnore: true */ pkg);
   } catch {
     throw new Error('The "pg" package is required for SQL datasets. Run: npm install pg');
   }

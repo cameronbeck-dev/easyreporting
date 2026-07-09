@@ -46,7 +46,6 @@ next-env.d.ts
 # local: source CSV/Excel drops, the metadata DB (password hashes + encrypted
 # connection creds), and materialised Parquet in data/warehouse/.
 /data/*
-!/data/sales.csv
 # file-backed datasets: track the convention doc and the synthetic sample only —
 # NOT the whole example-orders/ folder, so dropping private files into it can't leak.
 !/data/datasets/

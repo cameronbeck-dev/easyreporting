@@ -5,8 +5,8 @@ import type { Dataset } from '@/lib/data/types';
 
 // Header control that selects the active dataset for the data-facing pages by
 // driving the `datasetId` query param. Rendered only on the Dashboard and Data
-// Explorer (the admin area has its own dataset pickers), and hidden when there's
-// only the single demo dataset to choose from.
+// Explorer (the admin area has its own dataset pickers), and hidden when there are
+// fewer than two datasets to choose from.
 export default function DatasetSwitcher({ datasets }: { datasets: Dataset[] }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -15,7 +15,7 @@ export default function DatasetSwitcher({ datasets }: { datasets: Dataset[] }) {
   const onDataPage = pathname === '/' || pathname.startsWith('/data');
   if (!onDataPage || datasets.length < 2) return null;
 
-  const current = searchParams.get('datasetId') ?? datasets[0]?.id ?? 'sales';
+  const current = searchParams.get('datasetId') ?? datasets[0]?.id ?? '';
 
   return (
     <label className="flex items-center gap-2 text-sm text-primary-foreground/80">

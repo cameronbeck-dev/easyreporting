@@ -16,6 +16,11 @@ export function useSchema(datasetId: string): SchemaState {
 
   useEffect(() => {
     let cancelled = false;
+    // No dataset selected yet — don't fetch a bogus schema.
+    if (!datasetId) {
+      setState({ columns: [], loading: false, error: null });
+      return;
+    }
     setState({ columns: [], loading: true, error: null });
 
     getJson<DatasetSchema>(`/api/schema?datasetId=${encodeURIComponent(datasetId)}`)

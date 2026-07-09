@@ -161,6 +161,17 @@ describe('buildDuckAggregated', () => {
 });
 
 describe('buildDuckSummary', () => {
+  it('does not validate the column for a Count metric (client sends a sentinel)', () => {
+    // KpiSnapshot sends Count tiles as { column: '__count__' }; Count → COUNT(*) ignores
+    // the column, so it must not be rejected by the allow-list check.
+    const { text } = buildDuckSummary(
+      P,
+      { metrics: [{ column: '__count__', aggregation: Aggregation.Count }], filters: [] },
+      allCols,
+    );
+    expect(text).toBe(`SELECT COUNT(*) AS m0 FROM read_parquet(${P})`);
+  });
+
   it('emits one aliased aggregate per metric', () => {
     const { text } = buildDuckSummary(
       P,

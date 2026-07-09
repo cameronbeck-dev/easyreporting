@@ -14,11 +14,24 @@
 //   • Row ceiling       — no admin grants rows they can't see themselves.
 import { eq, and } from 'drizzle-orm';
 import { randomUUID } from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import { db } from '../db/client';
-import { users, accessProfiles, profileRowScopes, tenantColumnRules, connections, datasets } from '../db/schema';
+import { users, accessProfiles, profileRowScopes, tenantColumnRules, connections, datasets, dashboards } from '../db/schema';
 import { createInvite } from '../auth/invite';
 import { ForbiddenError, type AdminContext } from '../auth/requireAdmin';
-import { isPlatformTenant } from '../auth/platform';
+import { isPlatformTenant, getPlatformTenantId } from '../auth/platform';
+import { DEFAULT_TENANT_COLUMN } from '../data/constants';
+import {
+  DATASETS_DIR,
+  WAREHOUSE_DIR,
+  slugify,
+  materializeFolder,
+  analyzeTenants,
+  commitStaged,
+  discardStaging,
+  type DatasetColumn,
+} from '../data/duck/importDataset';
 import { listSelectableColumns } from '../data/catalog';
 import { listTenantColumnsResolved } from '../db/config-repo';
 import { getProviderForDataset } from '../data/resolveDataset';
@@ -91,11 +104,31 @@ function assertRowScopesWithinCeiling(admin: AdminContext, rowScopes: RowScope[]
   }
 }
 
+/**
+ * The set of column names that act as a tenant/company identity on some dataset — the CSV
+ * demo default plus every registered dataset's configured tenant column. A row scope on any
+ * of these controls WHICH companies a user sees (it replaces the single-home-company filter
+ * in AccessControlledProvider), so scoping one is an owner-only, cross-company grant.
+ */
+async function getTenantColumnNames(): Promise<Set<string>> {
+  const rows = await db.select({ tc: datasets.tenantColumn }).from(datasets);
+  return new Set<string>([DEFAULT_TENANT_COLUMN, ...rows.map((r) => r.tc)]);
+}
+
 /** Assert a profile is assignable to a company (global or that company's) AND within the row ceiling. */
 async function assertAssignableProfile(admin: AdminContext, profileId: string, targetTenantId: string): Promise<void> {
   const { tenantId, rowScopes } = await loadProfile(profileId);
   const ok = tenantId === null || tenantId === targetTenantId;
   if (!ok) throw new ForbiddenError('That profile belongs to another company.');
+  // A profile that scopes a company column grants cross-company access — only an owner
+  // admin may hand that out. (The generic ceiling check below can't catch this: a company
+  // admin has no row scope on the tenant column to be measured against.)
+  if (!admin.isPlatformAdmin) {
+    const tenantCols = await getTenantColumnNames();
+    if (rowScopes.some((s) => tenantCols.has(s.column))) {
+      throw new ForbiddenError('Only an owner admin can assign a profile that grants access across companies.');
+    }
+  }
   assertRowScopesWithinCeiling(admin, rowScopes);
 }
 
@@ -259,11 +292,10 @@ export async function setTenantColumns(admin: AdminContext, tenantId: string, da
   }
 }
 
-/** List datasets available for column management (CSV demo + SQL datasets). */
+/** List datasets available for column management (all registered datasets). */
 export async function listAllDatasetsForAdmin(admin: AdminContext): Promise<{ id: string; name: string }[]> {
   assertOwner(admin);
-  const sqlRows = await db.select({ id: datasets.id, name: datasets.name }).from(datasets);
-  return [{ id: 'sales', name: 'Sales (CSV demo)' }, ...sqlRows];
+  return db.select({ id: datasets.id, name: datasets.name }).from(datasets);
 }
 
 // ---------------------------------------------------------------------------
@@ -392,6 +424,11 @@ export async function addRowScope(
   assertCanEditProfile(admin, tenantId);
   const col = column.trim();
   if (!col || values.length === 0) throw new ForbiddenError('A column and at least one value are required.');
+  // Scoping a company column defines cross-company access (it replaces the single-home-company
+  // filter at query time), so only an owner admin may create such a scope.
+  if (!admin.isPlatformAdmin && (await getTenantColumnNames()).has(col)) {
+    throw new ForbiddenError('Only an owner admin can scope the company column (it controls which companies a user can see).');
+  }
   await db.insert(profileRowScopes).values({ id: randomUUID(), profileId, datasetId: null, column: col, values });
 }
 
@@ -609,6 +646,8 @@ export interface DatasetAdminRow {
   name: string;
   connectionId: string | null;
   tableName: string | null;
+  /** Set for file-backed (DuckDB/Parquet) datasets; null for SQL datasets. */
+  parquetPath: string | null;
   tenantColumn: string;
   computedFields: ComputedField[];
   createdAt: Date;
@@ -813,6 +852,7 @@ export async function listDatasetsAdmin(admin: AdminContext): Promise<DatasetAdm
       name: datasets.name,
       connectionId: datasets.connectionId,
       tableName: datasets.tableName,
+      parquetPath: datasets.parquetPath,
       tenantColumn: datasets.tenantColumn,
       computedFieldsJson: datasets.computedFieldsJson,
       createdAt: datasets.createdAt,
@@ -824,10 +864,176 @@ export async function listDatasetsAdmin(admin: AdminContext): Promise<DatasetAdm
   }));
 }
 
+/** Remove `target` only if it resolves strictly inside `baseDir` (traversal guard). */
+function safeRemoveWithin(baseDir: string, target: string): void {
+  const base = path.resolve(baseDir);
+  const t = path.resolve(target);
+  if (t === base || !t.startsWith(base + path.sep)) return;
+  fs.rmSync(t, { force: true, recursive: true });
+}
+
 export async function deleteDataset(admin: AdminContext, datasetId: string): Promise<void> {
   assertOwner(admin);
+  const [row] = await db
+    .select({ parquetPath: datasets.parquetPath })
+    .from(datasets)
+    .where(eq(datasets.id, datasetId))
+    .limit(1);
+
   await db.delete(tenantColumnRules).where(eq(tenantColumnRules.datasetId, datasetId));
+  // Orphaned per-user dashboards for this dataset would 404 forever — remove them.
+  await db.delete(dashboards).where(eq(dashboards.datasetId, datasetId));
   await db.delete(datasets).where(eq(datasets.id, datasetId));
+
+  // File-backed datasets: also drop the materialised Parquet, any staging file, and the
+  // uploaded source folder. (SQL datasets have parquetPath === null and skip this.)
+  if (row?.parquetPath) {
+    safeRemoveWithin(WAREHOUSE_DIR, path.join(process.cwd(), row.parquetPath));
+    discardStaging(datasetId);
+    safeRemoveWithin(DATASETS_DIR, path.join(DATASETS_DIR, datasetId));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// File-backed dataset imports (owner admins only)
+// ---------------------------------------------------------------------------
+
+/** Distinct company ids known to the system — used to flag unknown tenants in an upload. */
+export async function listKnownTenantIds(admin: AdminContext): Promise<string[]> {
+  assertOwner(admin);
+  const rows = await db.select({ tenantId: users.tenantId }).from(users);
+  const set = new Set(rows.map((r) => r.tenantId));
+  set.add(getPlatformTenantId());
+  return [...set];
+}
+
+export interface CreateFileImportInput {
+  name: string;
+  tenantColumn: string;
+}
+
+/**
+ * Prepare a file-dataset folder for upload: create data/datasets/<id>/, write the
+ * dataset.json sidecar, and (replace semantics) clear any previous source files. Returns
+ * the slugified id the client uploads against. Does not touch the DB or Parquet yet.
+ */
+export async function createFileImport(
+  admin: AdminContext,
+  input: CreateFileImportInput,
+): Promise<{ id: string }> {
+  assertOwner(admin);
+  const name = input.name.trim();
+  if (!name) throw new ForbiddenError('A dataset name is required.');
+  const id = slugify(name);
+  if (!id) throw new ForbiddenError('The name must contain letters or numbers.');
+  const tenantColumn = input.tenantColumn.trim() || DEFAULT_TENANT_COLUMN;
+
+  // Never clobber a SQL dataset that happens to share this id.
+  const [existing] = await db.select().from(datasets).where(eq(datasets.id, id)).limit(1);
+  if (existing && existing.connectionId !== null) {
+    throw new ForbiddenError(`A SQL dataset with id "${id}" already exists. Pick a different name.`);
+  }
+
+  const folderAbs = path.join(DATASETS_DIR, id);
+  fs.mkdirSync(folderAbs, { recursive: true });
+  for (const f of fs.readdirSync(folderAbs)) {
+    if (f !== 'dataset.json') fs.rmSync(path.join(folderAbs, f), { force: true, recursive: true });
+  }
+  fs.writeFileSync(
+    path.join(folderAbs, 'dataset.json'),
+    JSON.stringify({ name, tenantColumn }, null, 2) + '\n',
+  );
+  discardStaging(id);
+  return { id };
+}
+
+export interface ImportDrift {
+  added: string[];
+  removed: string[];
+  typeChanged: { name: string; from: string; to: string }[];
+  /** Removed columns that a company's column grants still reference (charts will break). */
+  removedWithGrants: string[];
+}
+
+export interface ImportAnalysis {
+  ok: true;
+  id: string;
+  displayName: string;
+  tenantColumn: string;
+  rowCount: number;
+  columns: DatasetColumn[];
+  perTenant: { tenantId: string; count: number }[];
+  unknownTenants: string[];
+  /** null for a brand-new dataset (no prior schema to compare). */
+  drift: ImportDrift | null;
+}
+
+export type ImportAnalysisResult = ImportAnalysis | { ok: false; reason: string };
+
+/**
+ * Materialise the uploaded files to a staging Parquet and report what publishing would do:
+ * inferred schema, per-company row counts, unknown tenant ids, and schema drift vs the
+ * currently-registered dataset. Nothing is published yet.
+ */
+export async function analyzeFileImport(
+  admin: AdminContext,
+  datasetId: string,
+): Promise<ImportAnalysisResult> {
+  assertOwner(admin);
+  const m = await materializeFolder(datasetId);
+  if (!m.ok) return { ok: false, reason: m.reason };
+
+  const known = await listKnownTenantIds(admin);
+  const { perTenant, unknownTenants } = await analyzeTenants(m.stagingPath, m.tenantColumn, known);
+
+  let drift: ImportDrift | null = null;
+  const [existing] = await db
+    .select({ columnsJson: datasets.columnsJson })
+    .from(datasets)
+    .where(eq(datasets.id, m.id))
+    .limit(1);
+  if (existing) {
+    const oldCols = (existing.columnsJson ?? []) as DatasetColumn[];
+    const oldByName = new Map(oldCols.map((c) => [c.name, c.type]));
+    const newByName = new Map(m.columnsJson.map((c) => [c.name, c.type]));
+    const added = m.columnsJson.filter((c) => !oldByName.has(c.name)).map((c) => c.name);
+    const removed = oldCols.filter((c) => !newByName.has(c.name)).map((c) => c.name);
+    const typeChanged = m.columnsJson
+      .filter((c) => oldByName.has(c.name) && oldByName.get(c.name) !== c.type)
+      .map((c) => ({ name: c.name, from: oldByName.get(c.name)!, to: c.type }));
+
+    let removedWithGrants: string[] = [];
+    if (removed.length > 0) {
+      const rules = await db
+        .select({ columnName: tenantColumnRules.columnName })
+        .from(tenantColumnRules)
+        .where(eq(tenantColumnRules.datasetId, m.id));
+      const granted = new Set(rules.map((r) => r.columnName));
+      removedWithGrants = removed.filter((n) => granted.has(n));
+    }
+    drift = { added, removed, typeChanged, removedWithGrants };
+  }
+
+  return {
+    ok: true,
+    id: m.id,
+    displayName: m.displayName,
+    tenantColumn: m.tenantColumn,
+    rowCount: m.rowCount,
+    columns: m.columnsJson,
+    perTenant,
+    unknownTenants,
+    drift,
+  };
+}
+
+/** Publish a previously-analysed dataset: atomically swap the Parquet in and register it. */
+export async function publishFileImport(
+  admin: AdminContext,
+  datasetId: string,
+): Promise<{ ok: true; id: string; displayName: string; rowCount: number } | { ok: false; reason: string }> {
+  assertOwner(admin);
+  return commitStaged(datasetId);
 }
 
 export async function addComputedField(

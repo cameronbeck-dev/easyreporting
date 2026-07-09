@@ -30,6 +30,11 @@ export default auth((req) => {
 });
 
 export const config = {
-  // Run on everything except Next internals and static asset files.
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)'],
+  // Run on everything except Next internals and static asset files. The file-upload
+  // route is also excluded: middleware buffers/caps the request body at 10MB, which would
+  // truncate large uploads. That route streams the body straight to disk and enforces its
+  // own owner-admin auth (getUserContext), so it doesn't need the middleware gate.
+  matcher: [
+    '/((?!_next/static|_next/image|favicon.ico|api/admin/import/upload|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
+  ],
 };

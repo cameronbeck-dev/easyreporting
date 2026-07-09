@@ -6,12 +6,13 @@ import DataTable from '@/components/DataTable';
 import type { RowsResult, Filter } from '@/lib/data/types';
 import { prettify } from '@/components/chartTypes';
 import { postJson, downloadPost } from '@/lib/api/client';
+import { useActiveDatasetId } from '@/components/useActiveDatasetId';
 
 function DataPageInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
-  const datasetId = searchParams.get('datasetId') ?? 'sales';
+  const datasetId = searchParams.get('datasetId') ?? '';
   const filterCol = searchParams.get('filterCol');
   const filterVal = searchParams.get('filterVal');
 
@@ -140,10 +141,28 @@ function DataPageInner() {
   );
 }
 
+function DataPageGate() {
+  const { status } = useActiveDatasetId();
+  if (status === 'empty') {
+    return (
+      <main className="mx-auto max-w-2xl px-6 py-16 text-center">
+        <h1 className="mb-2 text-lg font-bold text-foreground">No datasets yet</h1>
+        <p className="text-sm text-foreground-muted">
+          Import a folder of CSV/Excel files from <strong>Admin → Import</strong> to get started.
+        </p>
+      </main>
+    );
+  }
+  if (status !== 'ready') {
+    return <div className="px-6 py-8 text-sm text-foreground-muted">Loading...</div>;
+  }
+  return <DataPageInner />;
+}
+
 export default function DataPage() {
   return (
     <Suspense fallback={<div className="px-6 py-8 text-sm text-foreground-muted">Loading...</div>}>
-      <DataPageInner />
+      <DataPageGate />
     </Suspense>
   );
 }

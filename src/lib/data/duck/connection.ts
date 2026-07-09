@@ -27,14 +27,20 @@ interface DuckInstance {
 let connectionPromise: Promise<DuckConnection> | null = null;
 
 async function connect(): Promise<DuckConnection> {
+  // The specifier MUST be a string literal: Next's `serverExternalPackages` only
+  // externalises statically-referenced package names, so a variable specifier makes the
+  // bundler mishandle the native binding and the import fails at runtime. Keep it a
+  // dynamic import so the native module still loads lazily (server-only, never bundled
+  // to the client). Surface the underlying error rather than a generic message.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let mod: any;
   try {
-    const pkg = '@duckdb/node-api';
-    mod = await import(pkg);
-  } catch {
+    mod = await import('@duckdb/node-api');
+  } catch (err) {
     throw new Error(
-      'The "@duckdb/node-api" package is required for file-backed datasets. Run: npm install @duckdb/node-api',
+      `The "@duckdb/node-api" package failed to load (required for file-backed datasets): ${
+        err instanceof Error ? err.message : String(err)
+      }`,
     );
   }
   const instance: DuckInstance = await mod.DuckDBInstance.create(':memory:');

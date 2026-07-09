@@ -91,11 +91,11 @@ Putting security logic inside a provider would duplicate it inconsistently and r
 
 Edit `src/lib/data/resolveDataset.ts` to add a new branch. The resolver picks the inner
 provider based on the dataset row's `connectionId` and any driver-specific fields, then wraps
-it in `AccessControlledProvider` before returning. Current discriminator:
+it in `AccessControlledProvider` before returning. An unknown id is rejected (fail-closed).
+Current discriminator:
 
 - `connectionId != null` → `SqlProvider`
-- `connectionId == null && parquetPath != null` → `DuckDbProvider` (file-backed)
-- `connectionId == null && parquetPath == null` → `CsvProvider` (the `sales` demo)
+- `parquetPath != null` → `DuckDbProvider` (file-backed)
 
 ## Implementing the File Provider (DuckDB)
 

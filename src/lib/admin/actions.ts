@@ -85,7 +85,7 @@ export async function setTenantColumnsAction(_prev: ActionState, formData: FormD
   return run(['/admin/columns'], async () => {
     const admin = await requireAdminAction();
     const columns = formData.getAll('columns').map((c) => String(c));
-    const datasetId = String(formData.get('datasetId') ?? 'sales');
+    const datasetId = String(formData.get('datasetId') ?? '');
     await repo.setTenantColumns(admin, String(formData.get('tenantId') ?? ''), datasetId, columns);
   });
 }
@@ -192,9 +192,42 @@ export async function createDatasetAction(_prev: ActionState, formData: FormData
 }
 
 export async function deleteDatasetAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  return run(['/admin/datasets'], async () => {
+  return run(['/admin/datasets', '/admin/import', '/data', '/'], async () => {
     const admin = await requireAdminAction();
     await repo.deleteDataset(admin, String(formData.get('datasetId') ?? ''));
+  });
+}
+
+// --- File-backed dataset imports (owner only) ----------------------------
+
+/** Step 1: create/reset the dataset folder + sidecar; returns the slug to upload against. */
+export async function createImportAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return run([], async () => {
+    const admin = await requireAdminAction();
+    const { id } = await repo.createFileImport(admin, {
+      name: String(formData.get('name') ?? ''),
+      tenantColumn: String(formData.get('tenantColumn') ?? ''),
+    });
+    return { data: { id } };
+  });
+}
+
+/** Step 2 (after files are uploaded): materialise to staging and report a preview. */
+export async function analyzeImportAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return run([], async () => {
+    const admin = await requireAdminAction();
+    const analysis = await repo.analyzeFileImport(admin, String(formData.get('datasetId') ?? ''));
+    return { data: analysis };
+  });
+}
+
+/** Step 3: publish the staged dataset (atomic swap + register). */
+export async function publishImportAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return run(['/admin/import', '/data', '/'], async () => {
+    const admin = await requireAdminAction();
+    const res = await repo.publishFileImport(admin, String(formData.get('datasetId') ?? ''));
+    if (!res.ok) return { error: res.reason };
+    return { message: `Published “${res.displayName}” — ${res.rowCount.toLocaleString()} rows.` };
   });
 }
 

@@ -29,7 +29,7 @@ in*, decided by `PLATFORM_TENANT_ID` (`src/lib/auth/platform.ts`):
 
 | | Reach |
 |---|---|
-| **Owner admin** — admin in the platform tenant (MGL) | Every company; **sets each company's visible columns**; authors global row profiles; no row ceiling. |
+| **Owner admin** — admin in the platform tenant (MGL) | Every company; **sees all companies' rows** (not tenant-scoped); **sets each company's visible columns**; authors global row profiles incl. multi-company access; no row ceiling. |
 | **Company admin** — admin in any other company | **Their own company only**; assigns/authors row profiles for that company, bounded by their own rows. **Cannot** change which columns their company sees. |
 
 This is enforced server-side in `src/lib/auth/requireAdmin.ts` (page redirects + action
@@ -70,12 +70,19 @@ account (`authorize` accepts only `active`).
 unauthenticated → 401), and `getProvider(ctx)` wraps the data source in
 `AccessControlledProvider` — the single choke point. For every query it:
 
-1. **Isolates the company** — injects `tenantColumn = tenantId`. Automatic and in code, so
-   company isolation never depends on someone configuring it correctly.
-2. **Applies row scopes** — injects each row-profile scope as an `in` filter.
+1. **Isolates the company** — automatic and in code. The platform/owner admin (the
+   operator, not a data tenant) gets no company filter and sees every company. A user whose
+   profile scopes the company column sees exactly that set (`company IN (…)`, multi-company
+   access) — such scopes are owner-authored only. Everyone else is pinned to their single
+   home company (`tenantColumn = tenantId`). A user with no company access sees nothing
+   (fail-closed).
+2. **Applies row scopes** — injects each row-profile scope as an `in` filter (a company
+   scope, above, is one of these).
 3. **Enforces the column allow-list (fail-closed)** — the owner company's users see all
-   columns; everyone else sees only their company's configured columns. The company column
-   is always stripped; referencing a disallowed column throws `AccessError` (HTTP 403).
+   columns; everyone else sees only their company's configured columns. Referencing a
+   disallowed column throws `AccessError` (HTTP 403). The company column itself is a
+   **visible dimension** for everyone (isolation is by rows, not by hiding it), so users can
+   break down *by* company within the rows they're allowed to see.
 
 The choke point (`AccessControlledProvider`) itself is unchanged from before — it still
 reads `allColumns` / `allowedColumns` / `rowScopes` off the context. Only the *source*
@@ -86,10 +93,10 @@ owner admin explicitly grants it — mistakes hide data rather than leak it.
 
 ## Seeding / demo config
 
-`npm run db:seed` runs migrations and writes per-company column lists, one demo row profile,
-and six login-ready demo users across three companies, all `active` with **dev-only**
-passwords (see the README table). `data/sales.csv` carries several companies' rows so
-isolation is testable; regenerate it with `npm run db:gen-data`.
+`npm run db:seed` runs migrations and writes one demo row profile and six login-ready demo
+users across three companies, all `active` with **dev-only** passwords (see the README
+table). It seeds no datasets or column grants: the owner imports a dataset (**Admin →
+Import**) or connects a SQL source, then grants each company its columns.
 
 Demo setup:
 - Company columns: `globex` → date/region/product/units_sold/revenue; `initech` → date/region/revenue. The owner company `easyreporting` sees all columns.
@@ -125,5 +132,6 @@ The `AccessControlledProvider` choke point is unchanged — CSV and SQL sources 
 by it, so tenant isolation, row scopes, and the column allow-list apply identically to both.
 
 Owner admins set per-company per-dataset column lists from `/admin/columns` (dataset picker
-added). The CSV demo dataset `'sales'` is treated as a special case: its synthetic id is never
-stored in the `datasets` table, and the resolver falls back to it for unknown ids.
+added). Every dataset is a row in the `datasets` table (file-backed via DuckDB, or SQL);
+there is no special-cased built-in dataset, and the resolver rejects an unknown id
+(fail-closed).

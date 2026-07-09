@@ -48,7 +48,7 @@ function RowScopes({ profile, datasets }: { profile: ProfileDetailData; datasets
   const [add, addAction] = useActionState<ActionState, FormData>(addRowScopeAction, {});
   const [remove, removeAction] = useActionState<ActionState, FormData>(removeRowScopeAction, {});
 
-  const [datasetId, setDatasetId] = useState(datasets[0]?.id ?? 'sales');
+  const [datasetId, setDatasetId] = useState(datasets[0]?.id ?? '');
   const [columns, setColumns] = useState<{ name: string; type: string }[]>([]);
   const [column, setColumn] = useState('');
   const [values, setValues] = useState<(string | number)[]>([]);

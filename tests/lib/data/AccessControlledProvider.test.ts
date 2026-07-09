@@ -26,9 +26,9 @@ function makeStubProvider(captured: CapturedArgs): DataProvider {
     async listDatasets(): Promise<Dataset[]> {
       return [{ id: 'sales', name: 'Sales' }];
     },
-    async getSchema(_datasetId: string): Promise<DatasetSchema> {
+    async getSchema(datasetId: string): Promise<DatasetSchema> {
       return {
-        datasetId: 'sales',
+        datasetId,
         columns: [
           { name: 'tenant_id', type: 'string' },
           { name: 'revenue', type: 'number' },
@@ -85,18 +85,19 @@ function makeUserContext(overrides: Partial<UserContext> = {}): UserContext {
 
 describe('AccessControlledProvider', () => {
   describe('column visibility', () => {
-    it('allColumns=false + allowedColumns keeps only allowed columns in queryRows result', async () => {
+    it('allColumns=false keeps only allowed columns, plus the always-visible company column', async () => {
       const captured: CapturedArgs = {};
       const ctx = makeUserContext({ allowedColumns: ['revenue'] });
       const provider = new AccessControlledProvider(makeStubProvider(captured), ctx);
 
       const result = await provider.queryRows('sales', { page: 1, pageSize: 10 });
 
-      expect(result.columns.map((c) => c.name)).toEqual(['revenue']);
-      expect(result.rows.every((r) => !('cost' in r) && !('tenant_id' in r))).toBe(true);
+      // tenant_id is a visible dimension; cost/region remain hidden (not granted).
+      expect(result.columns.map((c) => c.name)).toEqual(['tenant_id', 'revenue']);
+      expect(result.rows.every((r) => !('cost' in r) && !('region' in r))).toBe(true);
     });
 
-    it('allColumns=true returns all columns except tenantColumn in queryRows result', async () => {
+    it('allColumns=true returns every column including the company column', async () => {
       const captured: CapturedArgs = {};
       const ctx = makeUserContext({ allColumns: true });
       const provider = new AccessControlledProvider(makeStubProvider(captured), ctx);
@@ -104,31 +105,31 @@ describe('AccessControlledProvider', () => {
       const result = await provider.queryRows('sales', { page: 1, pageSize: 10 });
 
       const names = result.columns.map((c) => c.name);
-      expect(names).not.toContain('tenant_id');
+      expect(names).toContain('tenant_id');
       expect(names).toContain('revenue');
       expect(names).toContain('cost');
       expect(names).toContain('region');
     });
 
-    it('tenantColumn is always stripped from queryRows result', async () => {
+    it('the company column is visible (not stripped) in queryRows result', async () => {
       const captured: CapturedArgs = {};
-      const ctx = makeUserContext({ allColumns: true });
+      const ctx = makeUserContext({ allowedColumns: ['revenue'] });
       const provider = new AccessControlledProvider(makeStubProvider(captured), ctx);
 
       const result = await provider.queryRows('sales', { page: 1, pageSize: 10 });
 
-      expect(result.columns.map((c) => c.name)).not.toContain('tenant_id');
-      expect(result.rows.every((r) => !('tenant_id' in r))).toBe(true);
+      expect(result.columns.map((c) => c.name)).toContain('tenant_id');
+      expect(result.rows.every((r) => 'tenant_id' in r)).toBe(true);
     });
 
-    it('tenantColumn is stripped from getSchema result', async () => {
+    it('the company column is visible in getSchema result', async () => {
       const captured: CapturedArgs = {};
-      const ctx = makeUserContext({ allColumns: true });
+      const ctx = makeUserContext({ allowedColumns: ['revenue'] });
       const provider = new AccessControlledProvider(makeStubProvider(captured), ctx);
 
       const schema = await provider.getSchema('sales');
 
-      expect(schema.columns.map((c) => c.name)).not.toContain('tenant_id');
+      expect(schema.columns.map((c) => c.name)).toContain('tenant_id');
     });
   });
 
@@ -224,6 +225,98 @@ describe('AccessControlledProvider', () => {
     });
   });
 
+  describe('platform/owner admin sees everything', () => {
+    it('injects NO tenant-isolation filter for the platform admin', async () => {
+      const captured: CapturedArgs = {};
+      const ctx = makeUserContext({ isPlatformAdmin: true, allColumns: true });
+      const provider = new AccessControlledProvider(makeStubProvider(captured), ctx);
+
+      await provider.queryRows('sales', { page: 1, pageSize: 10 });
+
+      const filters = captured.rows!.q.filters as Filter[];
+      expect(filters.find((f) => f.column === 'tenant_id')).toBeUndefined();
+      expect(filters.length).toBe(0);
+    });
+
+    it('still applies explicit row scopes for the platform admin', async () => {
+      const captured: CapturedArgs = {};
+      const ctx = makeUserContext({
+        isPlatformAdmin: true,
+        allColumns: true,
+        rowScopes: [{ column: 'region', values: ['North'] }],
+      });
+      const provider = new AccessControlledProvider(makeStubProvider(captured), ctx);
+
+      await provider.queryRows('sales', { page: 1, pageSize: 10 });
+
+      const filters = captured.rows!.q.filters as Filter[];
+      expect(filters.map((f) => f.column)).toEqual(['region']); // scope only, no tenant filter
+    });
+
+    it('exposes the tenant column to the platform admin (schema + rows)', async () => {
+      const captured: CapturedArgs = {};
+      const ctx = makeUserContext({ isPlatformAdmin: true, allColumns: true });
+      const provider = new AccessControlledProvider(makeStubProvider(captured), ctx);
+
+      const schema = await provider.getSchema('sales');
+      expect(schema.columns.map((c) => c.name)).toContain('tenant_id');
+
+      const rows = await provider.queryRows('sales', { page: 1, pageSize: 10 });
+      expect(rows.columns.map((c) => c.name)).toContain('tenant_id');
+      expect(rows.rows.every((r) => 'tenant_id' in r)).toBe(true);
+    });
+
+    it('lets the platform admin group/aggregate by the tenant column', async () => {
+      const captured: CapturedArgs = {};
+      const ctx = makeUserContext({ isPlatformAdmin: true, allColumns: true });
+      const provider = new AccessControlledProvider(makeStubProvider(captured), ctx);
+
+      await expect(
+        provider.queryAggregated('sales', {
+          x: 'tenant_id',
+          y: 'revenue',
+          aggregation: Aggregation.Sum,
+        }),
+      ).resolves.toBeDefined();
+    });
+  });
+
+  describe('multi-company access (profile scope on the tenant column)', () => {
+    it('a company scope on the tenant column REPLACES the single-company filter', async () => {
+      const captured: CapturedArgs = {};
+      const ctx = makeUserContext({
+        tenantId: 'acme',
+        rowScopes: [{ column: 'tenant_id', values: ['acme', 'globex'] }],
+      });
+      const provider = new AccessControlledProvider(makeStubProvider(captured), ctx);
+
+      await provider.queryRows('sales', { page: 1, pageSize: 10 });
+
+      const filters = captured.rows!.q.filters as Filter[];
+      const tenantFilters = filters.filter((f) => f.column === 'tenant_id');
+      // Exactly one filter on the company column, and it's the IN set — NOT the single eq.
+      expect(tenantFilters).toHaveLength(1);
+      expect(tenantFilters[0].operator).toBe('in');
+      expect(tenantFilters[0].value).toEqual(['acme', 'globex']);
+    });
+
+    it('without a company scope, the single-company eq filter still applies', async () => {
+      const captured: CapturedArgs = {};
+      const ctx = makeUserContext({
+        tenantId: 'acme',
+        rowScopes: [{ column: 'region', values: ['North'] }],
+      });
+      const provider = new AccessControlledProvider(makeStubProvider(captured), ctx);
+
+      await provider.queryRows('sales', { page: 1, pageSize: 10 });
+
+      const filters = captured.rows!.q.filters as Filter[];
+      const tenantFilter = filters.find((f) => f.column === 'tenant_id');
+      expect(tenantFilter!.operator).toBe('eq');
+      expect(tenantFilter!.value).toBe('acme');
+    });
+  });
+
   describe('fail-closed: disallowed columns throw AccessError', () => {
     it('querying a disallowed column in queryAggregated x throws AccessError', async () => {
       const captured: CapturedArgs = {};
@@ -253,9 +346,9 @@ describe('AccessControlledProvider', () => {
       ).rejects.toBeInstanceOf(AccessError);
     });
 
-    it('querying the tenantColumn directly throws AccessError', async () => {
+    it('grouping by the tenant/company column is allowed (it is a visible dimension)', async () => {
       const captured: CapturedArgs = {};
-      const ctx = makeUserContext({ allColumns: true });
+      const ctx = makeUserContext({ allowedColumns: ['revenue'] });
       const provider = new AccessControlledProvider(makeStubProvider(captured), ctx);
 
       await expect(
@@ -264,7 +357,7 @@ describe('AccessControlledProvider', () => {
           y: 'revenue',
           aggregation: Aggregation.Sum,
         }),
-      ).rejects.toBeInstanceOf(AccessError);
+      ).resolves.toBeDefined();
     });
 
     it('filter on disallowed column in queryRows throws AccessError', async () => {
@@ -290,9 +383,9 @@ function makeMultiTableStubProvider(captured: CapturedArgs): DataProvider {
     async listDatasets(): Promise<Dataset[]> {
       return [{ id: 'orders_ds', name: 'Orders' }];
     },
-    async getSchema(_datasetId: string): Promise<DatasetSchema> {
+    async getSchema(datasetId: string): Promise<DatasetSchema> {
       return {
-        datasetId: 'orders_ds',
+        datasetId,
         columns: [
           { name: 'orders.tenant_id', type: 'string' },
           { name: 'orders.revenue', type: 'number' },
@@ -375,16 +468,16 @@ describe('AccessControlledProvider — multi-table (qualified column names)', ()
     ).rejects.toBeInstanceOf(AccessError);
   });
 
-  it('tenantColumn (qualified) is stripped from getSchema result', async () => {
+  it('the qualified tenant column is visible in getSchema result', async () => {
     const captured: CapturedArgs = {};
     const ctx = makeQualifiedUserContext({ allColumns: true });
     const provider = new AccessControlledProvider(makeMultiTableStubProvider(captured), ctx);
 
     const schema = await provider.getSchema('orders_ds');
-    expect(schema.columns.map((c) => c.name)).not.toContain('orders.tenant_id');
+    expect(schema.columns.map((c) => c.name)).toContain('orders.tenant_id');
   });
 
-  it('queryRows strips tenant_id key and non-allowed qualified keys', async () => {
+  it('queryRows keeps the company column + allowed keys, strips the rest', async () => {
     const captured: CapturedArgs = {};
     const ctx = makeQualifiedUserContext({
       allowedColumns: ['orders.revenue'],
@@ -393,9 +486,11 @@ describe('AccessControlledProvider — multi-table (qualified column names)', ()
 
     const result = await provider.queryRows('orders_ds', { page: 1, pageSize: 10 });
 
-    expect(result.columns.map((c) => c.name)).toEqual(['orders.revenue']);
-    expect(result.rows.every((r) => !('orders.tenant_id' in r) && !('orders.region' in r) && !('customers.name' in r))).toBe(true);
+    // company column visible; region + customers.name still hidden (not granted).
+    expect(result.columns.map((c) => c.name)).toEqual(['orders.tenant_id', 'orders.revenue']);
+    expect(result.rows.every((r) => !('orders.region' in r) && !('customers.name' in r))).toBe(true);
     expect(result.rows[0]['orders.revenue']).toBe(100);
+    expect(result.rows[0]['orders.tenant_id']).toBe('acme');
   });
 
   it('qualified row scope is passed as a security filter', async () => {
@@ -414,14 +509,14 @@ describe('AccessControlledProvider — multi-table (qualified column names)', ()
     expect(scopeFilter!.value).toEqual(['North']);
   });
 
-  it('allColumns=true on multi-table returns all except tenantColumn', async () => {
+  it('allColumns=true on multi-table returns all columns including the company column', async () => {
     const captured: CapturedArgs = {};
     const ctx = makeQualifiedUserContext({ allColumns: true });
     const provider = new AccessControlledProvider(makeMultiTableStubProvider(captured), ctx);
 
     const result = await provider.queryRows('orders_ds', { page: 1, pageSize: 10 });
     const names = result.columns.map((c) => c.name);
-    expect(names).not.toContain('orders.tenant_id');
+    expect(names).toContain('orders.tenant_id');
     expect(names).toContain('orders.revenue');
     expect(names).toContain('orders.region');
     expect(names).toContain('customers.name');

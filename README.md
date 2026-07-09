@@ -15,20 +15,18 @@ Browser
   getUserContext()          (resolves the signed-in session -> user + access
         |                    profile from the metadata DB; null -> 401)
         v
-  getProvider(ctx, datasetId)  (resolveDataset.ts: picks CSV / SQL / file, applies
+  getProvider(ctx, datasetId)  (resolveDataset.ts: picks SQL or file, applies
         |                        per-dataset tenant column + column allow-list)
         v
-  AccessControlledProvider  (injects tenant filter + row scopes, enforces column allow-list)
+  AccessControlledProvider  (company row isolation + row scopes, enforces column allow-list)
         |
         v
-  CsvProvider               (parses data/sales.csv, in-memory query)
-    OR
   SqlProvider               (Postgres via pg; pooled; identifier-safe SQL builders)
     OR
   DuckDbProvider            (embedded DuckDB over a Parquet file — folder-dropped CSV/Excel)
         |
         v
-  data/sales.csv  OR  Postgres table/view  OR  data/warehouse/<id>.parquet
+  Postgres table/view  OR  data/warehouse/<id>.parquet
 
   Metadata DB (SQLite via Drizzle) — users (+ password hashes, invites), per-company
     per-dataset column rules, optional row profiles + scopes, SQL connections
@@ -43,10 +41,10 @@ Browser
 
 Access is **configuration, not code** — defined in a metadata DB and enforced at one server-side choke point (`AccessControlledProvider`). See `docs/access-model.md` for the full model.
 
-- **Company isolation**: every API query gets a company equality filter injected server-side. The client cannot override or omit it.
-- **Row scopes**: an optional row profile can further constrain rows (`column ∈ values`), injected as `in` filters.
+- **Company isolation**: every API query gets a company filter injected server-side (the client cannot override or omit it). Three cases: the **owner/platform admin** sees every company's rows; a user with an **owner-authored profile scope on the company column** sees exactly that set of companies (multi-company access); everyone else is pinned to their single home company.
+- **Row scopes**: an optional row profile can further constrain rows (`column ∈ values`), injected as `in` filters. A scope on the company column defines cross-company access and can only be created/assigned by an owner admin.
 - **Per-company columns (fail-closed)**: the owner company sees all columns; every other company sees only its configured list. Columns outside it are invisible in schema and row results; referencing one returns HTTP 403. Mistakes hide data rather than leak it.
-- The `tenantColumn` (`tenantId`) is always stripped from results, so it is never exposed to the client.
+- The company/tenant column is a **visible dimension** for everyone (users break down *by* company within their allowed rows). Isolation is enforced on the rows, not by hiding the column — a user only ever receives rows for companies they may access.
 
 ## Setup & Running
 
@@ -75,7 +73,7 @@ Open http://localhost:3000 — you'll be redirected to `/login`.
 
 The metadata DB defaults to a local SQLite file (`data/metadata.db`). To use a managed store, set `METADATA_DB_URL` (and optionally `METADATA_DB_AUTH_TOKEN`) to a libSQL/Turso or Postgres URL before seeding — see `docs/access-model.md`.
 
-Set `PLATFORM_TENANT_ID` to the company that owns the instance (defaults to the demo tenant `easyreporting`). Admins in that company are **owner admins** with reach across every company; admins anywhere else are scoped to their own. `data/sales.csv` is demo data spanning several companies — regenerate it with `npm run db:gen-data`.
+Set `PLATFORM_TENANT_ID` to the company that owns the instance (defaults to the demo tenant `easyreporting`). Admins in that company are **owner admins** — they see every company's data and manage all companies; admins anywhere else are scoped to their own. There are no built-in datasets: import a folder of CSV/Excel files from **Admin → Import**, or connect a SQL source.
 
 ## Signing in
 
@@ -138,7 +136,6 @@ Tests live in `tests/` mirroring `src/`. Integration tests (config-repo) use an 
 
 Suites:
 - `tests/lib/data/dateBuckets.test.ts` — `formatBucketKey` (day/month/quarter/week, edge cases)
-- `tests/lib/data/CsvProvider.test.ts` — all 8 filter operators, aggregate functions, empty-set behavior
 - `tests/lib/data/export/toCsv.test.ts` — CSV serialization: `rowsToCsv` (prettified headers, provider column order / no stripped-column leak, null cells, quoting, empty result) and `aggregatedToCsv` (X + per-series columns, multi-series, missing points, Count label)
 - `tests/lib/data/sql/identifiers.test.ts` — `quoteIdent`, `assertKnown`
 - `tests/lib/data/sql/buildQuery.test.ts` — `buildWhere`/`buildAggregated`/`buildSummary`/`buildRows`
@@ -154,15 +151,17 @@ Suites:
 
 ## File-backed datasets (drop a folder of CSV/Excel)
 
-Load large CSV/Excel files as datasets without a database. Drop a folder of files under
-`data/datasets/<id>/` and run:
+Load large CSV/Excel files as datasets without a database. Two ways in:
 
-```bash
-npm run db:sync-files
-```
+- **Admin UI (owner admins):** **/admin/import** — name the dataset, pick the tenant column,
+  upload files, **Analyze** (previews the schema, per-company row counts, unknown-tenant and
+  schema-drift warnings), then **Publish**. Uploads stream to disk (no size cap). Re-import
+  replaces the data; Delete removes the dataset, its Parquet, source files, and dashboards.
+- **CLI:** drop a folder of files under `data/datasets/<id>/` and run `npm run db:sync-files`.
 
-Each subfolder becomes one dataset (its files unioned by column name). See
-`data/datasets/README.md` for the full convention and the optional `dataset.json` sidecar.
+Each subfolder (or Import entry) becomes one dataset, its files unioned by column name. See
+`data/datasets/README.md` for the folder convention and the optional `dataset.json` sidecar.
+Both paths share the same materialize logic in `src/lib/data/duck/importDataset.ts`.
 
 **How it works — slow ingest, fast queries:**
 

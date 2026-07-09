@@ -28,8 +28,18 @@ export class AccessError extends Error {
 
 // The single security choke point. Every provider is wrapped in this, so any
 // data source (CSV today, SQL later, a hand-written connector) inherits the
-// same rules for free: a fail-closed column allow-list and non-bypassable row
-// isolation. The wrapped provider's only obligation is to honor injected filters.
+// same rules for free: a fail-closed column allow-list and company row isolation.
+//
+// COMPANY ROW ISOLATION has three cases:
+//   • platform/owner admin (isPlatformAdmin) — the operator, not a data tenant — sees
+//     every company's rows (no company filter);
+//   • a user with an owner-authored profile scope on the tenant column — sees exactly
+//     that set of companies (multi-company access);
+//   • everyone else — pinned to their single home company (tenantColumn = tenantId).
+//
+// The tenant/company column itself is a VISIBLE dimension for everyone (users break down
+// by company within their allowed rows) — isolation is enforced on the rows, not by
+// hiding the column. The wrapped provider's only obligation is to honor injected filters.
 //
 // NAME COMPARISON NOTE: All column name comparisons here are string-exact and work
 // for BOTH bare names (single-table datasets, e.g. "revenue") and qualified names
@@ -58,11 +68,13 @@ export class AccessControlledProvider implements DataProvider {
     this.computedFields = computedFields;
   }
 
-  // Fail-closed: the tenant column is never visible; otherwise allColumns grants
-  // everything, and without it only explicitly-allowed columns pass.
-  // Column names are string-exact: bare for single-table, qualified for multi-table.
+  // The tenant/company column is a visible dimension for EVERYONE — users break down by
+  // company within the rows they're allowed to see. It is not a leak: a user only ever
+  // receives rows for companies they may access, so the column only reveals those.
+  // Otherwise allColumns grants everything, and without it only explicitly-allowed columns
+  // pass. Column names are string-exact: bare for single-table, qualified for multi-table.
   private isAllowedColumn(name: string): boolean {
-    if (name === this.ctx.tenantColumn) return false;
+    if (name === this.ctx.tenantColumn) return true;
     if (this.ctx.allColumns) return true;
     return this.ctx.allowedColumns.includes(name);
   }
@@ -93,13 +105,25 @@ export class AccessControlledProvider implements DataProvider {
     }
   }
 
-  // Server-trusted filters appended to every query: tenant isolation first, then
-  // any profile row scopes. These bypass the allow-list check by design — a scope
-  // may key off a column the user cannot otherwise see.
+  // Server-trusted filters appended to every query. These bypass the allow-list check by
+  // design — a scope may key off a column the user cannot otherwise see.
+  //
+  // Company isolation (see the three cases in the class header):
+  //   • platform/owner admin → no company filter (sees every company);
+  //   • a user whose profile scopes the tenant column → that scope IS the company filter,
+  //     so we do NOT also pin them to their single home company (this is how one user gets
+  //     access to several companies). Such scopes are owner-authored only (enforced in
+  //     admin/repo.ts), so this can never widen a customer's own reach;
+  //   • everyone else → pinned to their single home company.
   private securityFilters(): Filter[] {
-    const filters: Filter[] = [
-      { column: this.ctx.tenantColumn, operator: 'eq', value: this.ctx.tenantId },
-    ];
+    const filters: Filter[] = [];
+    if (!this.ctx.isPlatformAdmin) {
+      const hasCompanyScope = this.ctx.rowScopes.some((s) => s.column === this.ctx.tenantColumn);
+      if (!hasCompanyScope) {
+        filters.push({ column: this.ctx.tenantColumn, operator: 'eq', value: this.ctx.tenantId });
+      }
+    }
+    // Profile row scopes (including any company scope above) always apply.
     for (const scope of this.ctx.rowScopes) {
       filters.push({ column: scope.column, operator: 'in', value: scope.values });
     }

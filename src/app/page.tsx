@@ -7,6 +7,7 @@ import AddChartDialog from '@/components/AddChartDialog';
 import KpiSnapshot from '@/components/KpiSnapshot';
 import GlobalControls from '@/components/GlobalControls';
 import { useSchema } from '@/components/useSchema';
+import { useActiveDatasetId } from '@/components/useActiveDatasetId';
 import { buildGlobalFilters, firstDateColumn, previousPeriod } from '@/components/dashboardUtils';
 import type { ChartConfig, GlobalControls as Globals, TileConfig, DashboardLayout } from '@/components/chartTypes';
 import { DEFAULT_GLOBALS } from '@/components/chartTypes';
@@ -49,7 +50,7 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 
 function DashboardInner() {
   const searchParams = useSearchParams();
-  const datasetId = searchParams.get('datasetId') ?? 'sales';
+  const datasetId = searchParams.get('datasetId') ?? '';
 
   const { columns, loading: schemaLoading } = useSchema(datasetId);
   const dateColumn = firstDateColumn(columns);
@@ -287,10 +288,33 @@ function DashboardInner() {
   );
 }
 
+function NoDatasets() {
+  return (
+    <main className="mx-auto max-w-2xl px-6 py-16 text-center">
+      <h1 className="mb-2 text-lg font-bold text-foreground">No datasets yet</h1>
+      <p className="text-sm text-foreground-muted">
+        Import a folder of CSV/Excel files from <strong>Admin → Import</strong>, or connect a SQL
+        source, to get started.
+      </p>
+    </main>
+  );
+}
+
+// Resolve the active dataset (redirect to the first, or show the empty state) before
+// mounting the dashboard, so DashboardInner always has a real datasetId.
+function DashboardGate() {
+  const { status } = useActiveDatasetId();
+  if (status === 'empty') return <NoDatasets />;
+  if (status !== 'ready') {
+    return <div className="px-6 py-8 text-sm text-foreground-muted">Loading…</div>;
+  }
+  return <DashboardInner />;
+}
+
 export default function Dashboard() {
   return (
     <Suspense fallback={<div className="px-6 py-8 text-sm text-foreground-muted">Loading…</div>}>
-      <DashboardInner />
+      <DashboardGate />
     </Suspense>
   );
 }

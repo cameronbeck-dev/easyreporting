@@ -151,7 +151,9 @@ export function buildSummary(
   allowedCols: Set<string>,
 ): BuiltQuery {
   for (const m of q.metrics) {
-    assertKnown(m.column, allowedCols);
+    // Count maps to COUNT(*) and ignores its column, which may be a client sentinel
+    // (e.g. '__count__') rather than a real column — so don't validate it.
+    if (m.aggregation !== Aggregation.Count) assertKnown(m.column, allowedCols);
   }
 
   const filters = q.filters ?? [];

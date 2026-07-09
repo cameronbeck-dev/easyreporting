@@ -12,7 +12,6 @@
     "db:generate": "drizzle-kit generate",
     "db:seed": "tsx src/lib/db/seed.ts",
     "db:invite": "tsx src/lib/db/invite-cli.ts",
-    "db:gen-data": "tsx scripts/generate-sales.ts",
     "db:sync-files": "tsx scripts/sync-files.ts"
   },
   "dependencies": {
