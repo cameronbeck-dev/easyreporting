@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { parseComputedExpression } from '@/lib/data/computed/parser';
 import { ComputedParseError } from '@/lib/data/computed/types';
 
-const COLS = ['a', 'b', 'c', 'revenue', 'cost', 'orders.revenue', 'orders.cost'];
+const COLS = ['a', 'b', 'c', 'revenue', 'cost', 'orders.revenue', 'orders.cost', 'Sell Ex Tax', 'Cost Ex Tax'];
 
 describe('parseComputedExpression — valid expressions', () => {
   it('simple addition', () => {
@@ -50,6 +50,23 @@ describe('parseComputedExpression — valid expressions', () => {
     const { ast } = parseComputedExpression('3.14 * a', COLS);
     expect(ast.kind).toBe('bin');
   });
+
+  it('bracketed column reference with spaces', () => {
+    const { dependencies } = parseComputedExpression('[Sell Ex Tax] - [Cost Ex Tax]', COLS);
+    expect(dependencies.sort()).toEqual(['Cost Ex Tax', 'Sell Ex Tax']);
+  });
+
+  it('bracketed and bare references mixed', () => {
+    const { dependencies } = parseComputedExpression('[Sell Ex Tax] * 2 - cost', COLS);
+    expect(dependencies.sort()).toEqual(['Sell Ex Tax', 'cost']);
+  });
+
+  it('bracketed reference resolves the same column as would fail bare', () => {
+    // Bare `Sell Ex Tax` tokenizes as three idents and fails; brackets make it one ref.
+    expect(() => parseComputedExpression('Sell Ex Tax', COLS)).toThrow(ComputedParseError);
+    const { dependencies } = parseComputedExpression('[Sell Ex Tax]', COLS);
+    expect(dependencies).toEqual(['Sell Ex Tax']);
+  });
 });
 
 describe('parseComputedExpression — errors', () => {
@@ -72,6 +89,18 @@ describe('parseComputedExpression — errors', () => {
 
   it('rejects unknown column reference', () => {
     expect(() => parseComputedExpression('a + unknown_col', COLS)).toThrow(ComputedParseError);
+  });
+
+  it('rejects unknown bracketed column reference', () => {
+    expect(() => parseComputedExpression('[Not A Column]', COLS)).toThrow(ComputedParseError);
+  });
+
+  it('rejects unterminated bracketed reference', () => {
+    expect(() => parseComputedExpression('[Sell Ex Tax', COLS)).toThrow(ComputedParseError);
+  });
+
+  it('rejects empty bracketed reference', () => {
+    expect(() => parseComputedExpression('[] + a', COLS)).toThrow(ComputedParseError);
   });
 
   it('rejects illegal character — semicolon', () => {

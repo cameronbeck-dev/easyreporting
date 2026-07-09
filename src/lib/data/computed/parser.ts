@@ -28,6 +28,26 @@ function tokenize(expr: string): Token[] {
     if (ch === '(') { tokens.push({ kind: 'lparen', text: '(' }); i++; continue; }
     if (ch === ')') { tokens.push({ kind: 'rparen', text: ')' }); i++; continue; }
 
+    // Bracketed column reference: [Sell Ex Tax]. Everything up to the closing ] is taken
+    // as the column name verbatim, so names containing spaces (or other punctuation the
+    // bare-identifier rule below would split on) can be referenced unambiguously.
+    if (ch === '[') {
+      let s = '';
+      i++; // consume '['
+      while (i < expr.length && expr[i] !== ']') {
+        s += expr[i++];
+      }
+      if (i >= expr.length) {
+        throw new ComputedParseError('Unterminated column reference: missing a closing "]".');
+      }
+      i++; // consume ']'
+      if (s.length === 0) {
+        throw new ComputedParseError('Empty column reference: "[]".');
+      }
+      tokens.push({ kind: 'ident', text: s });
+      continue;
+    }
+
     // Number literal: digits with optional decimal point
     if (ch >= '0' && ch <= '9') {
       let s = '';

@@ -650,6 +650,8 @@ export interface DatasetAdminRow {
   /** Set for file-backed (DuckDB/Parquet) datasets; null for SQL datasets. */
   parquetPath: string | null;
   tenantColumn: string;
+  /** Source columns of the dataset (from columnsJson), used to power computed-field autocomplete. */
+  columns: DatasetColumn[];
   computedFields: ComputedField[];
   createdAt: Date;
 }
@@ -855,13 +857,15 @@ export async function listDatasetsAdmin(admin: AdminContext): Promise<DatasetAdm
       tableName: datasets.tableName,
       parquetPath: datasets.parquetPath,
       tenantColumn: datasets.tenantColumn,
+      columnsJson: datasets.columnsJson,
       computedFieldsJson: datasets.computedFieldsJson,
       createdAt: datasets.createdAt,
     })
     .from(datasets);
-  return rows.map((r) => ({
+  return rows.map(({ columnsJson, computedFieldsJson, ...r }) => ({
     ...r,
-    computedFields: (r.computedFieldsJson ?? []) as ComputedField[],
+    columns: (columnsJson ?? []) as DatasetColumn[],
+    computedFields: (computedFieldsJson ?? []) as ComputedField[],
   }));
 }
 
