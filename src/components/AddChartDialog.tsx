@@ -31,6 +31,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
   const [yCol, setYCol] = useState(initial?.y ?? '');
   const [aggregation, setAggregation] = useState<Aggregation>(initial?.aggregation ?? Aggregation.Sum);
   const [bucket, setBucket] = useState<BucketChoice>(initial?.dateBucket ?? 'global');
+  const [limit, setLimit] = useState<number | ''>(initial?.limit ?? '');
 
   const isCount = aggregation === Aggregation.Count;
   const xType = columns.find((c) => c.name === xCol)?.type;
@@ -67,6 +68,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
       y: yCol,
       aggregation,
       dateBucket: isXDate && !isPieType && bucket !== 'global' ? bucket : undefined,
+      limit: !isXDate && typeof limit === 'number' && limit > 0 ? limit : undefined,
     };
     onSubmit(config);
   };
@@ -142,6 +144,25 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
                   <option value="month">Monthly</option>
                   <option value="quarter">Quarterly</option>
                 </select>
+              </div>
+            )}
+
+            {!isXDate && (
+              <div>
+                <label className="mb-1 block text-sm font-medium text-foreground">
+                  Show top (optional)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  value={limit}
+                  onChange={(e) => setLimit(e.target.value === '' ? '' : Number(e.target.value))}
+                  placeholder="All categories"
+                  className={`${fieldClass} placeholder:text-foreground-muted`}
+                />
+                <p className="mt-1 text-xs text-foreground-muted">
+                  Keep only the highest-ranked categories by the metric (e.g. top 10 customers).
+                </p>
               </div>
             )}
 

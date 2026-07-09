@@ -221,11 +221,24 @@ export async function analyzeImportAction(_prev: ActionState, formData: FormData
   });
 }
 
-/** Step 3: publish the staged dataset (atomic swap + register). */
+/** Step 3: publish the staged dataset (apply column-type overrides + atomic swap + register). */
 export async function publishImportAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   return run(['/admin/import', '/data', '/'], async () => {
     const admin = await requireAdminAction();
-    const res = await repo.publishFileImport(admin, String(formData.get('datasetId') ?? ''));
+
+    // The wizard submits the owner's confirmed per-column types as JSON. Parse defensively;
+    // a malformed payload falls back to auto-detected types (undefined).
+    let columnTypes: Record<string, import('../data/duck/detectColumnTypes').ColumnTypeChoice> | undefined;
+    const raw = formData.get('columnTypesJson');
+    if (raw) {
+      try {
+        columnTypes = JSON.parse(String(raw));
+      } catch {
+        columnTypes = undefined;
+      }
+    }
+
+    const res = await repo.publishFileImport(admin, String(formData.get('datasetId') ?? ''), columnTypes);
     if (!res.ok) return { error: res.reason };
     return { message: `Published “${res.displayName}” — ${res.rowCount.toLocaleString()} rows.` };
   });

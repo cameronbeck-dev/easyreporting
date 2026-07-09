@@ -31,12 +31,13 @@ export interface DatasetSchema {
   columns: ColumnSchema[];
 }
 
-export type FilterOperator = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains' | 'in';
+export type FilterOperator = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains' | 'in' | 'nin';
 
 export interface Filter {
   column: string;
   operator: FilterOperator;
-  // 'in' takes an array (column must be one of the values); all others take a scalar.
+  // 'in'/'nin' take an array (column must be one of / none of the values); all others take
+  // a scalar.
   value: string | number | boolean | (string | number)[];
 }
 
@@ -58,6 +59,11 @@ export interface AggregatedQuery {
   filters?: Filter[];
   /** When x is a date column, group dates into this bucket. */
   dateBucket?: DateBucket;
+  /**
+   * Keep only the top-N groups by the aggregated measure (descending). Ignored for date
+   * axes, where chronological order matters. Clamped to a sane range by the query builder.
+   */
+  limit?: number;
 }
 
 export interface AggregatedResult {

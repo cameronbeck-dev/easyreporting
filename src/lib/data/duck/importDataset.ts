@@ -15,6 +15,12 @@ import { db } from '../../db/client';
 import { datasets } from '../../db/schema';
 import { getDuckConnection, parquetLiteral } from './connection';
 import { mapDuckType } from './mapDuckType';
+import {
+  detectColumnTypes,
+  buildCastSelect,
+  type ColumnTypeSuggestion,
+  type ColumnTypeChoice,
+} from './detectColumnTypes';
 import { quoteIdent } from '../sql/identifiers';
 import { DEFAULT_TENANT_COLUMN } from '../constants';
 import type { ColumnType } from '../types';
@@ -29,9 +35,14 @@ export interface DatasetColumn {
 
 export interface Materialized {
   id: string;
+  /** Source folder name under data/datasets/ (where the dataset.json sidecar lives). */
+  folderName: string;
   displayName: string;
   tenantColumn: string;
+  /** The schema as DuckDB sniffed it from the staged Parquet (before any type overrides). */
   columnsJson: DatasetColumn[];
+  /** Per-column type recommendations (sidecar-remembered choices win over fresh detection). */
+  suggestions: ColumnTypeSuggestion[];
   rowCount: number;
   stagingPath: string;
   finalPath: string;
@@ -42,6 +53,8 @@ export type MaterializeResult = ({ ok: true } & Materialized) | { ok: false; rea
 interface Sidecar {
   name?: string;
   tenantColumn?: string;
+  /** Owner-confirmed column types from a previous import, so re-imports remember them. */
+  columnTypes?: Record<string, ColumnTypeChoice>;
 }
 
 export function slugify(name: string): string {
@@ -184,16 +197,54 @@ export async function materializeFolder(folderName: string): Promise<Materialize
   ).getRowObjects();
   const rowCount = Number(countRows[0]?.['n'] ?? 0);
 
+  const detected = await detectColumnTypes(staging, columnsJson);
+  const suggestions = mergeSavedTypes(detected, sidecar.columnTypes);
+
   return {
     ok: true,
     id,
+    folderName,
     displayName,
     tenantColumn,
     columnsJson,
+    suggestions,
     rowCount,
     stagingPath: staging,
     finalPath: finalAbs(id),
   };
+}
+
+/**
+ * Overlay owner-confirmed column types (from the sidecar) onto fresh detection, so a
+ * re-import defaults to whatever the owner chose last time rather than re-guessing.
+ */
+function mergeSavedTypes(
+  detected: ColumnTypeSuggestion[],
+  saved: Record<string, ColumnTypeChoice> | undefined,
+): ColumnTypeSuggestion[] {
+  if (!saved) return detected;
+  return detected.map((s) => {
+    const choice = saved[s.name];
+    if (!choice) return s;
+    return { ...s, suggestedType: choice.type, dateFormat: choice.dateFormat };
+  });
+}
+
+/**
+ * The default per-column choices derived from suggestions — used by the CLI (which has no
+ * interactive override step) and as the wizard's initial selection. Only columns whose
+ * suggested type differs from the sniffed type (or that need a date format) are included.
+ */
+export function choicesFromSuggestions(
+  suggestions: ColumnTypeSuggestion[],
+): Record<string, ColumnTypeChoice> {
+  const out: Record<string, ColumnTypeChoice> = {};
+  for (const s of suggestions) {
+    if (s.suggestedType === 'date' || s.suggestedType !== s.sniffedType) {
+      out[s.name] = { type: s.suggestedType, dateFormat: s.dateFormat };
+    }
+  }
+  return out;
 }
 
 /** Per-company row counts + any tenant ids not matching a known company. */
@@ -220,44 +271,136 @@ export async function analyzeTenants(
   return { perTenant, unknownTenants };
 }
 
-async function upsertRow(m: Materialized): Promise<void> {
-  const parquetRel = finalRel(m.id);
+async function upsertRow(args: {
+  id: string;
+  displayName: string;
+  tenantColumn: string;
+  columnsJson: DatasetColumn[];
+}): Promise<void> {
+  const parquetRel = finalRel(args.id);
   await db
     .insert(datasets)
     .values({
-      id: m.id,
-      name: m.displayName,
+      id: args.id,
+      name: args.displayName,
       connectionId: null,
       tableName: null,
       parquetPath: parquetRel,
-      tenantColumn: m.tenantColumn,
-      columnsJson: m.columnsJson,
+      tenantColumn: args.tenantColumn,
+      columnsJson: args.columnsJson,
     })
     .onConflictDoUpdate({
       target: datasets.id,
       // Refresh only what ingest owns; leave admin-configured computed fields intact.
       set: {
-        name: m.displayName,
+        name: args.displayName,
         parquetPath: parquetRel,
-        tenantColumn: m.tenantColumn,
-        columnsJson: m.columnsJson,
+        tenantColumn: args.tenantColumn,
+        columnsJson: args.columnsJson,
       },
     });
 }
 
-/** Atomically swap staging → final and register the dataset (used by the CLI). */
-export async function commit(m: Materialized): Promise<void> {
-  fs.renameSync(m.stagingPath, m.finalPath);
-  await upsertRow(m);
+/**
+ * Produce the final Parquet from the staged one, applying type-override casts. When no
+ * column needs recasting the staged file is moved as-is (atomic rename); otherwise it is
+ * rewritten through a `SELECT * REPLACE (...)` projection and the staging file removed.
+ */
+async function applyTypeOverrides(
+  sniffed: DatasetColumn[],
+  choices: Record<string, ColumnTypeChoice>,
+  stagingPath: string,
+  finalPath: string,
+): Promise<void> {
+  const select = buildCastSelect(sniffed, choices);
+  if (!select) {
+    fs.renameSync(stagingPath, finalPath);
+    return;
+  }
+  const conn = await getDuckConnection();
+  await conn.run(
+    `COPY (${select} FROM read_parquet(${parquetLiteral(stagingPath)})) ` +
+      `TO ${parquetLiteral(finalPath)} (FORMAT parquet)`,
+  );
+  fs.rmSync(stagingPath, { force: true });
+}
+
+/** Persist the owner's confirmed column types into the sidecar so re-imports remember them. */
+function writeSidecarColumnTypes(
+  folderName: string,
+  choices: Record<string, ColumnTypeChoice>,
+): void {
+  const folderAbs = path.join(DATASETS_DIR, folderName);
+  if (!fs.existsSync(folderAbs)) return;
+  const sidecar = readSidecar(folderAbs);
+  sidecar.columnTypes = Object.keys(choices).length > 0 ? choices : undefined;
+  fs.writeFileSync(
+    path.join(folderAbs, 'dataset.json'),
+    JSON.stringify(sidecar, null, 2) + '\n',
+  );
 }
 
 /**
- * Publish a previously-materialized dataset without re-reading the source files: read the
- * staged Parquet's schema, then atomically swap it in and register the row. Used by the UI
- * so Analyze → Publish doesn't re-do the (slow) materialize.
+ * Finalize a staged dataset: apply the type-override casts, register the row with the
+ * post-cast schema, and remember the choices in the sidecar. Shared by the CLI (commit)
+ * and the UI (commitStaged).
+ */
+async function finalizeStaging(args: {
+  id: string;
+  folderName: string;
+  displayName: string;
+  tenantColumn: string;
+  choices: Record<string, ColumnTypeChoice>;
+}): Promise<{ rowCount: number; columnsJson: DatasetColumn[] }> {
+  const staging = stagingAbs(args.id);
+  const final = finalAbs(args.id);
+  const sniffed = await describeColumns(staging);
+
+  await applyTypeOverrides(sniffed, args.choices, staging, final);
+
+  const columnsJson = await describeColumns(final);
+  const conn = await getDuckConnection();
+  const countRows = (
+    await conn.runAndReadAll(`SELECT COUNT(*) AS n FROM read_parquet(${parquetLiteral(final)})`)
+  ).getRowObjects();
+  const rowCount = Number(countRows[0]?.['n'] ?? 0);
+
+  await upsertRow({
+    id: args.id,
+    displayName: args.displayName,
+    tenantColumn: args.tenantColumn,
+    columnsJson,
+  });
+  writeSidecarColumnTypes(args.folderName, args.choices);
+  return { rowCount, columnsJson };
+}
+
+/**
+ * Register a freshly-materialized dataset (used by the CLI). Auto-applies detected column
+ * types (there is no interactive override step on the command line).
+ */
+export async function commit(
+  m: Materialized,
+  choices: Record<string, ColumnTypeChoice> = choicesFromSuggestions(m.suggestions),
+): Promise<void> {
+  await finalizeStaging({
+    id: m.id,
+    folderName: m.folderName,
+    displayName: m.displayName,
+    tenantColumn: m.tenantColumn,
+    choices,
+  });
+}
+
+/**
+ * Publish a previously-materialized dataset without re-reading the source files: apply the
+ * owner's confirmed column types to the staged Parquet, then register it. Used by the UI so
+ * Analyze → Publish doesn't re-do the (slow) materialize. When `choices` is omitted the
+ * detected/ sidecar-remembered types are applied automatically.
  */
 export async function commitStaged(
   folderName: string,
+  choices?: Record<string, ColumnTypeChoice>,
 ): Promise<{ ok: true; id: string; displayName: string; rowCount: number } | { ok: false; reason: string }> {
   const id = slugify(folderName);
   const staging = stagingAbs(id);
@@ -270,25 +413,21 @@ export async function commitStaged(
   const displayName = sidecar.name?.trim() || folderName;
   const tenantColumn = sidecar.tenantColumn?.trim() || DEFAULT_TENANT_COLUMN;
 
-  const columnsJson = await describeColumns(staging);
-  if (!columnsJson.some((c) => c.name === tenantColumn)) {
+  const sniffed = await describeColumns(staging);
+  if (!sniffed.some((c) => c.name === tenantColumn)) {
     return { ok: false, reason: `tenant column "${tenantColumn}" not found in the staged data.` };
   }
 
-  const conn = await getDuckConnection();
-  const countRows = (
-    await conn.runAndReadAll(`SELECT COUNT(*) AS n FROM read_parquet(${parquetLiteral(staging)})`)
-  ).getRowObjects();
-  const rowCount = Number(countRows[0]?.['n'] ?? 0);
+  // Fall back to detected/remembered types when the caller passes none.
+  const resolved =
+    choices ?? choicesFromSuggestions(mergeSavedTypes(await detectColumnTypes(staging, sniffed), sidecar.columnTypes));
 
-  await commit({
+  const { rowCount } = await finalizeStaging({
     id,
+    folderName,
     displayName,
     tenantColumn,
-    columnsJson,
-    rowCount,
-    stagingPath: staging,
-    finalPath: finalAbs(id),
+    choices: resolved,
   });
   return { ok: true, id, displayName, rowCount };
 }

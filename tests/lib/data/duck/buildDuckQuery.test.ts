@@ -64,6 +64,26 @@ describe('buildDuckWhere', () => {
     expect(values).toEqual([]);
   });
 
+  it('nin expands to a NOT IN (...) list', () => {
+    const { clause, values } = buildDuckWhere(
+      [{ column: 'region', operator: 'nin', value: ['NSW', 'VIC'] }],
+      allCols,
+      1,
+    );
+    expect(clause).toBe('WHERE "region" NOT IN ($1, $2)');
+    expect(values).toEqual(['NSW', 'VIC']);
+  });
+
+  it('empty nin list becomes TRUE (excludes nothing)', () => {
+    const { clause, values } = buildDuckWhere(
+      [{ column: 'region', operator: 'nin', value: [] }],
+      allCols,
+      1,
+    );
+    expect(clause).toBe('WHERE TRUE');
+    expect(values).toEqual([]);
+  });
+
   it('keeps placeholder indexes sequential across mixed filters', () => {
     const { clause, values } = buildDuckWhere(
       [
@@ -157,6 +177,37 @@ describe('buildDuckAggregated', () => {
     );
     expect(text).toContain('WHERE "tenantId" = $1 GROUP BY x');
     expect(values).toEqual(['globex']);
+  });
+
+  it('top-N on a non-date x orders by the measure and limits', () => {
+    const { text } = buildDuckAggregated(
+      P,
+      { x: 'region', y: 'amount', aggregation: Aggregation.Sum, filters: [], limit: 10 },
+      allCols,
+      columns,
+    );
+    expect(text).toContain('GROUP BY x ORDER BY y DESC LIMIT 10');
+  });
+
+  it('ignores top-N on a date x (stays chronological)', () => {
+    const { text } = buildDuckAggregated(
+      P,
+      { x: 'order_date', y: 'amount', aggregation: Aggregation.Sum, filters: [], dateBucket: 'month', limit: 10 },
+      allCols,
+      columns,
+    );
+    expect(text).toContain('ORDER BY x');
+    expect(text).not.toContain('LIMIT');
+  });
+
+  it('clamps an out-of-range top-N limit', () => {
+    const { text } = buildDuckAggregated(
+      P,
+      { x: 'region', y: 'amount', aggregation: Aggregation.Sum, filters: [], limit: 99999 },
+      allCols,
+      columns,
+    );
+    expect(text).toContain('LIMIT 1000');
   });
 });
 

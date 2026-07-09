@@ -10,7 +10,7 @@
 // there is no JOIN handling here.
 import type { Filter, AggregatedQuery, RowsQuery, SummaryQuery, ColumnSchema } from '../types';
 import { Aggregation } from '../types';
-import { quoteIdent, assertKnown } from '../sql/identifiers';
+import { quoteIdent, assertKnown, clampTopN } from '../sql/identifiers';
 
 export interface BuiltQuery {
   text: string;
@@ -73,6 +73,15 @@ export function buildDuckWhere(
         parts.push(`${col} IN (${placeholders.join(', ')})`);
         values.push(...list);
       }
+    } else if (f.operator === 'nin') {
+      const list = Array.isArray(f.value) ? f.value : [f.value];
+      if (list.length === 0) {
+        parts.push('TRUE'); // exclude nothing
+      } else {
+        const placeholders = list.map(() => `$${idx++}`);
+        parts.push(`${col} NOT IN (${placeholders.join(', ')})`);
+        values.push(...list);
+      }
     }
   }
 
@@ -121,12 +130,19 @@ export function buildDuckAggregated(
   const { expr, bucketed } = xExpr(q, columns);
   const yExpr = aggExpr(q.y, q.aggregation);
 
+  // Top-N only applies to non-date axes; date axes stay chronological.
+  const xType = columns.find((c) => c.name === q.x)?.type;
+  const topN = xType === 'date' ? null : clampTopN(q.limit);
+  const orderBy = topN ? 'ORDER BY y DESC' : 'ORDER BY x';
+  const limitClause = topN ? `LIMIT ${topN}` : '';
+
   const text = [
     `SELECT ${expr} AS x, ${yExpr} AS y`,
     `FROM read_parquet(${parquetLiteral})`,
     clause,
     `GROUP BY x`,
-    `ORDER BY x`,
+    orderBy,
+    limitClause,
   ]
     .filter(Boolean)
     .join(' ');

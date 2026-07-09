@@ -1,7 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
+
+// Real DuckDB: first-touch native-module load + Parquet materialise can exceed the default
+// 5s timeout when this file runs in parallel with the other duck integration tests.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 import { DuckDbProvider } from '@/lib/data/DuckDbProvider';
 import { getDuckConnection, parquetLiteral } from '@/lib/data/duck/connection';
 import { Aggregation } from '@/lib/data/types';

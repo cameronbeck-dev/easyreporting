@@ -32,6 +32,7 @@ import {
   discardStaging,
   type DatasetColumn,
 } from '../data/duck/importDataset';
+import type { ColumnTypeSuggestion, ColumnTypeChoice } from '../data/duck/detectColumnTypes';
 import { listSelectableColumns } from '../data/catalog';
 import { listTenantColumnsResolved } from '../db/config-repo';
 import { getProviderForDataset } from '../data/resolveDataset';
@@ -936,12 +937,24 @@ export async function createFileImport(
 
   const folderAbs = path.join(DATASETS_DIR, id);
   fs.mkdirSync(folderAbs, { recursive: true });
+  // Preserve any remembered column types from a prior import of this dataset so a
+  // re-import defaults to the owner's earlier choices instead of re-guessing.
+  let columnTypes: Record<string, unknown> | undefined;
+  const sidecarPath = path.join(folderAbs, 'dataset.json');
+  if (fs.existsSync(sidecarPath)) {
+    try {
+      columnTypes = (JSON.parse(fs.readFileSync(sidecarPath, 'utf-8')) as { columnTypes?: Record<string, unknown> })
+        .columnTypes;
+    } catch {
+      columnTypes = undefined;
+    }
+  }
   for (const f of fs.readdirSync(folderAbs)) {
     if (f !== 'dataset.json') fs.rmSync(path.join(folderAbs, f), { force: true, recursive: true });
   }
   fs.writeFileSync(
-    path.join(folderAbs, 'dataset.json'),
-    JSON.stringify({ name, tenantColumn }, null, 2) + '\n',
+    sidecarPath,
+    JSON.stringify({ name, tenantColumn, ...(columnTypes ? { columnTypes } : {}) }, null, 2) + '\n',
   );
   discardStaging(id);
   return { id };
@@ -962,6 +975,8 @@ export interface ImportAnalysis {
   tenantColumn: string;
   rowCount: number;
   columns: DatasetColumn[];
+  /** Per-column type recommendations for the wizard's override step. */
+  suggestions: ColumnTypeSuggestion[];
   perTenant: { tenantId: string; count: number }[];
   unknownTenants: string[];
   /** null for a brand-new dataset (no prior schema to compare). */
@@ -1021,19 +1036,25 @@ export async function analyzeFileImport(
     tenantColumn: m.tenantColumn,
     rowCount: m.rowCount,
     columns: m.columnsJson,
+    suggestions: m.suggestions,
     perTenant,
     unknownTenants,
     drift,
   };
 }
 
-/** Publish a previously-analysed dataset: atomically swap the Parquet in and register it. */
+/**
+ * Publish a previously-analysed dataset: apply the owner's confirmed column types to the
+ * staged Parquet, atomically swap it in, and register it. `columnTypes` maps a column name
+ * to its chosen type (+ date format); omitted columns keep their sniffed type.
+ */
 export async function publishFileImport(
   admin: AdminContext,
   datasetId: string,
+  columnTypes?: Record<string, ColumnTypeChoice>,
 ): Promise<{ ok: true; id: string; displayName: string; rowCount: number } | { ok: false; reason: string }> {
   assertOwner(admin);
-  return commitStaged(datasetId);
+  return commitStaged(datasetId, columnTypes);
 }
 
 export async function addComputedField(

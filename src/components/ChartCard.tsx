@@ -70,6 +70,7 @@ export default function ChartCard({
       aggregation: config.aggregation,
       filters: globalFilters,
       dateBucket: effectiveBucket,
+      limit: config.limit,
     };
 
     postJson<AggregatedResult>('/api/query', { datasetId: config.datasetId, query })

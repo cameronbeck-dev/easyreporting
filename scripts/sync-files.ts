@@ -29,8 +29,11 @@ async function syncFolder(folderName: string): Promise<'ok' | 'skipped'> {
     return 'skipped';
   }
   await commit(m);
+  const detectedDates = m.suggestions.filter((s) => s.suggestedType === 'date' && s.sniffedType !== 'date');
+  const dateNote =
+    detectedDates.length > 0 ? `, ${detectedDates.length} date col(s) auto-detected` : '';
   console.log(
-    `  ✓ ${m.id}  (${m.rowCount.toLocaleString()} rows, ${m.columnsJson.length} cols, tenant="${m.tenantColumn}")`,
+    `  ✓ ${m.id}  (${m.rowCount.toLocaleString()} rows, ${m.columnsJson.length} cols, tenant="${m.tenantColumn}"${dateNote})`,
   );
   return 'ok';
 }

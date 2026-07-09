@@ -1,6 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+
+// These are real DuckDB integration tests: they materialise Parquet, install the excel
+// extension (network on first run), and share one process-wide connection with the other
+// duck test files, so the default 5s timeout is too tight under parallel load.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 import {
   DATASETS_DIR,
   WAREHOUSE_DIR,
@@ -13,6 +18,7 @@ import {
 // DATASETS_DIR = cwd/data/datasets). Cleaned up afterwards along with their staging Parquet.
 const OK = `__importtest_ok_${process.pid}`;
 const NO_TENANT = `__importtest_notenant_${process.pid}`;
+const DATES = `__importtest_dates_${process.pid}`;
 
 function writeFolder(name: string, file: string, contents: string) {
   const dir = path.join(DATASETS_DIR, name);
@@ -34,11 +40,20 @@ beforeAll(() => {
     'region,amount,tenantId\nNSW,100,globex\nVIC,50,globex\nQLD,200,initech\nWA,75,acme\n',
   );
   writeFolder(NO_TENANT, 'orders.csv', 'region,amount,company\nNSW,100,globex\n');
+
+  // A "DD/Mon/YYYY" date column that DuckDB's CSV sniffer types as VARCHAR — the case
+  // value-based detection is meant to catch. 30 rows to clear the detection threshold.
+  const rows = Array.from({ length: 30 }, (_, i) => {
+    const day = String((i % 28) + 1).padStart(2, '0');
+    return `${day}/Jan/2025,${100 + i},globex`;
+  }).join('\n');
+  writeFolder(DATES, 'orders.csv', `despatch,amount,tenantId\n${rows}\n`);
 });
 
 afterAll(() => {
   cleanup(OK);
   cleanup(NO_TENANT);
+  cleanup(DATES);
 });
 
 describe('materializeFolder', () => {
@@ -54,6 +69,20 @@ describe('materializeFolder', () => {
     // Staging is separate from the final published path (atomic swap happens on commit).
     expect(m.stagingPath).not.toBe(m.finalPath);
     expect(fs.existsSync(m.finalPath)).toBe(false);
+  });
+
+  it('detects a DD/Mon/YYYY date column that the CSV sniffer left as text', async () => {
+    const m = await materializeFolder(DATES);
+    expect(m.ok).toBe(true);
+    if (!m.ok) return;
+    // Sniffer sees text…
+    expect(m.columnsJson.find((c) => c.name === 'despatch')?.type).toBe('string');
+    // …but detection recommends a date with the right strptime format.
+    const s = m.suggestions.find((c) => c.name === 'despatch');
+    expect(s?.suggestedType).toBe('date');
+    expect(s?.dateFormat).toBe('%d/%b/%Y');
+    // A genuine text column is not misclassified.
+    expect(m.suggestions.find((c) => c.name === 'tenantId')?.suggestedType).toBe('string');
   });
 
   it('fails closed when the tenant column is absent', async () => {

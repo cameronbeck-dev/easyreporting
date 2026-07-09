@@ -2,7 +2,7 @@ import type { Filter, AggregatedQuery, RowsQuery, SummaryQuery } from '../types'
 import { Aggregation } from '../types';
 import type { ColumnSchema } from '../types';
 import type { TableSource, JoinStep } from '../types';
-import { quoteIdent, assertKnown } from './identifiers';
+import { quoteIdent, assertKnown, clampTopN } from './identifiers';
 
 export interface BuiltQuery {
   text: string;
@@ -98,6 +98,15 @@ export function buildWhere(
         values.push(list);
         idx++;
       }
+    } else if (f.operator === 'nin') {
+      const list = Array.isArray(f.value) ? f.value : [f.value];
+      if (list.length === 0) {
+        parts.push('TRUE'); // exclude nothing
+      } else {
+        parts.push(`${col} <> ALL($${idx})`);
+        values.push(list);
+        idx++;
+      }
     }
   }
 
@@ -132,12 +141,18 @@ export function buildAggregated(
 
   const yExpr = aggExpr(q.y, q.aggregation);
 
+  // Top-N only applies to non-date axes; date axes stay chronological.
+  const topN = xCol?.type === 'date' ? null : clampTopN(q.limit);
+  const orderBy = topN ? 'ORDER BY y DESC' : 'ORDER BY x';
+  const limitClause = topN ? `LIMIT ${topN}` : '';
+
   const text = [
     `SELECT ${xExpr} AS x, ${yExpr} AS y`,
     buildFrom(src),
     clause,
     `GROUP BY ${xExpr}`,
-    `ORDER BY x`,
+    orderBy,
+    limitClause,
   ]
     .filter(Boolean)
     .join(' ');

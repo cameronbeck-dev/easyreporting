@@ -23,3 +23,13 @@ export function assertKnown(name: string, allowed: Set<string>): void {
     throw new Error(`Column or identifier "${name}" is not in the allowed set.`);
   }
 }
+
+// A top-N limit is interpolated into SQL text (LIMIT cannot take a bound parameter in every
+// dialect and it must be a literal integer), so it is coerced to a whole number in [1,1000]
+// — never trusted verbatim from the request body. Returns null when there is no valid limit.
+export function clampTopN(limit: number | undefined): number | null {
+  if (limit == null || !Number.isFinite(limit)) return null;
+  const n = Math.floor(limit);
+  if (n < 1) return null;
+  return Math.min(1000, n);
+}

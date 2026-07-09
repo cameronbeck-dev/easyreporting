@@ -8,9 +8,9 @@ import KpiSnapshot from '@/components/KpiSnapshot';
 import GlobalControls from '@/components/GlobalControls';
 import { useSchema } from '@/components/useSchema';
 import { useActiveDatasetId } from '@/components/useActiveDatasetId';
-import { buildGlobalFilters, firstDateColumn, previousPeriod } from '@/components/dashboardUtils';
+import { buildGlobalFilters, resolveDateColumn, previousPeriod } from '@/components/dashboardUtils';
 import type { ChartConfig, GlobalControls as Globals, TileConfig, DashboardLayout } from '@/components/chartTypes';
-import { DEFAULT_GLOBALS } from '@/components/chartTypes';
+import { DEFAULT_GLOBALS, migrateGlobals } from '@/components/chartTypes';
 import type { ColumnSchema, Filter } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import { getJson, putJson, delJson } from '@/lib/api/client';
@@ -53,7 +53,6 @@ function DashboardInner() {
   const datasetId = searchParams.get('datasetId') ?? '';
 
   const { columns, loading: schemaLoading } = useSchema(datasetId);
-  const dateColumn = firstDateColumn(columns);
 
   const [charts, setCharts] = useState<ChartConfig[]>([]);
   const [globals, setGlobals] = useState<Globals>(DEFAULT_GLOBALS);
@@ -94,10 +93,16 @@ function DashboardInner() {
     let cancelled = false;
     const applyLayout = (layout: DashboardLayout) => {
       if (cancelled) return;
-      setCharts(layout.charts);
-      setTiles(layout.tiles);
-      setGlobals(layout.globals);
-      baselineRef.current = JSON.stringify(layout);
+      // Normalise the persisted globals (upgrades pre-additive-filter dashboards).
+      const migrated = {
+        charts: layout.charts,
+        tiles: layout.tiles,
+        globals: migrateGlobals(layout.globals),
+      };
+      setCharts(migrated.charts);
+      setTiles(migrated.tiles);
+      setGlobals(migrated.globals);
+      baselineRef.current = JSON.stringify(migrated);
       setReady(true);
     };
 
@@ -130,6 +135,7 @@ function DashboardInner() {
   };
 
   // Global filters → charts + tiles.
+  const dateColumn = resolveDateColumn(globals, columns);
   const globalFilters: Filter[] = buildGlobalFilters(globals, dateColumn);
   let compareFilters: Filter[] | null = null;
   if (globals.compare && globals.dateFrom && globals.dateTo) {
@@ -191,7 +197,6 @@ function DashboardInner() {
       <GlobalControls
         datasetId={datasetId}
         columns={columns}
-        dateColumn={dateColumn}
         globals={globals}
         onChange={(patch) => setGlobals((g) => ({ ...g, ...patch }))}
         onReset={() => setGlobals(DEFAULT_GLOBALS)}

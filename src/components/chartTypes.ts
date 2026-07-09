@@ -11,6 +11,8 @@ export interface ChartConfig {
   aggregation: Aggregation;
   /** Time bucket when x is a date column. */
   dateBucket?: DateBucket;
+  /** Keep only the top-N categories by measure (non-date axes only). */
+  limit?: number;
 }
 
 /**
@@ -70,16 +72,40 @@ export interface TileConfig {
   aggregation: Aggregation;
 }
 
+/** One additive dashboard filter. Stacks with the others (all AND-ed together). */
+export interface DashFilter {
+  id: string;
+  column: string;
+  /**
+   * How the values apply:
+   *   • 'in'    — column is any of `values` (include)
+   *   • 'nin'   — column is none of `values` (exclude)
+   *   • 'range' — numeric column between `min` and `max` (either bound optional)
+   */
+  op: 'in' | 'nin' | 'range';
+  /** Selected values for 'in' / 'nin'. */
+  values?: (string | number)[];
+  /** Bounds for 'range' (null = unbounded on that side). */
+  min?: number | null;
+  max?: number | null;
+}
+
+/** Relative date shortcuts; 'custom' means the explicit from/to below are authoritative. */
+export type DatePreset = 'all' | 'last7' | 'last30' | 'last90' | 'mtd' | 'qtd' | 'ytd' | 'custom';
+
 /** Dashboard-wide controls that apply to every chart and tile at once. */
 export interface GlobalControls {
-  /** Inclusive date range (YYYY-MM-DD) applied to the dataset's date column. */
+  /** Which date column drives the timeline (null → the dashboard's first date column). */
+  dateColumn: string | null;
+  /** Active relative-date shortcut (or 'custom' when the range was set by hand). */
+  datePreset: DatePreset;
+  /** Inclusive date range (YYYY-MM-DD) applied to the timeline column. */
   dateFrom: string | null;
   dateTo: string | null;
   /** Default time bucket pushed to all date-based charts. */
   granularity: DateBucket;
-  /** Focus the whole dashboard on a single dimension value. */
-  focusColumn: string | null;
-  focusValue: string | null;
+  /** Additive dimension/measure filters. */
+  filters: DashFilter[];
   /** Show % change vs the prior equivalent period on snapshot tiles. */
   compare: boolean;
 }
@@ -92,10 +118,48 @@ export interface DashboardLayout {
 }
 
 export const DEFAULT_GLOBALS: GlobalControls = {
+  dateColumn: null,
+  datePreset: 'all',
   dateFrom: null,
   dateTo: null,
   granularity: 'month',
-  focusColumn: null,
-  focusValue: null,
+  filters: [],
   compare: false,
 };
+
+/**
+ * Normalise a persisted globals blob into the current shape. Dashboards saved before the
+ * additive-filter redesign carried a single `focusColumn`/`focusValue`; those become one
+ * `in` filter. Missing fields fall back to defaults so old layouts keep working.
+ */
+export function migrateGlobals(raw: unknown): GlobalControls {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_GLOBALS };
+  const g = raw as Record<string, unknown>;
+
+  const filters: DashFilter[] = Array.isArray(g.filters)
+    ? (g.filters as DashFilter[])
+    : [];
+  // Legacy single-focus → one include filter.
+  if (filters.length === 0 && typeof g.focusColumn === 'string' && g.focusColumn && g.focusValue != null) {
+    filters.push({
+      id: 'mig-focus',
+      column: g.focusColumn,
+      op: 'in',
+      values: [g.focusValue as string | number],
+    });
+  }
+
+  const dateFrom = typeof g.dateFrom === 'string' ? g.dateFrom : null;
+  const dateTo = typeof g.dateTo === 'string' ? g.dateTo : null;
+  const presetRaw = typeof g.datePreset === 'string' ? (g.datePreset as DatePreset) : null;
+
+  return {
+    dateColumn: typeof g.dateColumn === 'string' ? g.dateColumn : null,
+    datePreset: presetRaw ?? (dateFrom || dateTo ? 'custom' : 'all'),
+    dateFrom,
+    dateTo,
+    granularity: (typeof g.granularity === 'string' ? g.granularity : 'month') as DateBucket,
+    filters,
+    compare: g.compare === true,
+  };
+}

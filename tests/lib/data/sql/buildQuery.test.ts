@@ -100,6 +100,26 @@ describe('buildWhere', () => {
     expect(values).toEqual([['North', 'South']]);
   });
 
+  it('nin filter uses <> ALL and binds the array', () => {
+    const { clause, values } = buildWhere(
+      [{ column: 'region', operator: 'nin', value: ['North', 'South'] }],
+      allCols,
+      1,
+    );
+    expect(clause).toBe('WHERE "region" <> ALL($1)');
+    expect(values).toEqual([['North', 'South']]);
+  });
+
+  it('empty nin excludes nothing (TRUE)', () => {
+    const { clause, values } = buildWhere(
+      [{ column: 'region', operator: 'nin', value: [] }],
+      allCols,
+      1,
+    );
+    expect(clause).toBe('WHERE TRUE');
+    expect(values).toEqual([]);
+  });
+
   it('multiple filters are AND-joined, values in order', () => {
     const { clause, values } = buildWhere(
       [
@@ -198,6 +218,28 @@ describe('buildAggregated — single-table regression', () => {
       aggregation: Aggregation.Count,
     }, allCols, dateColumns);
     expect(text).toContain('COUNT(*)');
+  });
+
+  it('top-N on a non-date x orders by measure and limits', () => {
+    const { text } = buildAggregated(singleSrc, {
+      x: 'region',
+      y: 'revenue',
+      aggregation: Aggregation.Sum,
+      limit: 5,
+    }, allCols, dateColumns);
+    expect(text).toContain('ORDER BY y DESC LIMIT 5');
+  });
+
+  it('ignores top-N on a date x', () => {
+    const { text } = buildAggregated(singleSrc, {
+      x: 'date',
+      y: 'revenue',
+      aggregation: Aggregation.Sum,
+      dateBucket: 'month',
+      limit: 5,
+    }, allCols, dateColumns);
+    expect(text).toContain('ORDER BY x');
+    expect(text).not.toContain('LIMIT');
   });
 
   it('Avg uses AVG', () => {
