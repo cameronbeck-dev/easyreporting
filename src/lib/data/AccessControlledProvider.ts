@@ -10,14 +10,13 @@ import type {
   RowsResult,
   SummaryQuery,
   SummaryResult,
+  SummaryMetric,
   Filter,
 } from './types';
 import { Aggregation } from './types';
 import type { ComputedField } from './computed/types';
-import { COMPUTED_ROW_CAP, ComputedRowCapError, aggregateComputedValues } from './computed/types';
 import { evaluateAst } from './computed/evaluator';
 import { parseComputedExpression } from './computed/parser';
-import { formatBucketKey } from './dateBuckets';
 
 export class AccessError extends Error {
   constructor(message: string) {
@@ -163,125 +162,55 @@ export class AccessControlledProvider implements DataProvider {
       this.assertColumn(f.column);
     }
 
-    // Computed y: fetch rows with x + deps, evaluate, group, aggregate in JS
+    // Computed y: push the formula down to SQL as the measure, so the database does the
+    // GROUP BY aggregation (no fetching every row into the app — this is what lets computed
+    // charts scale). The chart's `aggregation` is intentionally ignored — a computed field
+    // defines its own aggregation via its formula (bare columns default to SUM), which is
+    // what makes ratio metrics like margin correct.
     if (computedY) {
-      if (q.aggregation === Aggregation.Count) {
-        throw new AccessError(`Computed field '${q.y}' cannot be used with COUNT aggregation.`);
-      }
-
-      const { ast, dependencies } = parseComputedExpression(
-        computedY.expression,
-        computedY.dependencies,
-      );
-
-      const allColsNeeded = new Set([q.x, ...dependencies]);
-      const filters = [...(q.filters ?? []), ...this.securityFilters()];
-
-      const innerRows = await this.fetchAllRowsForComputed(datasetId, Array.from(allColsNeeded), filters);
-
-      const innerSchema = await this.inner.getSchema(datasetId);
-      const xColSchema = innerSchema.columns.find((c) => c.name === q.x);
-      const bucketing = !!q.dateBucket && xColSchema?.type === 'date';
-
-      const groups = new Map<string, (number | null)[]>();
-      for (const row of innerRows) {
-        const rawX = String(row[q.x] ?? '');
-        let key: string;
-        if (bucketing) {
-          const d = new Date(rawX);
-          key = isNaN(d.getTime()) ? rawX : formatBucketKey(d, q.dateBucket!);
-        } else {
-          key = rawX;
-        }
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key)!.push(evaluateAst(ast, row));
-      }
-
-      const keys = Array.from(groups.keys());
-      if (xColSchema?.type === 'number') keys.sort((a, b) => Number(a) - Number(b));
-      else keys.sort();
-
-      const xValues: (string | number)[] = keys;
-      const dataPoints: number[] = keys.map((k) =>
-        aggregateComputedValues(groups.get(k)!, q.aggregation),
-      );
-
-      return { x: xValues, series: [{ name: q.y, data: dataPoints }] };
+      const delegatedQuery: AggregatedQuery = {
+        ...q,
+        filters: [...(q.filters ?? []), ...this.securityFilters()],
+        measure: { expression: computedY.expression, dependencies: computedY.dependencies },
+      };
+      return this.inner.queryAggregated(datasetId, delegatedQuery);
     }
 
-    // Non-computed path — unchanged
+    // Non-computed path. `measure: undefined` strips any client-supplied measure — it may
+    // only ever be set here, from a trusted stored field.
     const delegatedQuery: AggregatedQuery = {
       ...q,
       filters: [...(q.filters ?? []), ...this.securityFilters()],
+      measure: undefined,
     };
     return this.inner.queryAggregated(datasetId, delegatedQuery);
   }
 
   async querySummary(datasetId: string, q: SummaryQuery): Promise<SummaryResult> {
-    const computedMetrics: Array<{ metric: typeof q.metrics[number]; field: ComputedField }> = [];
-    const plainMetrics: typeof q.metrics = [];
-
-    for (const m of q.metrics) {
+    // Build the metric list to delegate: computed metrics carry a pushed-down measure (so the
+    // DB aggregates the formula); plain metrics keep their column/aggregation. `measure` is
+    // always set here — never taken from the client — so a plain metric can't smuggle one in.
+    const delegatedMetrics: SummaryMetric[] = q.metrics.map((m) => {
       const cf = this.isVisibleComputedField(m.column);
       if (cf) {
-        if (m.aggregation === Aggregation.Count) {
-          throw new AccessError(`Computed field '${m.column}' cannot be used with COUNT aggregation.`);
-        }
-        computedMetrics.push({ metric: m, field: cf });
-      } else {
-        if (m.aggregation !== Aggregation.Count) {
-          this.assertColumn(m.column);
-        }
-        plainMetrics.push(m);
+        return {
+          column: m.column,
+          aggregation: m.aggregation,
+          measure: { expression: cf.expression, dependencies: cf.dependencies },
+        };
       }
-    }
+      if (m.aggregation !== Aggregation.Count) {
+        this.assertColumn(m.column);
+      }
+      return { column: m.column, aggregation: m.aggregation, measure: undefined };
+    });
 
     for (const f of q.filters ?? []) {
       this.assertColumn(f.column);
     }
 
     const filters = [...(q.filters ?? []), ...this.securityFilters()];
-
-    let plainResults: SummaryResult['metrics'] = [];
-    if (plainMetrics.length > 0) {
-      const delegated = await this.inner.querySummary(datasetId, {
-        metrics: plainMetrics,
-        filters,
-      });
-      plainResults = delegated.metrics;
-    }
-
-    let computedResults: SummaryResult['metrics'] = [];
-    if (computedMetrics.length > 0) {
-      const allDeps = new Set<string>();
-      for (const { field } of computedMetrics) {
-        for (const dep of field.dependencies) allDeps.add(dep);
-      }
-      const rows = await this.fetchAllRowsForComputed(datasetId, Array.from(allDeps), filters);
-
-      computedResults = computedMetrics.map(({ metric, field }) => {
-        const { ast } = parseComputedExpression(field.expression, field.dependencies);
-        const vals = rows.map((r) => evaluateAst(ast, r));
-        return {
-          column: metric.column,
-          aggregation: metric.aggregation,
-          value: aggregateComputedValues(vals, metric.aggregation),
-        };
-      });
-    }
-
-    // Merge preserving requested order
-    const resultMap = new Map<string, SummaryResult['metrics'][number]>();
-    for (const r of [...plainResults, ...computedResults]) {
-      resultMap.set(`${r.column}:${r.aggregation}`, r);
-    }
-
-    const merged = q.metrics.map((m) => {
-      const key = `${m.column}:${m.aggregation}`;
-      return resultMap.get(key) ?? { column: m.column, aggregation: m.aggregation, value: 0 };
-    });
-
-    return { metrics: merged };
+    return this.inner.querySummary(datasetId, { metrics: delegatedMetrics, filters });
   }
 
   async queryRows(datasetId: string, q: RowsQuery): Promise<RowsResult> {
@@ -356,35 +285,5 @@ export class AccessControlledProvider implements DataProvider {
       columns: [...allowedSourceColumns, ...computedColumns],
       rows: strippedRows,
     };
-  }
-
-  private async fetchAllRowsForComputed(
-    datasetId: string,
-    columns: string[],
-    filters: Filter[],
-  ): Promise<Record<string, unknown>[]> {
-    // Fetch using the rows query with a very large page to get all rows.
-    // Use cap+1 as page size sentinel to detect overflow.
-    const cap = COMPUTED_ROW_CAP;
-
-    // We pass a RowsQuery directly to inner (security filters already included in `filters`)
-    // Use pageSize = cap+1 to detect overflow without loading unlimited rows
-    const result = await this.inner.queryRows(datasetId, {
-      filters,
-      page: 1,
-      pageSize: cap + 1,
-    });
-
-    if (result.rows.length > cap) {
-      throw new ComputedRowCapError(cap);
-    }
-
-    // Prune each row to only the columns needed for computation (x + deps, or deps).
-    // This ensures the tenant column and any masked/unneeded columns are never held
-    // in memory beyond this point, even if a future refactor surfaces these rows.
-    const needed = new Set(columns);
-    return result.rows.map((row) =>
-      Object.fromEntries(Object.entries(row).filter(([k]) => needed.has(k))),
-    );
   }
 }

@@ -20,8 +20,10 @@ interface Props {
 
 const COUNT_COLUMN = '__count__';
 
-function tileLabel(t: TileConfig): string {
-  return metricLabel(t.aggregation, t.column);
+function tileLabel(t: TileConfig, isComputed: boolean): string {
+  // Computed fields self-aggregate via their formula, so an aggregation word ("Total…")
+  // would be misleading — show the field name alone.
+  return isComputed ? prettify(t.column) : metricLabel(t.aggregation, t.column);
 }
 
 function tileColorKey(t: TileConfig): string {
@@ -154,6 +156,7 @@ export default function KpiSnapshot({
         {tiles.map((t, i) => {
         const color = fieldColor(tileColorKey(t));
         const editing = editingId === t.id;
+        const tileComputed = columns.find((c) => c.name === t.column)?.isComputed ?? false;
         return (
           <div
             key={t.id}
@@ -166,7 +169,8 @@ export default function KpiSnapshot({
                 <select
                   value={t.aggregation}
                   onChange={(e) => updateTile(t.id, { aggregation: e.target.value as Aggregation })}
-                  className="rounded-control border border-border bg-surface px-2 py-1 text-sm text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  disabled={tileComputed}
+                  className="rounded-control border border-border bg-surface px-2 py-1 text-sm text-foreground disabled:bg-surface-muted disabled:text-foreground-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {Object.values(Aggregation).map((a) => (
                     <option key={a} value={a}>{aggregationOptionLabel(a)}</option>
@@ -175,13 +179,16 @@ export default function KpiSnapshot({
                 <select
                   value={t.column}
                   onChange={(e) => updateTile(t.id, { column: e.target.value })}
-                  disabled={t.aggregation === Aggregation.Count}
+                  disabled={t.aggregation === Aggregation.Count && !tileComputed}
                   className="rounded-control border border-border bg-surface px-2 py-1 text-sm text-foreground disabled:bg-surface-muted disabled:text-foreground-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {numericCols.map((c) => (
                     <option key={c.name} value={c.name}>{prettify(c.name)}</option>
                   ))}
                 </select>
+                {tileComputed && (
+                  <p className="text-xs text-foreground-muted">Computed field — aggregates by its formula.</p>
+                )}
                 <div className="mt-1 flex items-center justify-between">
                   <button
                     onClick={() => removeTile(t.id)}
@@ -209,7 +216,7 @@ export default function KpiSnapshot({
                 <div className="mb-3 flex items-center gap-2">
                   <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} aria-hidden />
                   <span className="text-xs font-semibold uppercase tracking-wide text-foreground-muted">
-                    {tileLabel(t)}
+                    {tileLabel(t, tileComputed)}
                   </span>
                 </div>
                 <div className="flex items-baseline gap-2">

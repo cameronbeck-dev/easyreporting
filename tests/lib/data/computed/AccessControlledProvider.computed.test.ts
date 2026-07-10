@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { AccessControlledProvider, AccessError } from '@/lib/data/AccessControlledProvider';
-import { ComputedRowCapError, COMPUTED_ROW_CAP } from '@/lib/data/computed/types';
+import { parseComputedExpression } from '@/lib/data/computed/parser';
+import { evaluateAggregate } from '@/lib/data/computed/evaluator';
 import type { DataProvider } from '@/lib/data/DataProvider';
 import type { UserContext } from '@/lib/auth/types';
 import type {
@@ -12,6 +13,7 @@ import type {
   RowsResult,
   SummaryQuery,
   SummaryResult,
+  Filter,
 } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import type { ComputedField } from '@/lib/data/computed/types';
@@ -30,6 +32,18 @@ function makeStub(captured: CapturedArgs, rows?: Record<string, unknown>[]): Dat
     { tenant_id: 'acme', region: 'South', revenue: 200, cost: 80 },
     { tenant_id: 'acme', region: 'North', revenue: 150, cost: 60 },
   ];
+
+  // Minimal filter matcher so the aggregate/summary/rows stubs honour injected filters.
+  const matches = (row: Record<string, unknown>, filters?: Filter[]) =>
+    (filters ?? []).every((f) => {
+      if (f.operator === 'eq') return String(row[f.column]) === String(f.value);
+      if (f.operator === 'in') {
+        const list = Array.isArray(f.value) ? f.value : [f.value];
+        return list.some((v) => String(row[f.column]) === String(v));
+      }
+      return true;
+    });
+
   return {
     async listDatasets(): Promise<Dataset[]> {
       return [{ id: 'sales', name: 'Sales' }];
@@ -47,11 +61,53 @@ function makeStub(captured: CapturedArgs, rows?: Record<string, unknown>[]): Dat
     },
     async queryAggregated(datasetId, q): Promise<AggregatedResult> {
       captured.aggregated = { datasetId, q };
-      return { x: [], series: [{ name: 'y', data: [] }] };
+      const src = defaultRows.filter((r) => matches(r, q.filters));
+      const groups = new Map<string, Record<string, unknown>[]>();
+      for (const r of src) {
+        const key = String(r[q.x] ?? '');
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key)!.push(r);
+      }
+      const keys = [...groups.keys()].sort();
+      const data = keys.map((k) => {
+        const grp = groups.get(k)!;
+        if (q.measure) {
+          const { ast } = parseComputedExpression(q.measure.expression, q.measure.dependencies);
+          return evaluateAggregate(ast, grp) ?? 0;
+        }
+        const vals = grp.map((r) => Number(r[q.y] ?? 0));
+        switch (q.aggregation) {
+          case Aggregation.Sum: return vals.reduce((a, b) => a + b, 0);
+          case Aggregation.Avg: return vals.reduce((a, b) => a + b, 0) / (vals.length || 1);
+          case Aggregation.Count: return grp.length;
+          case Aggregation.Min: return Math.min(...vals);
+          case Aggregation.Max: return Math.max(...vals);
+          default: return 0;
+        }
+      });
+      return { x: keys, series: [{ name: q.aggregation === Aggregation.Count ? 'Count' : q.y, data }] };
     },
     async querySummary(datasetId, q): Promise<SummaryResult> {
       captured.summary = { datasetId, q };
-      return { metrics: q.metrics.map((m) => ({ column: m.column, aggregation: m.aggregation, value: 0 })) };
+      const src = defaultRows.filter((r) => matches(r, q.filters));
+      const metrics = q.metrics.map((m) => {
+        let value = 0;
+        if (m.measure) {
+          const { ast } = parseComputedExpression(m.measure.expression, m.measure.dependencies);
+          value = evaluateAggregate(ast, src) ?? 0;
+        } else {
+          const vals = src.map((r) => Number(r[m.column] ?? 0));
+          switch (m.aggregation) {
+            case Aggregation.Sum: value = vals.reduce((a, b) => a + b, 0); break;
+            case Aggregation.Avg: value = vals.reduce((a, b) => a + b, 0) / (vals.length || 1); break;
+            case Aggregation.Count: value = src.length; break;
+            case Aggregation.Min: value = Math.min(...vals); break;
+            case Aggregation.Max: value = Math.max(...vals); break;
+          }
+        }
+        return { column: m.column, aggregation: m.aggregation, value };
+      });
+      return { metrics };
     },
     async queryRows(datasetId, q): Promise<RowsResult> {
       captured.rows = { datasetId, q };
@@ -183,7 +239,7 @@ describe('queryAggregated — computed Y', () => {
     expect(result.series[0].data[southIdx]).toBe(120);
   });
 
-  it('includes tenant isolation filter when fetching rows for computed y', async () => {
+  it('includes tenant isolation filter and pushes down a measure for computed y', async () => {
     const captured: CapturedArgs = {};
     const provider = new AccessControlledProvider(makeStub(captured), makeCtx(), [MARGIN_FIELD]);
     await provider.queryAggregated('sales', {
@@ -191,21 +247,49 @@ describe('queryAggregated — computed Y', () => {
       y: 'margin',
       aggregation: Aggregation.Sum,
     });
-    const filters = captured.rows!.q.filters ?? [];
-    const tenantFilter = filters.find((f) => f.column === 'tenant_id');
+    // Computed y now delegates to inner.queryAggregated (SQL push-down), not row fetching.
+    const delegated = captured.aggregated!.q;
+    const tenantFilter = (delegated.filters ?? []).find((f) => f.column === 'tenant_id');
     expect(tenantFilter).toBeDefined();
     expect(tenantFilter!.value).toBe('acme');
+    // The trusted measure spec is set from the stored field.
+    expect(delegated.measure?.expression).toBe(MARGIN_FIELD.expression);
+    expect(delegated.measure?.dependencies).toEqual(MARGIN_FIELD.dependencies);
   });
 
-  it('rejects computed Y + Count aggregation', async () => {
+  it('ignores the requested outer aggregation (computed field self-aggregates)', async () => {
+    // margin = revenue - cost self-aggregates to SUM(revenue) - SUM(cost) per group,
+    // regardless of the aggregation the chart requests. North → 250-100 = 150.
     const provider = new AccessControlledProvider(makeStub({}), makeCtx(), [MARGIN_FIELD]);
-    await expect(
-      provider.queryAggregated('sales', {
-        x: 'region',
-        y: 'margin',
-        aggregation: Aggregation.Count,
-      }),
-    ).rejects.toBeInstanceOf(AccessError);
+    for (const aggregation of [Aggregation.Sum, Aggregation.Avg, Aggregation.Count]) {
+      const result = await provider.queryAggregated('sales', { x: 'region', y: 'margin', aggregation });
+      const northIdx = result.x.indexOf('North');
+      expect(result.series[0].data[northIdx]).toBe(150);
+    }
+  });
+
+  it('aggregates a ratio field as a ratio of sums (revenue-weighted, not a mean of ratios)', async () => {
+    // Two North consignments of very different size: a plain average of per-row margins would
+    // be (0.1 + 0.5)/2 = 0.3, but the correct blended margin is (Σprofit)/(Σrevenue).
+    const rows = [
+      { tenant_id: 'acme', region: 'North', revenue: 100, cost: 90 }, // 10% margin
+      { tenant_id: 'acme', region: 'North', revenue: 1000, cost: 500 }, // 50% margin
+    ];
+    const marginPct: ComputedField = {
+      name: 'margin_pct',
+      type: 'number',
+      expression: '(revenue - cost) / revenue',
+      dependencies: ['revenue', 'cost'],
+    };
+    const provider = new AccessControlledProvider(makeStub({}, rows), makeCtx(), [marginPct]);
+    const result = await provider.queryAggregated('sales', {
+      x: 'region',
+      y: 'margin_pct',
+      aggregation: Aggregation.Sum,
+    });
+    const northIdx = result.x.indexOf('North');
+    // (100-90 + 1000-500) / (100 + 1000) = 510 / 1100
+    expect(result.series[0].data[northIdx]).toBeCloseTo(510 / 1100, 10);
   });
 
   it('reference to dep-masked computed field throws same error as disallowed column', async () => {
@@ -264,13 +348,16 @@ describe('querySummary — computed metrics', () => {
     expect(result.metrics[2].aggregation).toBe(Aggregation.Avg);
   });
 
-  it('rejects computed metric + Count', async () => {
+  it('computed metric self-aggregates regardless of the requested aggregation', async () => {
+    // margin = revenue - cost → SUM(revenue) - SUM(cost) = 450 - 180 = 270, whatever the
+    // requested aggregation is.
     const provider = new AccessControlledProvider(makeStub({}), makeCtx(), [MARGIN_FIELD]);
-    await expect(
-      provider.querySummary('sales', {
-        metrics: [{ column: 'margin', aggregation: Aggregation.Count }],
-      }),
-    ).rejects.toBeInstanceOf(AccessError);
+    for (const aggregation of [Aggregation.Sum, Aggregation.Avg, Aggregation.Count]) {
+      const result = await provider.querySummary('sales', {
+        metrics: [{ column: 'margin', aggregation }],
+      });
+      expect(result.metrics[0].value).toBe(270);
+    }
   });
 });
 
@@ -314,29 +401,6 @@ describe('queryRows — computed columns', () => {
     const provider = new AccessControlledProvider(makeStub({}), ctx, [MARGIN_FIELD]);
     const result = await provider.queryRows('sales', { page: 1, pageSize: 10 });
     expect(result.columns.map((c) => c.name)).not.toContain('margin');
-  });
-});
-
-// ── row cap ──────────────────────────────────────────────────────────────────
-
-describe('row cap for computed field aggregation', () => {
-  it('throws ComputedRowCapError when result exceeds cap', async () => {
-    // Make a stub that returns cap+1 rows
-    const capRows = Array.from({ length: COMPUTED_ROW_CAP + 1 }, (_, i) => ({
-      tenant_id: 'acme',
-      region: 'North',
-      revenue: i,
-      cost: i / 2,
-    }));
-    const stub = makeStub({}, capRows);
-    const provider = new AccessControlledProvider(stub, makeCtx(), [MARGIN_FIELD]);
-    await expect(
-      provider.queryAggregated('sales', {
-        x: 'region',
-        y: 'margin',
-        aggregation: Aggregation.Sum,
-      }),
-    ).rejects.toBeInstanceOf(ComputedRowCapError);
   });
 });
 

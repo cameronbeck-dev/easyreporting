@@ -7,11 +7,17 @@ export interface ComputedField {
   dependencies: string[];
 }
 
+/** Aggregate functions usable inside a computed-field formula. */
+export type AggOp = 'sum' | 'avg' | 'count' | 'min' | 'max';
+
 export type Expr =
   | { kind: 'num'; value: number }
   | { kind: 'col'; name: string }
   | { kind: 'neg'; operand: Expr }
-  | { kind: 'bin'; op: '+' | '-' | '*' | '/'; left: Expr; right: Expr };
+  | { kind: 'bin'; op: '+' | '-' | '*' | '/'; left: Expr; right: Expr }
+  // An aggregate over the rows in a group, e.g. SUM([Sell] - [Cost]). `arg` is evaluated
+  // per row (row-level), then reduced by `op`. Cannot be nested inside another aggregate.
+  | { kind: 'agg'; op: AggOp; arg: Expr };
 
 export const COMPUTED_ROW_CAP = 100_000;
 

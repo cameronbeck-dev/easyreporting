@@ -1,8 +1,29 @@
-import type { Filter, AggregatedQuery, RowsQuery, SummaryQuery } from '../types';
+import type { Filter, AggregatedQuery, RowsQuery, SummaryQuery, ComputedMeasureSpec } from '../types';
 import { Aggregation } from '../types';
 import type { ColumnSchema } from '../types';
 import type { TableSource, JoinStep } from '../types';
 import { quoteIdent, assertKnown, clampTopN } from './identifiers';
+import { parseComputedExpression } from '../computed/parser';
+import { computedMeasureToSql } from '../computed/toSql';
+
+/**
+ * The SQL measure expression: a computed field pushed down to SQL when `measure` is set,
+ * otherwise the plain `aggregation(column)`. Re-parses the trusted expression against its
+ * declared dependencies and asserts each is a real column (defence in depth).
+ */
+function measureExpr(
+  measure: ComputedMeasureSpec | undefined,
+  column: string,
+  aggregation: Aggregation,
+  allowedCols: Set<string>,
+): string {
+  if (measure) {
+    const { ast, dependencies } = parseComputedExpression(measure.expression, measure.dependencies);
+    for (const dep of dependencies) assertKnown(dep, allowedCols);
+    return computedMeasureToSql(ast);
+  }
+  return aggExpr(column, aggregation);
+}
 
 export interface BuiltQuery {
   text: string;
@@ -125,7 +146,9 @@ export function buildAggregated(
   columns: ColumnSchema[],
 ): BuiltQuery {
   assertKnown(q.x, allowedCols);
-  assertKnown(q.y, allowedCols);
+  // With a computed measure, q.y is a field name (not a column); measureExpr validates the
+  // formula's dependency columns instead.
+  if (!q.measure) assertKnown(q.y, allowedCols);
 
   const filters = q.filters ?? [];
   const { clause, values } = buildWhere(filters, allowedCols, 1);
@@ -139,7 +162,7 @@ export function buildAggregated(
     ? `DATE_TRUNC('${q.dateBucket}', ${quoteIdent(q.x)})`
     : quoteIdent(q.x);
 
-  const yExpr = aggExpr(q.y, q.aggregation);
+  const yExpr = measureExpr(q.measure, q.y, q.aggregation, allowedCols);
 
   // Top-N only applies to non-date axes; date axes stay chronological.
   const topN = xCol?.type === 'date' ? null : clampTopN(q.limit);
@@ -166,15 +189,18 @@ export function buildSummary(
   allowedCols: Set<string>,
 ): BuiltQuery {
   for (const m of q.metrics) {
-    // Count maps to COUNT(*) and ignores its column, which may be a client sentinel
-    // (e.g. '__count__') rather than a real column — so don't validate it.
+    // Computed metrics validate their dependency columns inside measureExpr; Count maps to
+    // COUNT(*) and ignores its column (which may be a client sentinel like '__count__').
+    if (m.measure) continue;
     if (m.aggregation !== Aggregation.Count) assertKnown(m.column, allowedCols);
   }
 
   const filters = q.filters ?? [];
   const { clause, values } = buildWhere(filters, allowedCols, 1);
 
-  const exprs = q.metrics.map((m, i) => `${aggExpr(m.column, m.aggregation)} AS m${i}`);
+  const exprs = q.metrics.map(
+    (m, i) => `${measureExpr(m.measure, m.column, m.aggregation, allowedCols)} AS m${i}`,
+  );
 
   const text = [
     `SELECT ${exprs.join(', ')}`,

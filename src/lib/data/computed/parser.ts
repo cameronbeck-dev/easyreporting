@@ -1,6 +1,27 @@
 import { ComputedParseError } from './types';
 export { ComputedParseError };
-import type { Expr } from './types';
+import type { Expr, AggOp } from './types';
+
+// Aggregate function names recognised inside a formula (case-insensitive). A bare identifier
+// matching one of these AND immediately followed by '(' is parsed as an aggregate call; to
+// reference a column that happens to share the name, bracket it (e.g. [sum]).
+const AGG_FUNCTIONS: Record<string, AggOp> = {
+  SUM: 'sum',
+  AVG: 'avg',
+  COUNT: 'count',
+  MIN: 'min',
+  MAX: 'max',
+};
+
+/** True if the AST contains an aggregate node anywhere (used to reject nesting). */
+function containsAgg(e: Expr): boolean {
+  switch (e.kind) {
+    case 'agg': return true;
+    case 'neg': return containsAgg(e.operand);
+    case 'bin': return containsAgg(e.left) || containsAgg(e.right);
+    default: return false;
+  }
+}
 
 type TokenKind = 'num' | 'ident' | 'plus' | 'minus' | 'star' | 'slash' | 'lparen' | 'rparen' | 'eof';
 
@@ -157,6 +178,19 @@ class Parser {
     }
 
     if (t.kind === 'ident') {
+      // Aggregate function call: SUM( ... ), AVG( ... ), etc.
+      const op = AGG_FUNCTIONS[t.text.toUpperCase()];
+      if (op && this.tokens[this.pos + 1]?.kind === 'lparen') {
+        this.consume(); // function name
+        this.expect('lparen');
+        const arg = this.parseExpr();
+        this.expect('rparen');
+        if (containsAgg(arg)) {
+          throw new ComputedParseError('Aggregate functions cannot be nested.');
+        }
+        return { kind: 'agg', op, arg };
+      }
+
       this.consume();
       const name = t.text;
       if (!this.validColumnNames.has(name)) {

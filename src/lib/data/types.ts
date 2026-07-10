@@ -52,6 +52,19 @@ export enum Aggregation {
 /** Time bucket for date X axes. */
 export type DateBucket = 'day' | 'week' | 'month' | 'quarter';
 
+/**
+ * A computed field's formula pushed down to SQL as the query's measure. INTERNAL/TRUSTED:
+ * set ONLY by AccessControlledProvider from a stored, access-checked computed field — it is
+ * never populated from the client request (the provider clears it on delegated queries), so
+ * the expression can only reference already-validated dependency columns.
+ */
+export interface ComputedMeasureSpec {
+  /** The computed field's stored formula (re-parsed against `dependencies` at build time). */
+  expression: string;
+  /** Column names the formula may reference (the re-parse allow-list). */
+  dependencies: string[];
+}
+
 export interface AggregatedQuery {
   x: string;
   y: string;
@@ -64,6 +77,11 @@ export interface AggregatedQuery {
    * axes, where chronological order matters. Clamped to a sane range by the query builder.
    */
   limit?: number;
+  /**
+   * When set, the measure is this computed-field expression (aggregated in SQL) instead of
+   * `aggregation(y)`. Trusted; see ComputedMeasureSpec.
+   */
+  measure?: ComputedMeasureSpec;
 }
 
 export interface AggregatedResult {
@@ -89,6 +107,11 @@ export interface RowsResult {
 export interface SummaryMetric {
   column: string;
   aggregation: Aggregation;
+  /**
+   * When set, the metric is this computed-field expression (aggregated in SQL) instead of
+   * `aggregation(column)`. Trusted; see ComputedMeasureSpec.
+   */
+  measure?: ComputedMeasureSpec;
 }
 
 export interface SummaryQuery {

@@ -67,6 +67,39 @@ describe('parseComputedExpression — valid expressions', () => {
     const { dependencies } = parseComputedExpression('[Sell Ex Tax]', COLS);
     expect(dependencies).toEqual(['Sell Ex Tax']);
   });
+
+  it('parses aggregate functions and extracts their inner dependencies', () => {
+    const { ast, dependencies } = parseComputedExpression('sum(revenue) / sum(cost)', COLS);
+    expect(ast.kind).toBe('bin');
+    expect(dependencies.sort()).toEqual(['cost', 'revenue']);
+  });
+
+  it('parses all aggregate function names (case-insensitive)', () => {
+    for (const fn of ['SUM', 'avg', 'Count', 'MIN', 'max']) {
+      expect(() => parseComputedExpression(`${fn}(revenue)`, COLS)).not.toThrow();
+    }
+  });
+
+  it('aggregates work over bracketed columns with spaces', () => {
+    const { dependencies } = parseComputedExpression('sum([Sell Ex Tax] - [Cost Ex Tax])', COLS);
+    expect(dependencies.sort()).toEqual(['Cost Ex Tax', 'Sell Ex Tax']);
+  });
+
+  it('a column named like a function is still reachable via brackets', () => {
+    // `sum` bare + `(` is the function; `[sum]`... would need to be a valid column. Here we
+    // just confirm a bare aggregate name NOT followed by `(` is treated as a column ref.
+    expect(() => parseComputedExpression('sum', COLS)).toThrow(ComputedParseError); // unknown column 'sum'
+  });
+});
+
+describe('parseComputedExpression — aggregate errors', () => {
+  it('rejects nested aggregates', () => {
+    expect(() => parseComputedExpression('sum(avg(revenue))', COLS)).toThrow(ComputedParseError);
+  });
+
+  it('rejects an unclosed aggregate call', () => {
+    expect(() => parseComputedExpression('sum(revenue', COLS)).toThrow(ComputedParseError);
+  });
 });
 
 describe('parseComputedExpression — errors', () => {

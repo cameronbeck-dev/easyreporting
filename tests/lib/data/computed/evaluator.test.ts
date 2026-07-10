@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { evaluateAst } from '@/lib/data/computed/evaluator';
+import { evaluateAst, evaluateAggregate } from '@/lib/data/computed/evaluator';
 import { aggregateComputedValues } from '@/lib/data/computed/types';
 import { parseComputedExpression } from '@/lib/data/computed/parser';
 import { Aggregation } from '@/lib/data/types';
@@ -7,6 +7,11 @@ import { Aggregation } from '@/lib/data/types';
 function evalExpr(expr: string, row: Record<string, unknown>, cols: string[] = Object.keys(row)) {
   const { ast } = parseComputedExpression(expr, cols);
   return evaluateAst(ast, row);
+}
+
+function evalAgg(expr: string, rows: Record<string, unknown>[], cols: string[]) {
+  const { ast } = parseComputedExpression(expr, cols);
+  return evaluateAggregate(ast, rows);
 }
 
 describe('evaluateAst — arithmetic', () => {
@@ -125,5 +130,54 @@ describe('aggregateComputedValues', () => {
 
   it('empty array count returns 0', () => {
     expect(aggregateComputedValues([], Aggregation.Count)).toBe(0);
+  });
+});
+
+describe('evaluateAggregate — self-aggregating computed measures', () => {
+  // Two consignments of very different size — the classic weighted-vs-unweighted contrast.
+  const cons = [
+    { sell: 100, cost: 90 }, // 10% margin
+    { sell: 1000, cost: 500 }, // 50% margin
+  ];
+  const cols = ['sell', 'cost'];
+
+  it('bare columns default to SUM', () => {
+    expect(evalAgg('sell', cons, cols)).toBe(1100);
+    expect(evalAgg('sell - cost', cons, cols)).toBe(510);
+  });
+
+  it('a bare ratio aggregates as a ratio of sums (revenue-weighted margin)', () => {
+    // (Σsell - Σcost) / Σsell = 510 / 1100 = 0.4636…  (NOT the 0.30 mean of per-row margins)
+    expect(evalAgg('(sell - cost) / sell', cons, cols)).toBeCloseTo(510 / 1100, 10);
+  });
+
+  it('explicit SUM()/SUM() matches the bare form', () => {
+    expect(evalAgg('sum(sell - cost) / sum(sell)', cons, cols)).toBeCloseTo(510 / 1100, 10);
+  });
+
+  it('AVG() gives the unweighted mean of per-row ratios', () => {
+    // (0.1 + 0.5) / 2 = 0.3
+    expect(evalAgg('avg((sell - cost) / sell)', cons, cols)).toBeCloseTo(0.3, 10);
+  });
+
+  it('supports AVG, MIN, MAX, COUNT', () => {
+    expect(evalAgg('avg(sell)', cons, cols)).toBe(550);
+    expect(evalAgg('min(cost)', cons, cols)).toBe(90);
+    expect(evalAgg('max(cost)', cons, cols)).toBe(500);
+    expect(evalAgg('count(sell)', cons, cols)).toBe(2);
+  });
+
+  it('rows with zero denominator do not break the weighted ratio', () => {
+    // The zero-sell row contributes 0 to both sums instead of a dropped/NaN per-row ratio.
+    const withZero = [
+      { sell: 0, cost: 0 },
+      { sell: 100, cost: 40 },
+    ];
+    expect(evalAgg('(sell - cost) / sell', withZero, cols)).toBeCloseTo(60 / 100, 10);
+  });
+
+  it('division by zero at the aggregate level returns null', () => {
+    const allZero = [{ sell: 0, cost: 0 }];
+    expect(evalAgg('(sell - cost) / sell', allZero, cols)).toBeNull();
   });
 });
