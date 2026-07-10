@@ -144,6 +144,6 @@ the stored columns still exist before building SQL (`validateStoredColumnsExist`
 ### The AccessControlledProvider guarantee
 
 `SqlProvider` returns raw, unmasked data. Security (tenant isolation, row scopes, column
-allow-list) is applied by `AccessControlledProvider` exactly as for the CSV provider. The SQL
+allow-list) is applied by `AccessControlledProvider` exactly as for the file (DuckDB) provider. The SQL
 provider has no knowledge of tenants or allowed columns — that is intentional. See the choke
 point guarantee in the `AccessControlledProvider` source.

@@ -251,7 +251,8 @@ Because we hand-roll components, we own accessibility — meet it deliberately.
 
 Ordered to answer first, explore second:
 
-1. **Controls bar** — global date range / granularity / dimension focus / compare. Defaults
+1. **Controls bar** — a global timeline (date column / range / granularity / compare) plus
+   additive filters (multi-select include/exclude, numeric ranges). Defaults
    **collapsed** to a one-line summary of the active view: a returning user gets a clean page
    and a glance, not a wall of inputs. Expandable when they want to change something.
 2. **Overview** — snapshot KPI tiles: headline totals computed server-side through the

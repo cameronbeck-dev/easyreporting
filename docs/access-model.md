@@ -29,7 +29,7 @@ in*, decided by `PLATFORM_TENANT_ID` (`src/lib/auth/platform.ts`):
 
 | | Reach |
 |---|---|
-| **Owner admin** — admin in the platform tenant (MGL) | Every company; **sees all companies' rows** (not tenant-scoped); **sets each company's visible columns**; authors global row profiles incl. multi-company access; no row ceiling. |
+| **Owner admin** — admin in the platform tenant (`PLATFORM_TENANT_ID`, default `easyreporting`) | Every company; **sees all companies' rows** (not tenant-scoped); **sets each company's visible columns**; authors global row profiles incl. multi-company access; no row ceiling. |
 | **Company admin** — admin in any other company | **Their own company only**; assigns/authors row profiles for that company, bounded by their own rows. **Cannot** change which columns their company sees. |
 
 This is enforced server-side in `src/lib/auth/requireAdmin.ts` (page redirects + action
@@ -128,7 +128,7 @@ Column allow-lists are now **per dataset** (not global): `tenant_column_rules` r
 `dataset_id`. The resolver (`src/lib/data/resolveDataset.ts`) loads the right allow-list for
 the dataset being queried; `getResolvedUserById` no longer loads them at login time.
 
-The `AccessControlledProvider` choke point is unchanged — CSV and SQL sources are both wrapped
+The `AccessControlledProvider` choke point is unchanged — file-backed (DuckDB) and SQL sources are both wrapped
 by it, so tenant isolation, row scopes, and the column allow-list apply identically to both.
 
 Owner admins set per-company per-dataset column lists from `/admin/columns` (dataset picker

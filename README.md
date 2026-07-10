@@ -1,6 +1,6 @@
 # EasyReporting
 
-A multi-tenant reporting platform built with Next.js: a CSV-backed demo with access-controlled API routes, an interactive ECharts dashboard, a data explorer, real credential auth with one-time invites, and an admin UI for managing users, per-company column access, and row profiles. Who can see which data is **configuration, not code** — enforced server-side at a single choke point.
+A multi-tenant reporting platform built with Next.js: file-backed datasets (CSV/Excel served via DuckDB over Parquet) and SQL datasets behind access-controlled API routes, an interactive ECharts dashboard, a data explorer, real credential auth with one-time invites, and an admin UI for importing data and managing users, per-company column access, and row profiles. Who can see which data is **configuration, not code** — enforced server-side at a single choke point.
 
 ## Architecture
 
@@ -116,8 +116,8 @@ All pages require sign-in. `/login` and `/invite/<token>` are the only public ro
 
 - `/` — Dashboard:
   - **Snapshot tiles** — auto-derived headline totals, user-editable (hover → edit → pick aggregation/column), with optional compare-to-previous-period deltas.
-  - **Charts** — add/edit/remove line/area/bar/scatter/pie/donut visualizations; per-chart date granularity (day/week/month/quarter, not applicable to pie/donut); click a point to drill into the Data page filtered; **Export** downloads the numbers behind the chart as CSV (X dimension + one column per series). Stacked/combo chart types are pending multi-series support.
-  - **Global controls** (collapsible) — date range, time granularity, dimension focus, and compare, all applied to every tile + chart at once.
+  - **Charts** — add/edit/remove line/area/bar/scatter/pie/donut visualizations, plus **combo** (dual-axis: a bar measure and a line measure on independent left/right y-axes) and **breakdown** (one measure split into a series per category value, top-N) for the cartesian chart types; per-chart date granularity (day/week/month/quarter, not applicable to pie/donut) and per-chart top-N; click a point to drill into the Data page filtered; **Export** downloads the numbers behind the chart as CSV (X dimension + one column per series). Combo and breakdown are composed client-side from the single-measure query endpoint (no server changes).
+  - **Global controls** (collapsible) — a **timeline** (pick any date column, relative presets or an explicit range, day/week/month/quarter granularity, and compare-to-previous) plus **additive filters** (searchable multi-select include/exclude for dimensions, numeric ranges), all applied to every tile + chart at once.
   - **Resizable grid** — drag the gutter between cards to set column width; cards auto-wrap. Charts keep a 1:2 aspect ratio.
   - **Saved per user, per dataset** — charts, tiles, and filters persist server-side for each user and dataset; until you customise it you see sensible defaults, and **Reset to default** restores them. Grid width / panel state stay device-local.
 - **Dataset switcher** (header) — when more than the built-in demo dataset exists, pick the active dataset; the Dashboard and Data Explorer follow it via `?datasetId=`.
@@ -138,16 +138,25 @@ Suites:
 - `tests/lib/data/dateBuckets.test.ts` — `formatBucketKey` (day/month/quarter/week, edge cases)
 - `tests/lib/data/export/toCsv.test.ts` — CSV serialization: `rowsToCsv` (prettified headers, provider column order / no stripped-column leak, null cells, quoting, empty result) and `aggregatedToCsv` (X + per-series columns, multi-series, missing points, Count label)
 - `tests/lib/data/sql/identifiers.test.ts` — `quoteIdent`, `assertKnown`
-- `tests/lib/data/sql/buildQuery.test.ts` — `buildWhere`/`buildAggregated`/`buildSummary`/`buildRows`
-- `tests/lib/data/duck/buildDuckQuery.test.ts` — DuckDB SQL builders (read_parquet source, `IN`/`ILIKE`, date-bucket `strftime`, LIMIT/OFFSET, allow-list enforcement)
+- `tests/lib/data/sql/buildQuery.test.ts` — `buildWhere`/`buildAggregated`/`buildSummary`/`buildRows` (incl. `nin` operator, top-N, computed measure push-down)
+- `tests/lib/data/duck/buildDuckQuery.test.ts` — DuckDB SQL builders (read_parquet source, `IN`/`ILIKE`, date-bucket `strftime`, LIMIT/OFFSET, allow-list enforcement, `nin`/top-N/computed measure)
 - `tests/lib/data/duck/mapDuckType.test.ts` — DuckDB → `ColumnType` mapping (numeric/date/boolean families, conservative fallback)
+- `tests/lib/data/duck/detectColumnTypes.test.ts` — value-based type detection at import (text-that-parses-as-date, format inference, `formatHasTime`)
+- `tests/lib/data/duck/importDataset.test.ts` — `materializeFolder` ingest (streaming to Parquet, schema inference, type casts, tenant-column enforcement)
 - `tests/lib/data/duck/DuckDbProvider.test.ts` — integration over a real Parquet: value coercion (BIGINT/DECIMAL → number, DATE → string), aggregation, month bucketing, filters, summary, pagination
 - `tests/lib/data/AccessControlledProvider.test.ts` — column visibility, security filter injection, row scopes, fail-closed
-- `tests/lib/data/computed/parser.test.ts` — valid expressions, error cases, injection rejection
+- `tests/lib/data/computed/parser.test.ts` — valid expressions (bare/qualified/bracketed refs, aggregation helpers), error cases, injection rejection
 - `tests/lib/data/computed/evaluator.test.ts` — arithmetic, null propagation, aggregation helpers
-- `tests/lib/data/computed/AccessControlledProvider.computed.test.ts` — computed field visibility, aggregated/summary/rows queries, row cap, behavior-preserving
+- `tests/lib/data/computed/toSql.test.ts` — `computedMeasureToSql` (formula → SQL measure expression with SUM/AVG/COUNT/MIN/MAX)
+- `tests/lib/data/computed/AccessControlledProvider.computed.test.ts` — computed field visibility, aggregated/summary/rows queries, SQL push-down, behavior-preserving
+- `tests/lib/admin/repo.test.ts` — `createDataset` (single-table and multi-table joins)
 - `tests/lib/admin/repo.computed.test.ts` — createDataset + computed fields, addComputedField, removeComputedField
+- `tests/lib/admin/importDataset.repo.test.ts` — `createFileImport` (metadata rows for an imported dataset)
 - `tests/lib/db/config-repo.test.ts` — `getResolvedUserById`, `listTenantColumnsResolved` (integration)
+- `tests/components/buildChartOption.test.ts` — ECharts option building (line/area/bar regressions, combo dual-axis, breakdown series)
+- `tests/components/chartData.test.ts` — client-side chart data composition (`fetchChartData`: single measure, combo, breakdown top-N)
+- `tests/components/chartTypes.test.ts` — saved-layout migration (`migrateGlobals` upgrades old dashboards to the timeline + filters model)
+- `tests/components/dashboardUtils.test.ts` — date-column detection helpers and dashboard utilities
 
 ## File-backed datasets (drop a folder of CSV/Excel)
 
@@ -155,9 +164,13 @@ Load large CSV/Excel files as datasets without a database. Two ways in:
 
 - **Admin UI (owner admins):** **/admin/import** — name the dataset, pick the tenant column,
   upload files, **Analyze** (previews the schema, per-company row counts, unknown-tenant and
-  schema-drift warnings), then **Publish**. Uploads stream to disk (no size cap). Re-import
-  replaces the data; Delete removes the dataset, its Parquet, source files, and dashboards.
-- **CLI:** drop a folder of files under `data/datasets/<id>/` and run `npm run db:sync-files`.
+  schema-drift warnings, and flags text columns that parse as dates), optionally **override
+  each column's type** (e.g. promote a `"02/Jan/2025"` text column to a real DATE), then
+  **Publish** — chosen types are applied as casts on materialize. Uploads stream to disk (no
+  size cap). Re-import replaces the data (type choices are remembered in the sidecar); Delete
+  removes the dataset, its Parquet, source files, and dashboards.
+- **CLI:** drop a folder of files under `data/datasets/<id>/` and run `npm run db:sync-files`
+  (auto-applies value-based type detection).
 
 Each subfolder (or Import entry) becomes one dataset, its files unioned by column name. See
 `data/datasets/README.md` for the folder convention and the optional `dataset.json` sidecar.
@@ -184,18 +197,19 @@ non-owner companies see no columns until an admin grants them (`/admin/columns`)
 
 ## Computed / Derived Fields
 
-Owner admins can define **computed fields** on SQL datasets — virtual numeric columns derived from arithmetic expressions over real source columns.
+Owner admins can define **computed fields** on any dataset (SQL or file-backed) — virtual numeric measures derived from arithmetic expressions over real source columns.
 
 **Key rules:**
 
-- **Arithmetic only:** `+`, `-`, `*`, `/`, parentheses, unary minus, numeric literals, and bare or qualified column references (e.g. `revenue - cost`, `orders.revenue / orders.quantity`). No SQL, no `eval`, no injection surface.
-- **Measure only:** computed fields appear in the **Y axis** and **summary metric** pickers; they are excluded from the **X axis** (group-by) picker. Aggregation type `COUNT` is rejected for computed fields.
+- **Arithmetic + aggregation helpers:** `+`, `-`, `*`, `/`, parentheses, unary minus, numeric literals, and column references. A column reference may be **bare** (`revenue`), **qualified** (`orders.revenue`), or **bracketed** for names with spaces or reserved characters (`[Sell Ex Tax]`). No SQL, no `eval`, no injection surface.
+- **Self-aggregating measures:** a computed field carries its *own* aggregation, so it isn't controlled by a chart/tile Total/Average. A bare column defaults to `SUM`; you can wrap sub-expressions in explicit `SUM`, `AVG`, `COUNT`, `MIN`, or `MAX`. This makes ratio metrics correct — e.g. `margin = (SUM([Sell]) - SUM([Cost])) / SUM([Sell])` aggregates as the revenue-weighted margin, not a skewed average of per-row ratios. The chart/tile aggregation control is disabled for computed fields.
+- **Measure only:** computed fields appear in the **Y axis** and **summary metric** pickers; they are excluded from the **X axis** (group-by) picker.
 - **Owner-defined:** set per dataset in the admin UI (`/admin/datasets`). Each field has a name (dot-free, no reserved chars, unique vs all source and computed names) and an expression.
 - **Fail-closed masking:** a computed field is visible only when **all** its dependency columns are allowed for the requesting company. A masked dependency makes the whole field invisible — schema, row results, query validation. Querying a dep-masked computed field returns the same error as a nonexistent column.
-- **In-app evaluation:** expressions are evaluated in JavaScript after fetching source rows — no SQL is generated from user expressions. For aggregations, all matching rows are fetched (up to 100 000; a `ComputedRowCapError` is thrown if exceeded). Row browsing evaluates per-page, so it is not subject to the cap.
+- **Aggregated in the database:** for charts and KPI tiles the formula is translated to a SQL measure expression (`computed/toSql.ts`) and pushed down to the `GROUP BY`, so the database aggregates it — no per-row fetch, no 100k-row cap, and it stays fast on large date ranges. The measure is only ever set server-side by `AccessControlledProvider` from a trusted, access-checked field, so a client cannot inject one. Row browsing (the Data explorer) still evaluates the expression in JavaScript per page.
 - **No computed-of-computed:** expressions may only reference real source columns.
 
-**Admin UI:** `/admin/datasets` shows a "Computed fields" section per dataset. Enter a field name and expression; a live parser shows detected column references or parse errors before submission. Existing computed fields can be removed individually.
+**Admin UI:** `/admin/datasets` shows a "Computed fields" section per dataset. Enter a field name and expression; an autocomplete offers column names (inserting the bracketed form when a name needs it) and a live parser shows detected column references or parse errors before submission. Existing computed fields can be removed individually.
 
 ## UI-Driven Table Joins
 
