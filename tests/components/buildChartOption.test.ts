@@ -195,3 +195,88 @@ describe('buildChartOption — edge cases', () => {
     expect(() => buildChartOption(makeConfig('scatter'), empty, theme)).not.toThrow();
   });
 });
+
+describe('buildChartOption — combo', () => {
+  const comboResult: AggregatedResult = {
+    x: ['Jan', 'Feb'],
+    series: [
+      { name: 'Total revenue', data: [100, 200] },
+      { name: 'Average margin', data: [0.1, 0.2] },
+    ],
+  };
+
+  function combo(measures: ChartConfig['measures']): ChartConfig {
+    return { ...makeConfig('combo'), measures };
+  }
+
+  it('renders bar + line with a right-hand secondary axis', () => {
+    const opt = buildChartOption(
+      combo([
+        { y: 'revenue', aggregation: Aggregation.Sum, seriesType: 'bar', axis: 'left' },
+        { y: 'margin', aggregation: Aggregation.Avg, seriesType: 'line', axis: 'right' },
+      ]),
+      comboResult,
+      theme,
+    ) as Record<string, unknown>;
+    const yAxis = opt.yAxis as Array<Record<string, unknown>>;
+    expect(Array.isArray(yAxis)).toBe(true);
+    expect(yAxis).toHaveLength(2);
+    expect(yAxis[1].position).toBe('right');
+    const series = opt.series as Array<Record<string, unknown>>;
+    expect(series[0].type).toBe('bar');
+    expect(series[0].yAxisIndex).toBe(0);
+    expect(series[1].type).toBe('line');
+    expect(series[1].yAxisIndex).toBe(1);
+    expect(opt.legend).toBeDefined();
+  });
+
+  it('uses one shared axis when both measures are on the left', () => {
+    const opt = buildChartOption(
+      combo([
+        { y: 'revenue', aggregation: Aggregation.Sum, seriesType: 'bar', axis: 'left' },
+        { y: 'units', aggregation: Aggregation.Sum, seriesType: 'line', axis: 'left' },
+      ]),
+      comboResult,
+      theme,
+    ) as Record<string, unknown>;
+    expect(Array.isArray(opt.yAxis)).toBe(false);
+    const series = opt.series as Array<Record<string, unknown>>;
+    expect(series[0].yAxisIndex).toBe(0);
+    expect(series[1].yAxisIndex).toBe(0);
+  });
+
+  it('has a bar boundaryGap when a bar measure is present', () => {
+    const opt = buildChartOption(
+      combo([
+        { y: 'revenue', aggregation: Aggregation.Sum, seriesType: 'bar', axis: 'left' },
+        { y: 'margin', aggregation: Aggregation.Avg, seriesType: 'line', axis: 'right' },
+      ]),
+      comboResult,
+      theme,
+    ) as Record<string, unknown>;
+    const xAxis = opt.xAxis as Record<string, unknown>;
+    expect(xAxis.boundaryGap).toBe(true);
+  });
+});
+
+describe('buildChartOption — breakdown (multi-series)', () => {
+  const bdResult: AggregatedResult = {
+    x: ['Jan', 'Feb'],
+    series: [
+      { name: 'East', data: [20, 25] },
+      { name: 'West', data: [0, 15] },
+    ],
+  };
+
+  it('renders one series per category with a legend', () => {
+    const opt = buildChartOption(
+      { ...makeConfig('bar'), breakdown: 'region' },
+      bdResult,
+      theme,
+    ) as Record<string, unknown>;
+    const series = opt.series as Array<Record<string, unknown>>;
+    expect(series).toHaveLength(2);
+    expect(series.every((s) => s.type === 'bar')).toBe(true);
+    expect(opt.legend).toBeDefined();
+  });
+});

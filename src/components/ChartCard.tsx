@@ -9,6 +9,7 @@ import { Aggregation } from '@/lib/data/types';
 import { useChartTheme } from './echartsTheme';
 import { fieldColor } from './fieldColors';
 import { buildChartOption } from './buildChartOption';
+import { fetchChartData, type AggregatedFetcher } from './chartData';
 import { aggregatedToCsv } from '@/lib/data/export/toCsv';
 import { postJson, downloadText } from '@/lib/api/client';
 
@@ -64,24 +65,26 @@ export default function ChartCard({
     setLoading(true);
     setError(null);
 
-    const query = {
-      x: config.x,
-      y: config.y,
-      aggregation: config.aggregation,
-      filters: globalFilters,
-      dateBucket: effectiveBucket,
-      limit: config.limit,
-    };
+    let cancelled = false;
 
-    postJson<AggregatedResult>('/api/query', { datasetId: config.datasetId, query })
+    // Every sub-query for combo/breakdown charts goes through the same access-controlled
+    // endpoint; fetchChartData composes and merges them into one AggregatedResult.
+    const fetchOne: AggregatedFetcher = (query) =>
+      postJson<AggregatedResult>('/api/query', { datasetId: config.datasetId, query });
+
+    fetchChartData(config, { globalFilters, bucket: granularity, fetch: fetchOne })
       .then((data) => {
+        if (cancelled) return;
         setResult(data);
         setLoading(false);
       })
       .catch((err: unknown) => {
+        if (cancelled) return;
         setError(err instanceof Error ? err.message : 'Unknown error');
         setLoading(false);
       });
+
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [config, filtersKey, effectiveBucket]);
 

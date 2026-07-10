@@ -1,18 +1,64 @@
 import { Aggregation } from '@/lib/data/types';
 import type { DateBucket } from '@/lib/data/types';
 
+/** Every chart type the dashboard can render. `combo` overlays two measures (bar + line). */
+export type ChartType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'donut' | 'combo';
+
+/** Per-measure render style in a combo chart. */
+export type ComboSeriesType = 'bar' | 'line';
+
+/** Which y-axis a combo measure is plotted against. */
+export type AxisSide = 'left' | 'right';
+
+/** One measure of a combo chart — its own column, aggregation, render style, and axis. */
+export interface ComboMeasure {
+  y: string;
+  aggregation: Aggregation;
+  /** Render as bars or a line. */
+  seriesType: ComboSeriesType;
+  /** Left (primary) or right (secondary) y-axis, so measures on different scales read well. */
+  axis: AxisSide;
+}
+
 export interface ChartConfig {
   id: string;
   title: string;
-  type: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'donut';
+  type: ChartType;
   datasetId: string;
   x: string;
   y: string;
   aggregation: Aggregation;
+  /**
+   * Combo charts only: exactly two measures (a bar measure + a line measure) sharing the x
+   * axis. `y`/`aggregation` above mirror the first measure for back-compat (accent color,
+   * legacy readers). Undefined for every other chart type.
+   */
+  measures?: ComboMeasure[];
+  /**
+   * Optional category column that splits a single measure into one series per value
+   * (e.g. revenue by region). Applies to bar/line/area/scatter charts; ignored for
+   * combo and pie/donut.
+   */
+  breakdown?: string;
+  /** Keep only the top-N breakdown series by measure (defaults to DEFAULT_BREAKDOWN_LIMIT). */
+  breakdownLimit?: number;
   /** Time bucket when x is a date column. */
   dateBucket?: DateBucket;
   /** Keep only the top-N categories by measure (non-date axes only). */
   limit?: number;
+}
+
+/** Default number of series a breakdown splits into (top-N by measure). */
+export const DEFAULT_BREAKDOWN_LIMIT = 6;
+
+/** Chart types plotted on a shared cartesian x/y grid (as opposed to pie/donut). */
+export const CARTESIAN_TYPES: ReadonlySet<ChartType> = new Set<ChartType>([
+  'line', 'area', 'bar', 'scatter', 'combo',
+]);
+
+/** Breakdown-by-category is offered on these single-measure cartesian types. */
+export function supportsBreakdown(type: ChartType): boolean {
+  return type === 'line' || type === 'area' || type === 'bar' || type === 'scatter';
 }
 
 /**
@@ -63,6 +109,12 @@ export function aggregationOptionLabel(aggregation: Aggregation): string {
 /** Builds a readable default chart title, e.g. "Total revenue by month". */
 export function defaultChartTitle(aggregation: Aggregation, y: string, x: string): string {
   return `${metricLabel(aggregation, y)} by ${x}`;
+}
+
+/** Default title for a combo chart, e.g. "Total revenue & Average margin by month". */
+export function defaultComboTitle(measures: ComboMeasure[], x: string): string {
+  const parts = measures.map((m) => metricLabel(m.aggregation, m.y));
+  return `${parts.join(' & ')} by ${prettify(x)}`;
 }
 
 /** A configurable snapshot KPI tile. */
