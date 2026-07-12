@@ -40,7 +40,7 @@ import { Aggregation } from '../data/types';
 import { encryptSecret } from '../crypto/secrets';
 import { testConnection as introspectTestConnection, listTablesAndViews, listColumns, mapSqlType } from '../data/sql/introspect';
 import type { ColumnType, JoinStep } from '../data/types';
-import { type DecryptedConnection, toDecryptedConnection } from '../data/sql/pool';
+import { type DecryptedConnection, type SslMode, toDecryptedConnection } from '../data/sql/pool';
 import type { RowScope } from '../auth/types';
 import type { ComputedField } from '../data/computed/types';
 import { parseComputedExpression, ComputedParseError } from '../data/computed/parser';
@@ -498,7 +498,7 @@ export interface CreateConnectionInput {
   database: string;
   user: string;
   password: string;
-  sslMode: 'disable' | 'require';
+  sslMode: SslMode;
 }
 
 export async function listConnections(admin: AdminContext): Promise<ConnectionRow[]> {
@@ -588,7 +588,7 @@ export interface TestConnectionDraftInput {
   database: string;
   user: string;
   password: string;
-  sslMode: 'disable' | 'require';
+  sslMode: SslMode;
 }
 
 export async function testConnectionDraft(

@@ -15,7 +15,7 @@ import {
 import type { ImportAnalysisResult } from '@/lib/admin/repo';
 import type { ColumnTypeChoice } from '@/lib/data/duck/detectColumnTypes';
 import type { ColumnType } from '@/lib/data/types';
-import { inputClass, labelClass, SubmitButton, FormError } from './ui';
+import { inputClass, labelClass, SubmitButton, ConfirmSubmitButton, FormError } from './ui';
 import { buttonClass } from '../ui/forms';
 
 const TYPE_OPTIONS: ColumnType[] = ['string', 'number', 'date', 'boolean'];
@@ -430,20 +430,11 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
                   </button>
                   <form action={deleteAction}>
                     <input type="hidden" name="datasetId" value={d.id} />
-                    <button
-                      type="submit"
-                      onClick={(e) => {
-                        if (
-                          !window.confirm(
-                            `Delete “${d.name}”? This removes its data, source files, and any saved dashboards for it.`,
-                          )
-                        )
-                          e.preventDefault();
-                      }}
-                      className={buttonClass('danger')}
+                    <ConfirmSubmitButton
+                      confirm={`Delete “${d.name}”? This removes its data, source files, and any saved dashboards for it.`}
                     >
                       Delete
-                    </button>
+                    </ConfirmSubmitButton>
                   </form>
                 </div>
               </li>

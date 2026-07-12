@@ -28,6 +28,39 @@ export function SubmitButton({
   );
 }
 
+/**
+ * Submit button for destructive actions: shows a native confirm() with an explicit warning
+ * before the form is submitted, so one-click deletes (which can cascade to saved dashboards,
+ * source files, etc.) can't fire accidentally. Shares SubmitButton's pending-state behavior.
+ */
+export function ConfirmSubmitButton({
+  children,
+  confirm,
+  pendingLabel,
+  variant = 'danger',
+  className = '',
+}: {
+  children: React.ReactNode;
+  confirm: string;
+  pendingLabel?: string;
+  variant?: ButtonVariant;
+  className?: string;
+}) {
+  const { pending } = useFormStatus();
+  return (
+    <button
+      type="submit"
+      disabled={pending}
+      onClick={(e) => {
+        if (!window.confirm(confirm)) e.preventDefault();
+      }}
+      className={buttonClass(variant, className)}
+    >
+      {pending && pendingLabel ? pendingLabel : children}
+    </button>
+  );
+}
+
 export function FormError({ error }: { error?: string }) {
   if (!error) return null;
   return (

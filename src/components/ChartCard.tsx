@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import ReactECharts from 'echarts-for-react';
+import ReactECharts, { echarts } from './echartsCore';
 import type { ChartConfig } from './chartTypes';
 import type { AggregatedResult, Filter, DateBucket } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
@@ -167,6 +167,7 @@ export default function ChartCard({
         {!loading && !error && result && (
           <ReactECharts
             ref={chartRef}
+            echarts={echarts}
             option={getEChartsOption()}
             style={{ height: chartHeight, cursor: 'pointer' }}
             onEvents={{ click: onChartClick }}

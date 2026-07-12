@@ -95,7 +95,8 @@ function ConnectionFields() {
         SSL mode
         <select name="sslMode" className={inputClass}>
           <option value="disable">Disable</option>
-          <option value="require">Require</option>
+          <option value="require">Require (verify certificate)</option>
+          <option value="require-insecure">Require, accept any certificate (self-signed)</option>
         </select>
       </label>
     </div>

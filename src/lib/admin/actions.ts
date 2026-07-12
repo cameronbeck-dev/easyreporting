@@ -6,6 +6,7 @@
 // access ceiling are enforced inside the repo, not here.
 import { revalidatePath } from 'next/cache';
 import { requireAdminAction, ForbiddenError } from '../auth/requireAdmin';
+import { toSslMode } from '../data/sql/pool';
 import * as repo from './repo';
 
 export interface ActionState {
@@ -102,7 +103,7 @@ export async function createConnectionAction(_prev: ActionState, formData: FormD
       database: String(formData.get('database') ?? ''),
       user: String(formData.get('user') ?? ''),
       password: String(formData.get('password') ?? ''),
-      sslMode: (formData.get('sslMode') === 'require' ? 'require' : 'disable'),
+      sslMode: toSslMode(String(formData.get('sslMode') ?? '')),
     });
   });
 }
@@ -128,7 +129,7 @@ export async function testConnectionAction(_prev: ActionState, formData: FormDat
         database: String(formData.get('database') ?? ''),
         user: String(formData.get('user') ?? ''),
         password: String(formData.get('password') ?? ''),
-        sslMode: (formData.get('sslMode') === 'require' ? 'require' : 'disable'),
+        sslMode: toSslMode(String(formData.get('sslMode') ?? '')),
       });
     }
     if (!result.ok) return { error: result.message ?? 'Connection failed.' };

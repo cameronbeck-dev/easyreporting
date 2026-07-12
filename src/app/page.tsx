@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import ChartCard from '@/components/ChartCard';
 import AddChartDialog from '@/components/AddChartDialog';
@@ -58,6 +58,11 @@ function DashboardInner() {
   const [globals, setGlobals] = useState<Globals>(DEFAULT_GLOBALS);
   const [tiles, setTiles] = useState<TileConfig[]>([]);
   const [ready, setReady] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  // Set once the server confirms there is no saved layout, so first-run defaults are applied
+  // as soon as the schema (needed to build them) is available.
+  const [pendingDefault, setPendingDefault] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   const [colMin, setColMin] = useState(320);
   const [controlsOpen, setControlsOpen] = useState(false);
@@ -81,37 +86,69 @@ function DashboardInner() {
   // Reset load state whenever the active dataset changes.
   useEffect(() => {
     setReady(false);
+    setLoadError(false);
+    setPendingDefault(false);
     loadedForRef.current = null;
   }, [datasetId]);
 
-  // Load the saved dashboard (or first-run defaults) once the schema is resolved.
+  const applyLayout = useCallback((layout: DashboardLayout) => {
+    // Normalise the persisted globals (upgrades pre-additive-filter dashboards).
+    const migrated = {
+      charts: layout.charts,
+      tiles: layout.tiles,
+      globals: migrateGlobals(layout.globals),
+    };
+    setCharts(migrated.charts);
+    setTiles(migrated.tiles);
+    setGlobals(migrated.globals);
+    baselineRef.current = JSON.stringify(migrated);
+    setReady(true);
+  }, []);
+
+  // Load the saved dashboard. Fired as soon as the dataset is known — in parallel with the
+  // schema fetch, not chained after it — so the two round-trips overlap. A real saved layout is
+  // applied immediately (it doesn't need the schema); only the "no saved layout" fallback waits
+  // for columns, in the effect below.
   useEffect(() => {
-    if (schemaLoading) return;
     if (loadedForRef.current === datasetId) return;
-    loadedForRef.current = datasetId;
 
     let cancelled = false;
-    const applyLayout = (layout: DashboardLayout) => {
-      if (cancelled) return;
-      // Normalise the persisted globals (upgrades pre-additive-filter dashboards).
-      const migrated = {
-        charts: layout.charts,
-        tiles: layout.tiles,
-        globals: migrateGlobals(layout.globals),
-      };
-      setCharts(migrated.charts);
-      setTiles(migrated.tiles);
-      setGlobals(migrated.globals);
-      baselineRef.current = JSON.stringify(migrated);
-      setReady(true);
-    };
-
     getJson<{ layout: DashboardLayout | null }>(`/api/dashboard?datasetId=${encodeURIComponent(datasetId)}`)
-      .then(({ layout }) => applyLayout(layout ?? defaultLayout(columns)))
-      .catch(() => applyLayout(defaultLayout(columns)));
+      .then(({ layout }) => {
+        if (cancelled) return;
+        if (layout) {
+          loadedForRef.current = datasetId;
+          applyLayout(layout);
+        } else {
+          // No saved layout yet — apply schema-derived first-run defaults once columns load.
+          setPendingDefault(true);
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // A transient failure must NOT be treated as "apply defaults": staying `ready` would let
+        // the save effect PUT those defaults over the user's real saved dashboard. Surface an
+        // error and keep `ready` false so nothing is persisted.
+        setLoadError(true);
+      });
 
     return () => { cancelled = true; };
-  }, [datasetId, schemaLoading, columns]);
+  }, [datasetId, applyLayout, reloadNonce]);
+
+  // Apply first-run defaults once the schema is available (only when there is no saved layout).
+  useEffect(() => {
+    if (!pendingDefault || schemaLoading) return;
+    if (loadedForRef.current === datasetId) return;
+    loadedForRef.current = datasetId;
+    setPendingDefault(false);
+    applyLayout(defaultLayout(columns));
+  }, [pendingDefault, schemaLoading, columns, datasetId, applyLayout]);
+
+  const retryLoad = () => {
+    loadedForRef.current = null;
+    setLoadError(false);
+    setReloadNonce((n) => n + 1);
+  };
 
   // Persist real changes (debounced). Skips the initial load and the untouched defaults.
   useEffect(() => {
@@ -191,6 +228,24 @@ function DashboardInner() {
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   };
+
+  if (loadError && !ready) {
+    return (
+      <main className="mx-auto max-w-2xl px-6 py-16 text-center">
+        <h1 className="mb-2 text-lg font-bold text-foreground">Couldn&apos;t load your dashboard</h1>
+        <p className="mb-6 text-sm text-foreground-muted">
+          Something went wrong fetching your saved dashboard. Your saved layout is safe — nothing
+          has been changed. Check your connection and try again.
+        </p>
+        <button
+          onClick={retryLoad}
+          className="rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-card transition-colors hover:bg-primary-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          Retry
+        </button>
+      </main>
+    );
+  }
 
   return (
     <main className="flex-1 px-6 py-8">

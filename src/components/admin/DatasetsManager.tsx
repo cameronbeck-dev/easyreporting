@@ -10,7 +10,7 @@ import {
   removeComputedFieldAction,
   type ActionState,
 } from '@/lib/admin/actions';
-import { SubmitButton, FormError, inputClass, labelClass } from './ui';
+import { SubmitButton, ConfirmSubmitButton, FormError, inputClass, labelClass } from './ui';
 import type { DatasetAdminRow, ConnectionRow } from '@/lib/admin/repo';
 import type { JoinStep } from '@/lib/data/types';
 import type { ComputedField } from '@/lib/data/computed/types';
@@ -160,16 +160,55 @@ export default function DatasetsManager({
   const [schemaName] = useState('public');
   const [joinSteps, setJoinSteps] = useState<JoinStepDraft[]>([]);
   const [tableColumnCache, setTableColumnCache] = useState<Record<string, ColumnEntry[]>>({});
+  const [joinError, setJoinError] = useState<string | null>(null);
 
-  const tableList = Array.isArray(tablesState.data) ? (tablesState.data as string[]) : [];
-  const columnList = Array.isArray(columnsState.data) ? (columnsState.data as ColumnEntry[]) : [];
+  const tableList = useMemo(
+    () => (Array.isArray(tablesState.data) ? (tablesState.data as string[]) : []),
+    [tablesState.data],
+  );
+  const columnList = useMemo(
+    () => (Array.isArray(columnsState.data) ? (columnsState.data as ColumnEntry[]) : []),
+    [columnsState.data],
+  );
 
-  // When base columns load, cache them for the base table
-  const handleColumnsLoaded = (cols: ColumnEntry[]) => {
-    if (selectedTable) {
-      setTableColumnCache((prev) => ({ ...prev, [selectedTable]: cols }));
+  // Cache the base table's columns once the introspection action returns them. Done in an
+  // effect (not during render) so it's not a render-phase side effect.
+  useEffect(() => {
+    if (selectedTable && columnList.length > 0 && !tableColumnCache[selectedTable]) {
+      setTableColumnCache((prev) => ({ ...prev, [selectedTable]: columnList }));
     }
-  };
+  }, [selectedTable, columnList, tableColumnCache]);
+
+  // Load columns for any joined (right) table that isn't cached yet. Server actions can be
+  // called imperatively from the client (same pattern as ProfileEditor's getScopeColumns), so
+  // picking a right table auto-populates its column dropdowns — no separate "load columns" step.
+  useEffect(() => {
+    const missing = [...new Set(joinSteps.map((s) => s.tableName).filter(Boolean))].filter(
+      (t) => !tableColumnCache[t],
+    );
+    if (missing.length === 0 || !selectedConnection) return;
+    let cancelled = false;
+    Promise.all(
+      missing.map(async (table) => {
+        const fd = new FormData();
+        fd.set('connectionId', selectedConnection);
+        fd.set('schemaName', schemaName);
+        fd.set('tableName', table);
+        const res = await introspectColumnsAction({}, fd);
+        return { table, cols: Array.isArray(res.data) ? (res.data as ColumnEntry[]) : [] };
+      }),
+    ).then((loaded) => {
+      if (cancelled) return;
+      setTableColumnCache((prev) => {
+        const next = { ...prev };
+        for (const { table, cols } of loaded) next[table] = cols;
+        return next;
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [joinSteps, selectedConnection, schemaName, tableColumnCache]);
 
   // Available left tables for step N = base + steps 0..N-1
   const getAvailableLeftTables = (stepIndex: number): string[] => {
@@ -193,9 +232,8 @@ export default function DatasetsManager({
 
   const updateJoinStep = (index: number, updated: JoinStepDraft) => {
     setJoinSteps((prev) => prev.map((s, i) => (i === index ? updated : s)));
-    // If the right table changed and we don't have its columns cached, we need to load them
-    // (but we can't call server actions imperatively here without useActionState; we note this
-    // and rely on the user loading columns via the main introspect flow or a separate mechanism)
+    setJoinError(null);
+    // Columns for a newly-selected right table are fetched by the effect above.
   };
 
   const removeJoinStep = (index: number) => {
@@ -306,9 +344,6 @@ export default function DatasetsManager({
 
           {columnList.length > 0 && (
             <>
-              {/* Cache base table columns when loaded */}
-              {selectedTable && !tableColumnCache[selectedTable] && handleColumnsLoaded(columnList)}
-
               <div className="flex flex-col gap-3">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold text-foreground">Joins (optional)</h3>
@@ -348,14 +383,26 @@ export default function DatasetsManager({
 
                 {joinSteps.length > 0 && (
                   <p className="text-xs text-foreground-muted">
-                    Note: To see columns for a joined table, load that table&apos;s columns using the form
-                    below before submitting. Joins are immutable — delete and recreate the dataset to change them.
+                    Note: Column dropdowns for a joined table load automatically once you pick the table.
+                    Joins are immutable — delete and recreate the dataset to change them.
                   </p>
                 )}
               </div>
 
               <form
                 action={(fd) => {
+                  // Block submit if any join step is incomplete, rather than silently dropping it
+                  // (which would create a dataset with no joins and no warning).
+                  const incomplete = joinSteps.some(
+                    (s) => !(s.tableName && s.leftTable && s.leftColumn && s.rightColumn),
+                  );
+                  if (incomplete) {
+                    setJoinError(
+                      'Complete every join (table, left column, right column) or remove the unfinished join before creating the dataset.',
+                    );
+                    return;
+                  }
+                  setJoinError(null);
                   // Append the serialized joins array
                   fd.set('joinsJson', JSON.stringify(buildJoinsForSubmit()));
                   createAction(fd);
@@ -387,6 +434,7 @@ export default function DatasetsManager({
                 <div>
                   <SubmitButton pendingLabel="Creating…">Create dataset</SubmitButton>
                 </div>
+                {joinError && <FormError error={joinError} />}
                 <FormError error={createState.error} />
               </form>
             </>
@@ -678,9 +726,13 @@ function DatasetItem({ dataset }: { dataset: DatasetAdminRow }) {
         </div>
         <form action={action}>
           <input type="hidden" name="datasetId" value={dataset.id} />
-          <SubmitButton variant="danger" pendingLabel="Deleting…">
+          <ConfirmSubmitButton
+            variant="danger"
+            pendingLabel="Deleting…"
+            confirm={`Delete “${dataset.name}”? This permanently removes the dataset, its column rules, its data/source files, and every user's saved dashboard for it.`}
+          >
             Delete
-          </SubmitButton>
+          </ConfirmSubmitButton>
         </form>
       </div>
       <ComputedFieldsSection dataset={dataset} />

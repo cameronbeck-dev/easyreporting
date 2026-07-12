@@ -71,7 +71,9 @@ export const connections = sqliteTable('connections', {
   database: text('database').notNull(),
   user: text('user').notNull(),
   passwordEncrypted: text('password_encrypted').notNull(),
-  sslMode: text('ssl_mode', { enum: ['disable', 'require'] }).notNull().default('disable'),
+  sslMode: text('ssl_mode', { enum: ['disable', 'require', 'require-insecure'] })
+    .notNull()
+    .default('disable'),
   createdAt: integer('created_at', { mode: 'timestamp' })
     .notNull()
     .$defaultFn(() => new Date()),

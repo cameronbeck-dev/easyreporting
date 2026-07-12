@@ -1,5 +1,17 @@
 import { decryptSecret } from '../../crypto/secrets';
 
+// SSL handling for customer DB connections:
+//  - 'disable'         — no TLS.
+//  - 'require'         — TLS with certificate verification (rejects MITM / untrusted certs).
+//  - 'require-insecure'— TLS but accepts any certificate (only for self-signed / private-CA
+//                        servers the operator explicitly trusts). Not the default.
+export type SslMode = 'disable' | 'require' | 'require-insecure';
+
+/** Coerce an arbitrary stored value to a known SslMode, defaulting to the safe 'disable'. */
+export function toSslMode(value: string): SslMode {
+  return value === 'require' || value === 'require-insecure' ? value : 'disable';
+}
+
 export interface DecryptedConnection {
   id: string;
   host: string;
@@ -7,7 +19,7 @@ export interface DecryptedConnection {
   database: string;
   user: string;
   password: string;
-  sslMode: 'disable' | 'require';
+  sslMode: SslMode;
 }
 
 /** A stored connection row with its password still encrypted (as persisted). */
@@ -30,7 +42,7 @@ export function toDecryptedConnection(row: EncryptedConnectionRow): DecryptedCon
     database: row.database,
     user: row.user,
     password: decryptSecret(row.passwordEncrypted),
-    sslMode: row.sslMode === 'require' ? 'require' : 'disable',
+    sslMode: toSslMode(row.sslMode),
   };
 }
 
@@ -66,7 +78,14 @@ export async function getPool(conn: DecryptedConnection): Promise<PgPool> {
     database: conn.database,
     user: conn.user,
     password: conn.password,
-    ssl: conn.sslMode === 'require' ? { rejectUnauthorized: false } : false,
+    // 'require' verifies the server certificate (rejectUnauthorized defaults to true with
+    // `ssl: true`); 'require-insecure' is the explicit opt-out for self-signed servers.
+    ssl:
+      conn.sslMode === 'require'
+        ? true
+        : conn.sslMode === 'require-insecure'
+          ? { rejectUnauthorized: false }
+          : false,
   });
 
   poolCache.set(conn.id, pool);

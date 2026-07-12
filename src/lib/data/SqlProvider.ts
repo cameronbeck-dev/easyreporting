@@ -28,6 +28,16 @@ interface DatasetRow {
 
 const SCHEMA_NAME = 'public';
 
+// Every query path validates that the dataset's stored columns still exist by introspecting
+// `information_schema` — 1 + N sequential round-trips (one per join) against the customer DB
+// before the real query runs. A dashboard with many charts on a multi-join dataset fires dozens
+// of these per load. The provider is recreated per request (resolveDataset.ts), so it can't
+// amortize on its own; this module-level map caches a *successful* validation per dataset for a
+// short TTL so those repeated checks collapse to one. A dropped column within the TTL window
+// still fails the actual query with a clear SQL error. See code-review-findings.md item 4.
+const VALIDATION_TTL_MS = 60_000;
+const lastValidatedAt = new Map<string, number>();
+
 export class SqlProvider implements DataProvider {
   private dataset: DatasetRow;
   private connection: DecryptedConnection;
@@ -50,21 +60,21 @@ export class SqlProvider implements DataProvider {
   }
 
   private async validateStoredColumnsExist(): Promise<void> {
+    const last = lastValidatedAt.get(this.dataset.id);
+    if (last !== undefined && Date.now() - last < VALIDATION_TTL_MS) return;
+
     if (this.isMultiTable()) {
       // For multi-table datasets, introspect base + each joined table and build a
       // set of qualified names (table.column) to compare against stored qualified names.
+      // Introspect all tables concurrently rather than one join at a time.
+      const tables = [this.dataset.tableName, ...this.dataset.joins.map((j) => j.tableName)];
+      const perTable = await Promise.all(
+        tables.map(async (t) => ({ table: t, cols: await listColumns(this.connection, SCHEMA_NAME, t) })),
+      );
+
       const liveQualified = new Set<string>();
-
-      const baseCols = await listColumns(this.connection, SCHEMA_NAME, this.dataset.tableName);
-      for (const c of baseCols) {
-        liveQualified.add(`${this.dataset.tableName}.${c.name}`);
-      }
-
-      for (const join of this.dataset.joins) {
-        const joinCols = await listColumns(this.connection, SCHEMA_NAME, join.tableName);
-        for (const c of joinCols) {
-          liveQualified.add(`${join.tableName}.${c.name}`);
-        }
+      for (const { table, cols } of perTable) {
+        for (const c of cols) liveQualified.add(`${table}.${c.name}`);
       }
 
       const stored = this.dataset.columnsJson.map((c) => c.name);
@@ -85,6 +95,9 @@ export class SqlProvider implements DataProvider {
         );
       }
     }
+
+    // Only cache successful validations, so a failure keeps surfacing until it's fixed.
+    lastValidatedAt.set(this.dataset.id, Date.now());
   }
 
   private buildTableSource() {
