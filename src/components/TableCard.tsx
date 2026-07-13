@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { TableConfig, TableSort } from './chartTypes';
 import { tableColumnLabels } from './chartTypes';
 import type { Filter, TableResult, SummaryResult, SummaryMetric } from '@/lib/data/types';
@@ -10,6 +10,7 @@ import { formatMetric } from './formatNumber';
 import { fetchTableData, type TableFetcher } from './tableData';
 import { tableToCsv } from '@/lib/data/export/toCsv';
 import { postJson, downloadText } from '@/lib/api/client';
+import ResizeHandles, { type ResizeEdge } from './ResizeHandles';
 
 interface Props {
   config: TableConfig;
@@ -18,7 +19,9 @@ interface Props {
   onEdit: () => void;
   /** Persist a header-click sort change (bubbles to the dashboard's debounced save). */
   onChange: (config: TableConfig) => void;
-  onResizePointerDown?: (e: React.PointerEvent) => void;
+  onSpanResize?: (edge: ResizeEdge, e: React.PointerEvent) => void;
+  /** Grab the title to start dragging the card to a new position. */
+  onDragStart?: (e: React.PointerEvent) => void;
 }
 
 const COUNT_COLUMN = '__count__';
@@ -29,36 +32,22 @@ export default function TableCard({
   onRemove,
   onEdit,
   onChange,
-  onResizePointerDown,
+  onSpanResize,
+  onDragStart,
 }: Props) {
   const [result, setResult] = useState<TableResult | null>(null);
   const [totals, setTotals] = useState<number[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Match the sibling ChartCard height (width × 0.5, clamped) so a long table scrolls
-  // internally instead of stretching its grid row taller than the charts beside it. A
-  // callback ref wires up the observer whenever the scroll container mounts (it only exists
-  // once there's data to show).
-  const [maxHeight, setMaxHeight] = useState(200);
-  const roRef = useRef<ResizeObserver | null>(null);
-  const scrollRef = useCallback((node: HTMLDivElement | null) => {
-    roRef.current?.disconnect();
-    roRef.current = null;
-    if (!node) return;
-    const ro = new ResizeObserver((entries) => {
-      const w = entries[0].contentRect.width;
-      setMaxHeight(Math.min(420, Math.max(140, Math.round(w * 0.5))));
-    });
-    ro.observe(node);
-    roRef.current = ro;
-  }, []);
-
   const accent = fieldColor(
     config.columns[0]?.aggregation === Aggregation.Count ? 'records' : config.columns[0]?.y ?? 'records',
   );
 
-  const configKey = JSON.stringify(config);
+  // Fetch keyed on the data-relevant config only. colSpan/rowSpan are purely a grid-layout
+  // concern, so resizing/repositioning a card must not refetch its data. (JSON.stringify drops
+  // the undefined'd keys.)
+  const configKey = JSON.stringify({ ...config, colSpan: undefined, rowSpan: undefined });
   const filtersKey = JSON.stringify(globalFilters);
 
   useEffect(() => {
@@ -147,11 +136,19 @@ export default function TableCard({
   };
 
   return (
-    <div className="group/card relative flex flex-col gap-3 overflow-hidden rounded-card border border-border bg-surface p-4 shadow-card">
+    <div className="group/card relative flex h-full flex-col gap-3 overflow-hidden rounded-card border border-border bg-surface p-4 shadow-card">
       <span className="absolute inset-x-0 top-0 h-1" style={{ backgroundColor: accent }} aria-hidden />
 
       <div className="flex items-start justify-between gap-2">
-        <h3 className="pt-0.5 text-base font-semibold tracking-tight text-foreground">{config.title}</h3>
+        <h3
+          onPointerDown={onDragStart}
+          className={`pt-0.5 text-base font-semibold tracking-tight text-foreground ${
+            onDragStart ? 'cursor-grab touch-none select-none active:cursor-grabbing' : ''
+          }`}
+          title={onDragStart ? 'Drag to reposition' : undefined}
+        >
+          {config.title}
+        </h3>
         <div className="flex items-center gap-1">
           <button
             onClick={handleExport}
@@ -180,11 +177,11 @@ export default function TableCard({
       </div>
 
       {loading && (
-        <div className="h-40 w-full animate-pulse rounded-control bg-surface-muted" />
+        <div className="min-h-0 flex-1 animate-pulse rounded-control bg-surface-muted" />
       )}
 
       {error && (
-        <div className="flex h-40 items-center justify-center">
+        <div className="flex min-h-0 flex-1 items-center justify-center">
           <div className="rounded-control border border-danger/30 bg-danger/10 p-4 text-center text-sm text-danger">
             <div className="mb-1 font-semibold">Table unavailable</div>
             <div>{error}</div>
@@ -193,13 +190,13 @@ export default function TableCard({
       )}
 
       {!loading && !error && result && result.rows.length === 0 && (
-        <div className="flex h-40 items-center justify-center text-sm text-foreground-muted">
+        <div className="flex min-h-0 flex-1 items-center justify-center text-sm text-foreground-muted">
           No data for the current filters.
         </div>
       )}
 
       {!loading && !error && result && result.rows.length > 0 && (
-        <div ref={scrollRef} className="overflow-auto" style={{ maxHeight }}>
+        <div className="min-h-0 flex-1 overflow-auto">
           <table className="w-full border-collapse text-sm">
             <thead>
               <tr>
@@ -278,15 +275,8 @@ export default function TableCard({
         </div>
       )}
 
-      {onResizePointerDown && (
-        <div
-          onPointerDown={onResizePointerDown}
-          className="absolute right-0 top-0 flex h-full w-2.5 cursor-col-resize touch-none items-center justify-center opacity-0 transition-opacity group-hover/card:opacity-100"
-          aria-hidden
-        >
-          <span className="h-10 w-1 rounded-full bg-border" />
-        </div>
-      )}
+      {/* Drag any edge/corner to resize this card's grid span. */}
+      {onSpanResize && <ResizeHandles onResize={onSpanResize} />}
     </div>
   );
 }

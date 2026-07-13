@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import ChartCard from '@/components/ChartCard';
 import AddChartDialog from '@/components/AddChartDialog';
@@ -12,19 +12,28 @@ import { useSchema } from '@/components/useSchema';
 import { useActiveDatasetId } from '@/components/useActiveDatasetId';
 import { buildGlobalFilters, resolveDateColumn, previousPeriod } from '@/components/dashboardUtils';
 import type { ChartConfig, GlobalControls as Globals, TileConfig, TableConfig, DashboardLayout } from '@/components/chartTypes';
-import { DEFAULT_GLOBALS, migrateGlobals, migrateTables } from '@/components/chartTypes';
+import { DEFAULT_GLOBALS, migrateGlobals, migrateTables, migrateOrder } from '@/components/chartTypes';
 import type { ColumnSchema, Filter } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import { getJson, putJson, delJson } from '@/lib/api/client';
+import type { ResizeEdge } from '@/components/ResizeHandles';
+import { insertIndexForDrag, resolveDragCell, type Cell } from '@/components/gridLayout';
 
-// Grid column width + controls-open are device/view chrome (not dashboard content),
+// Grid column count + controls-open are device/view chrome (not dashboard content),
 // so they stay in localStorage. Charts, tiles, and global filters are the dashboard
-// itself and persist per-user, per-dataset on the server.
-const KEY_COLMIN = 'easyreporting-colmin';
+// itself and persist per-user, per-dataset on the server. Card spans travel with each
+// chart/table, so they live in the saved layout.
+const KEY_COLS = 'easyreporting-cols';
 const KEY_CONTROLS = 'easyreporting-controls-open';
 
-const COL_MIN = 260;
-const COL_MAX = 720;
+const GRID_GAP = 16; // matches `gap-4` on the grid
+const MIN_CARD = 220; // never let a column get narrower than this, even at high column counts
+const MAX_COLS = 8;
+const MAX_ROWSPAN = 4;
+const DEFAULT_COLS = 3;
+// Header + padding + inner gap above a card's body — added to the chart-area height so a 1×1
+// card's total height matches what it was before spans (chart area ≈ column width × 0.5).
+const CARD_CHROME = 74;
 const SAVE_DEBOUNCE_MS = 600;
 
 type DialogState =
@@ -50,10 +59,13 @@ function defaultLayout(columns: ColumnSchema[]): DashboardLayout {
   for (const c of columns.filter((c) => c.type === 'number')) {
     tiles.push({ id: `tile-${c.name}`, column: c.name, aggregation: Aggregation.Sum });
   }
-  return { charts: [], tables: [], tiles: tiles.slice(0, 4), globals: DEFAULT_GLOBALS };
+  return { charts: [], tables: [], tiles: tiles.slice(0, 4), globals: DEFAULT_GLOBALS, order: [] };
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+// useLayoutEffect warns during SSR prerender; the FLIP measurement below is client-only anyway.
+const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function DashboardInner() {
   const searchParams = useSearchParams();
@@ -63,6 +75,7 @@ function DashboardInner() {
 
   const [charts, setCharts] = useState<ChartConfig[]>([]);
   const [tables, setTables] = useState<TableConfig[]>([]);
+  const [order, setOrder] = useState<string[]>([]);
   const [globals, setGlobals] = useState<Globals>(DEFAULT_GLOBALS);
   const [tiles, setTiles] = useState<TileConfig[]>([]);
   const [ready, setReady] = useState(false);
@@ -72,7 +85,7 @@ function DashboardInner() {
   const [pendingDefault, setPendingDefault] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
 
-  const [colMin, setColMin] = useState(320);
+  const [cols, setCols] = useState(DEFAULT_COLS);
   const [controlsOpen, setControlsOpen] = useState(false);
   const [dialog, setDialog] = useState<DialogState>(null);
   const [prefsHydrated, setPrefsHydrated] = useState(false);
@@ -84,11 +97,11 @@ function DashboardInner() {
 
   // Device-local view chrome.
   useEffect(() => {
-    setColMin(readJSON<number>(KEY_COLMIN) ?? 320);
+    setCols(clamp(readJSON<number>(KEY_COLS) ?? DEFAULT_COLS, 1, MAX_COLS));
     setControlsOpen(readJSON<boolean>(KEY_CONTROLS) ?? false);
     setPrefsHydrated(true);
   }, []);
-  useEffect(() => { if (prefsHydrated) localStorage.setItem(KEY_COLMIN, JSON.stringify(colMin)); }, [colMin, prefsHydrated]);
+  useEffect(() => { if (prefsHydrated) localStorage.setItem(KEY_COLS, JSON.stringify(cols)); }, [cols, prefsHydrated]);
   useEffect(() => { if (prefsHydrated) localStorage.setItem(KEY_CONTROLS, JSON.stringify(controlsOpen)); }, [controlsOpen, prefsHydrated]);
 
   // Reset load state whenever the active dataset changes.
@@ -102,16 +115,19 @@ function DashboardInner() {
   const applyLayout = useCallback((layout: DashboardLayout) => {
     // Normalise the persisted blob (upgrades pre-additive-filter globals; supplies an empty
     // tables list for dashboards saved before tables existed).
+    const tables = migrateTables(layout.tables);
     const migrated = {
       charts: layout.charts,
-      tables: migrateTables(layout.tables),
+      tables,
       tiles: layout.tiles,
       globals: migrateGlobals(layout.globals),
+      order: migrateOrder(layout.order, layout.charts, tables),
     };
     setCharts(migrated.charts);
     setTables(migrated.tables);
     setTiles(migrated.tiles);
     setGlobals(migrated.globals);
+    setOrder(migrated.order);
     baselineRef.current = JSON.stringify(migrated);
     setReady(true);
   }, []);
@@ -164,14 +180,14 @@ function DashboardInner() {
   // Persist real changes (debounced). Skips the initial load and the untouched defaults.
   useEffect(() => {
     if (!ready) return;
-    const current = JSON.stringify({ charts, tables, tiles, globals });
+    const current = JSON.stringify({ charts, tables, tiles, globals, order });
     if (current === baselineRef.current) return;
     const t = setTimeout(() => {
       baselineRef.current = current;
-      putJson(`/api/dashboard`, { datasetId, layout: { charts, tables, tiles, globals } }).catch(() => {});
+      putJson(`/api/dashboard`, { datasetId, layout: { charts, tables, tiles, globals, order } }).catch(() => {});
     }, SAVE_DEBOUNCE_MS);
     return () => clearTimeout(t);
-  }, [ready, charts, tables, tiles, globals, datasetId]);
+  }, [ready, charts, tables, tiles, globals, order, datasetId]);
 
   const resetToDefault = () => {
     const layout = defaultLayout(columns);
@@ -179,7 +195,14 @@ function DashboardInner() {
     setTables(layout.tables);
     setTiles(layout.tiles);
     setGlobals(layout.globals);
-    baselineRef.current = JSON.stringify(layout);
+    setOrder(layout.order ?? []);
+    baselineRef.current = JSON.stringify({
+      charts: layout.charts,
+      tables: layout.tables,
+      tiles: layout.tiles,
+      globals: layout.globals,
+      order: layout.order ?? [],
+    });
     delJson(`/api/dashboard?datasetId=${encodeURIComponent(datasetId)}`).catch(() => {});
   };
 
@@ -199,16 +222,21 @@ function DashboardInner() {
       const exists = prev.some((c) => c.id === config.id);
       return exists ? prev.map((c) => (c.id === config.id ? config : c)) : [...prev, config];
     });
+    setOrder((prev) => (prev.includes(config.id) ? prev : [...prev, config.id]));
     setDialog(null);
   };
 
-  const removeChart = (id: string) => setCharts((prev) => prev.filter((c) => c.id !== id));
+  const removeChart = (id: string) => {
+    setCharts((prev) => prev.filter((c) => c.id !== id));
+    setOrder((prev) => prev.filter((x) => x !== id));
+  };
 
   const submitTable = (config: TableConfig) => {
     setTables((prev) => {
       const exists = prev.some((t) => t.id === config.id);
       return exists ? prev.map((t) => (t.id === config.id ? config : t)) : [...prev, config];
     });
+    setOrder((prev) => (prev.includes(config.id) ? prev : [...prev, config.id]));
     setDialog(null);
   };
 
@@ -216,44 +244,219 @@ function DashboardInner() {
   const updateTable = (config: TableConfig) =>
     setTables((prev) => prev.map((t) => (t.id === config.id ? config : t)));
 
-  const removeTable = (id: string) => setTables((prev) => prev.filter((t) => t.id !== id));
-
-  // Drag the gutter between cards to resize the grid column width.
-  const gridRef = useRef<HTMLDivElement>(null);
-  const resizeRef = useRef<{ startX: number; startMin: number } | null>(null);
-  const [resizing, setResizing] = useState<{ x: number; cols: number; width: number } | null>(null);
-
-  const columnsForWidth = (min: number) => {
-    const gap = 16;
-    const gridW = gridRef.current?.clientWidth ?? min;
-    return Math.max(1, Math.floor((gridW + gap) / (min + gap)));
+  const removeTable = (id: string) => {
+    setTables((prev) => prev.filter((t) => t.id !== id));
+    setOrder((prev) => prev.filter((x) => x !== id));
   };
 
-  const onResizePointerDown = (e: React.PointerEvent) => {
+  // Grid geometry. The user picks a column count; we cap it so no column falls below MIN_CARD
+  // on narrow viewports. Row height tracks the resulting column width (so a 1×1 card keeps its
+  // pre-spans proportions), and cards span whole cells via grid-column/grid-row.
+  const gridRef = useRef<HTMLDivElement>(null);
+  const [gridWidth, setGridWidth] = useState(0);
+
+  useEffect(() => {
+    const el = gridRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => setGridWidth(entries[0].contentRect.width));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const widthCap = gridWidth > 0
+    ? Math.max(1, Math.floor((gridWidth + GRID_GAP) / (MIN_CARD + GRID_GAP)))
+    : cols;
+  const effectiveCols = clamp(Math.min(cols, widthCap), 1, MAX_COLS);
+  const colWidth = gridWidth > 0
+    ? (gridWidth - (effectiveCols - 1) * GRID_GAP) / effectiveCols
+    : 320;
+  const rowHeight = clamp(colWidth * 0.5, 140, 420) + CARD_CHROME;
+
+  // Snapshot the live geometry for the pointer handler (which shouldn't re-bind every render).
+  const metricsRef = useRef({ colWidth, rowHeight, effectiveCols });
+  metricsRef.current = { colWidth, rowHeight, effectiveCols };
+
+  // FLIP: whenever cards land in a new grid position (drag reorder, span change, column count),
+  // glide them from their previous spot instead of teleporting. Live-reflow drag reads as motion
+  // you can follow rather than the whole dashboard flashing into a new arrangement each retarget.
+  // Positions are stored grid-relative so page scroll between renders doesn't count as movement.
+  const cardRectsRef = useRef<Map<string, { left: number; top: number }>>(new Map());
+  useIsomorphicLayoutEffect(() => {
+    const gridEl = gridRef.current;
+    if (!gridEl) return;
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const gridBox = gridEl.getBoundingClientRect();
+    const prevRects = cardRectsRef.current;
+    const nextRects = new Map<string, { left: number; top: number }>();
+    gridEl.querySelectorAll<HTMLElement>('[data-card-id]').forEach((el) => {
+      const id = el.dataset.cardId;
+      if (!id) return;
+      // Clear any in-flight transform so we measure the true layout position.
+      el.style.transition = 'none';
+      el.style.transform = '';
+      const box = el.getBoundingClientRect();
+      const pos = { left: box.left - gridBox.left, top: box.top - gridBox.top };
+      nextRects.set(id, pos);
+      const prev = prevRects.get(id);
+      if (!reduceMotion && prev) {
+        const dx = prev.left - pos.left;
+        const dy = prev.top - pos.top;
+        if (dx !== 0 || dy !== 0) {
+          el.style.transform = `translate(${dx}px, ${dy}px)`;
+          void el.offsetWidth; // flush, so the jump back isn't transitioned
+          el.style.transition = 'transform 160ms ease';
+          el.style.transform = '';
+        }
+      }
+    });
+    cardRectsRef.current = nextRects;
+  });
+
+  // Live ghost outline shown while dragging a card's edge to a new span.
+  const [spanDrag, setSpanDrag] =
+    useState<{ left: number; top: number; w: number; h: number; cols: number; rows: number } | null>(null);
+
+  // Begin resizing a card's span. `kind` picks the state list to commit to on release.
+  const startSpanResize =
+    (kind: 'chart' | 'table', id: string, startCol: number, startRow: number) =>
+    (edge: ResizeEdge, e: React.PointerEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const card = (e.currentTarget as HTMLElement).closest('[data-card-id]') as HTMLElement | null;
+      if (!card) return;
+      const rect = card.getBoundingClientRect();
+      const { colWidth: cw, rowHeight: rh, effectiveCols: maxCols } = metricsRef.current;
+      const cellW = cw + GRID_GAP;
+      const cellH = rh + GRID_GAP;
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let curCols = startCol;
+      let curRows = startRow;
+
+      document.body.style.cursor =
+        edge === 'right' ? 'col-resize' : edge === 'bottom' ? 'row-resize' : 'nwse-resize';
+      document.body.style.userSelect = 'none';
+
+      const paint = () =>
+        setSpanDrag({
+          left: rect.left,
+          top: rect.top,
+          w: curCols * cellW - GRID_GAP,
+          h: curRows * cellH - GRID_GAP,
+          cols: curCols,
+          rows: curRows,
+        });
+      paint();
+
+      const move = (ev: PointerEvent) => {
+        if (edge !== 'bottom') {
+          curCols = clamp(startCol + Math.round((ev.clientX - startX) / cellW), 1, maxCols);
+        }
+        if (edge !== 'right') {
+          curRows = clamp(startRow + Math.round((ev.clientY - startY) / cellH), 1, MAX_ROWSPAN);
+        }
+        paint();
+      };
+      const up = () => {
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        window.removeEventListener('pointermove', move);
+        window.removeEventListener('pointerup', up);
+        setSpanDrag(null);
+        if (curCols !== startCol || curRows !== startRow) {
+          if (kind === 'chart') {
+            setCharts((prev) => prev.map((c) => (c.id === id ? { ...c, colSpan: curCols, rowSpan: curRows } : c)));
+          } else {
+            setTables((prev) => prev.map((t) => (t.id === id ? { ...t, colSpan: curCols, rowSpan: curRows } : t)));
+          }
+        }
+      };
+      window.addEventListener('pointermove', move);
+      window.addEventListener('pointerup', up);
+    };
+
+  // Drag a card (by its title) to a new position. The drop target is resolved to a GRID CELL
+  // under the cursor, then to an insertion index computed from the other cards alone, so the
+  // reflow cannot slide cards under the cursor and make the reorder oscillate.
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const draggingRef = useRef<string | null>(null);
+  const spanOf = (cid: string): { w: number; h: number } => {
+    const c = charts.find((x) => x.id === cid);
+    if (c) return { w: c.colSpan ?? 1, h: c.rowSpan ?? 1 };
+    const t = tables.find((x) => x.id === cid);
+    if (t) return { w: t.colSpan ?? 1, h: t.rowSpan ?? 1 };
+    return { w: 1, h: 1 };
+  };
+
+  const startCardDrag = (id: string) => (e: React.PointerEvent) => {
     e.preventDefault();
-    resizeRef.current = { startX: e.clientX, startMin: colMin };
-    document.body.style.cursor = 'col-resize';
+    draggingRef.current = id;
+    setDraggingId(id);
     document.body.style.userSelect = 'none';
-    setResizing({ x: e.clientX, cols: columnsForWidth(colMin), width: colMin });
+    document.body.style.cursor = 'grabbing';
+
+    const { colWidth: cw, rowHeight: rh, effectiveCols: gridCols } = metricsRef.current;
+    const cellW = cw + GRID_GAP;
+    const cellH = rh + GRID_GAP;
+    // Snapshot the grid origin once. Reading it per-move would let a reflow or a toggling
+    // scrollbar shift the reference frame mid-drag and feed back into the reorder.
+    const gridRect = gridRef.current?.getBoundingClientRect();
+    // Seed the hysteresis with the cell under the grab point, so a grab near a cell boundary
+    // doesn't re-target on the first wobble.
+    let lastCell: Cell | null = gridRect
+      ? resolveDragCell(e.clientX - gridRect.left, e.clientY - gridRect.top, cellW, cellH, gridCols, null)
+      : null;
 
     const move = (ev: PointerEvent) => {
-      if (!resizeRef.current) return;
-      const dx = ev.clientX - resizeRef.current.startX;
-      const next = clamp(resizeRef.current.startMin + dx, COL_MIN, COL_MAX);
-      setColMin(next);
-      setResizing({ x: ev.clientX, cols: columnsForWidth(next), width: next });
+      const dragId = draggingRef.current;
+      if (!dragId || !gridRect) return;
+
+      // Cursor position -> target cell (sticky at boundaries) -> reading-order rank.
+      const cell = resolveDragCell(
+        ev.clientX - gridRect.left,
+        ev.clientY - gridRect.top,
+        cellW,
+        cellH,
+        gridCols,
+        lastCell,
+      );
+      lastCell = cell;
+      const targetRank = cell.row * gridCols + cell.col;
+      setOrder((prev) => {
+        const others = prev.filter((x) => x !== dragId);
+        const items = others.map((oid) => ({ id: oid, ...spanOf(oid) }));
+        const insertAt = insertIndexForDrag(items, spanOf(dragId), gridCols, targetRank);
+        const next = [...others];
+        next.splice(insertAt, 0, dragId);
+        return next.join(' ') === prev.join(' ') ? prev : next;
+      });
     };
     const up = () => {
-      resizeRef.current = null;
+      draggingRef.current = null;
+      setDraggingId(null);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
-      setResizing(null);
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   };
+
+  // Render every card in the saved order, self-healing against drift: drop ids with no card, then
+  // append any card missing from `order` (charts before tables) so nothing is ever hidden.
+  const chartById = new Map(charts.map((c) => [c.id, c]));
+  const tableById = new Map(tables.map((t) => [t.id, t]));
+  const seenIds = new Set<string>();
+  const orderedExisting = order.filter((id) => {
+    if (seenIds.has(id) || !(chartById.has(id) || tableById.has(id))) return false;
+    seenIds.add(id);
+    return true;
+  });
+  const renderOrder = [
+    ...orderedExisting,
+    ...[...charts, ...tables].map((c) => c.id).filter((id) => !seenIds.has(id)),
+  ];
 
   if (loadError && !ready) {
     return (
@@ -300,6 +503,27 @@ function DashboardInner() {
           <p className="text-sm text-foreground-muted">Build a view to explore the numbers behind your snapshot.</p>
         </div>
         <div className="flex items-center gap-2">
+          <div className="flex items-center rounded-full border border-border" role="group" aria-label="Grid columns">
+            <button
+              onClick={() => setCols((c) => clamp(c - 1, 1, MAX_COLS))}
+              disabled={cols <= 1}
+              className="rounded-l-full px-3 py-2.5 text-sm font-medium text-foreground-muted transition-colors hover:bg-surface-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label="Fewer columns"
+            >
+              −
+            </button>
+            <span className="min-w-[4rem] select-none text-center text-sm text-foreground-muted tabular-nums">
+              {effectiveCols} {effectiveCols === 1 ? 'col' : 'cols'}
+            </span>
+            <button
+              onClick={() => setCols((c) => clamp(c + 1, 1, MAX_COLS))}
+              disabled={cols >= MAX_COLS}
+              className="rounded-r-full px-3 py-2.5 text-sm font-medium text-foreground-muted transition-colors hover:bg-surface-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label="More columns"
+            >
+              +
+            </button>
+          </div>
           <button
             onClick={resetToDefault}
             className="rounded-full border border-border px-4 py-2.5 text-sm font-medium text-foreground-muted transition-colors hover:bg-surface-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -338,44 +562,73 @@ function DashboardInner() {
       <div
         ref={gridRef}
         className="grid gap-4"
-        style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${colMin}px, 1fr))` }}
+        style={{
+          gridTemplateColumns: `repeat(${effectiveCols}, minmax(0, 1fr))`,
+          gridAutoRows: `${rowHeight}px`,
+        }}
       >
-        {charts.map((chart) => (
-          <ChartCard
-            key={chart.id}
-            config={chart}
-            globalFilters={globalFilters}
-            granularity={globals.granularity}
-            onRemove={() => removeChart(chart.id)}
-            onEdit={() => setDialog({ mode: 'edit', config: chart })}
-            onResizePointerDown={onResizePointerDown}
-          />
-        ))}
-        {tables.map((table) => (
-          <TableCard
-            key={table.id}
-            config={table}
-            globalFilters={globalFilters}
-            onRemove={() => removeTable(table.id)}
-            onEdit={() => setDialog({ mode: 'edit-table', config: table })}
-            onChange={updateTable}
-            onResizePointerDown={onResizePointerDown}
-          />
-        ))}
+        {renderOrder.map((id) => {
+          const dragCls = draggingId === id ? 'opacity-70 outline-2 outline-dashed outline-primary rounded-card' : '';
+          const chart = chartById.get(id);
+          if (chart) {
+            const cs = Math.min(chart.colSpan ?? 1, effectiveCols);
+            const rs = Math.min(chart.rowSpan ?? 1, MAX_ROWSPAN);
+            return (
+              <div
+                key={id}
+                data-card-id={id}
+                className={`min-w-0 ${dragCls}`}
+                style={{ gridColumn: `span ${cs}`, gridRow: `span ${rs}` }}
+              >
+                <ChartCard
+                  config={chart}
+                  globalFilters={globalFilters}
+                  granularity={globals.granularity}
+                  onRemove={() => removeChart(id)}
+                  onEdit={() => setDialog({ mode: 'edit', config: chart })}
+                  onSpanResize={startSpanResize('chart', id, cs, rs)}
+                  onDragStart={startCardDrag(id)}
+                />
+              </div>
+            );
+          }
+          const table = tableById.get(id);
+          if (!table) return null;
+          const cs = Math.min(table.colSpan ?? 1, effectiveCols);
+          const rs = Math.min(table.rowSpan ?? 1, MAX_ROWSPAN);
+          return (
+            <div
+              key={id}
+              data-card-id={id}
+              className={`min-w-0 ${dragCls}`}
+              style={{ gridColumn: `span ${cs}`, gridRow: `span ${rs}` }}
+            >
+              <TableCard
+                config={table}
+                globalFilters={globalFilters}
+                onRemove={() => removeTable(id)}
+                onEdit={() => setDialog({ mode: 'edit-table', config: table })}
+                onChange={updateTable}
+                onSpanResize={startSpanResize('table', id, cs, rs)}
+                onDragStart={startCardDrag(id)}
+              />
+            </div>
+          );
+        })}
       </div>
 
-      {/* Live feedback while dragging the grid width. */}
-      {resizing && (
+      {/* Live ghost outline while dragging a card's edge to a new span. */}
+      {spanDrag && (
         <div className="pointer-events-none fixed inset-0 z-50">
           <div
-            className="absolute top-0 bottom-0 w-0.5 bg-primary/70"
-            style={{ left: resizing.x }}
+            className="absolute rounded-card border-2 border-primary bg-primary/5"
+            style={{ left: spanDrag.left, top: spanDrag.top, width: spanDrag.w, height: spanDrag.h }}
           />
           <div
             className="absolute -translate-x-1/2 rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground shadow-pop"
-            style={{ left: resizing.x, top: 16 }}
+            style={{ left: spanDrag.left + spanDrag.w / 2, top: spanDrag.top + 8 }}
           >
-            {resizing.cols} {resizing.cols === 1 ? 'column' : 'columns'} · {resizing.width}px
+            {spanDrag.cols} × {spanDrag.rows}
           </div>
         </div>
       )}

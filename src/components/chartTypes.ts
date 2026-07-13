@@ -46,6 +46,10 @@ export interface ChartConfig {
   dateBucket?: DateBucket;
   /** Keep only the top-N categories by measure (non-date axes only). */
   limit?: number;
+  /** Dashboard grid span, in columns. Defaults to 1. */
+  colSpan?: number;
+  /** Dashboard grid span, in rows. Defaults to 1. */
+  rowSpan?: number;
 }
 
 /** Default number of series a breakdown splits into (top-N by measure). */
@@ -169,6 +173,10 @@ export interface TableConfig {
   limit?: number;
   /** Append a grand-total footer row. */
   showTotals?: boolean;
+  /** Dashboard grid span, in columns. Defaults to 1. */
+  colSpan?: number;
+  /** Dashboard grid span, in rows. Defaults to 1. */
+  rowSpan?: number;
 }
 
 /**
@@ -235,6 +243,39 @@ export interface DashboardLayout {
   tables: TableConfig[];
   tiles: TileConfig[];
   globals: GlobalControls;
+  /**
+   * Unified render order of every card (chart or table) by id, so charts and tables can be
+   * freely interleaved by drag-and-drop. Optional for back-compat: dashboards saved before this
+   * existed are normalised by `migrateOrder` (charts first, then tables, in their array order).
+   */
+  order?: string[];
+}
+
+/**
+ * Normalise a persisted card order into a complete, de-duplicated list of the ids that actually
+ * exist. Keeps the saved order for known ids, drops stale ids, and appends any card missing from
+ * the list (charts before tables) — so both pre-order layouts and any drift render every card.
+ */
+export function migrateOrder(raw: unknown, charts: ChartConfig[], tables: TableConfig[]): string[] {
+  const ids = [...charts.map((c) => c.id), ...tables.map((t) => t.id)];
+  const known = new Set(ids);
+  const seen = new Set<string>();
+  const result: string[] = [];
+  if (Array.isArray(raw)) {
+    for (const x of raw) {
+      if (typeof x === 'string' && known.has(x) && !seen.has(x)) {
+        result.push(x);
+        seen.add(x);
+      }
+    }
+  }
+  for (const id of ids) {
+    if (!seen.has(id)) {
+      result.push(id);
+      seen.add(id);
+    }
+  }
+  return result;
 }
 
 /**

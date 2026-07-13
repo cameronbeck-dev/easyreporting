@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { migrateGlobals, DEFAULT_GLOBALS } from '@/components/chartTypes';
+import { migrateGlobals, migrateOrder, DEFAULT_GLOBALS } from '@/components/chartTypes';
+import type { ChartConfig, TableConfig } from '@/components/chartTypes';
+import { Aggregation } from '@/lib/data/types';
+
+const chart = (id: string): ChartConfig => ({
+  id, title: id, type: 'bar', datasetId: 'ds', x: 'x', y: 'y', aggregation: Aggregation.Sum,
+});
+const table = (id: string): TableConfig => ({
+  id, title: id, datasetId: 'ds', dimensions: ['d'], columns: [{ y: 'y', aggregation: Aggregation.Sum }],
+});
 
 describe('migrateGlobals', () => {
   it('returns defaults for empty / garbage input', () => {
@@ -40,5 +49,32 @@ describe('migrateGlobals', () => {
     };
     const g = migrateGlobals(current);
     expect(g).toEqual(current);
+  });
+});
+
+describe('migrateOrder', () => {
+  it('builds a default order (charts then tables) when none is saved', () => {
+    const charts = [chart('c1'), chart('c2')];
+    const tables = [table('t1')];
+    expect(migrateOrder(undefined, charts, tables)).toEqual(['c1', 'c2', 't1']);
+    expect(migrateOrder(null, charts, tables)).toEqual(['c1', 'c2', 't1']);
+  });
+
+  it('keeps a saved order that interleaves charts and tables', () => {
+    const charts = [chart('c1'), chart('c2')];
+    const tables = [table('t1')];
+    expect(migrateOrder(['t1', 'c2', 'c1'], charts, tables)).toEqual(['t1', 'c2', 'c1']);
+  });
+
+  it('drops stale ids and appends cards missing from the saved order', () => {
+    const charts = [chart('c1'), chart('c2')];
+    const tables = [table('t1')];
+    // 'gone' no longer exists; 'c2' and 't1' were never in the saved order.
+    expect(migrateOrder(['gone', 'c1'], charts, tables)).toEqual(['c1', 'c2', 't1']);
+  });
+
+  it('de-duplicates repeated ids', () => {
+    const charts = [chart('c1')];
+    expect(migrateOrder(['c1', 'c1'], charts, [])).toEqual(['c1']);
   });
 });
