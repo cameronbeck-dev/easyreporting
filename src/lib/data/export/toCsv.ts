@@ -1,7 +1,7 @@
 import Papa from 'papaparse';
-import type { RowsResult, AggregatedResult } from '../types';
-import { prettify } from '@/components/chartTypes';
-import type { ChartConfig } from '@/components/chartTypes';
+import type { RowsResult, AggregatedResult, TableResult } from '../types';
+import { prettify, tableColumnLabels } from '@/components/chartTypes';
+import type { ChartConfig, TableConfig } from '@/components/chartTypes';
 
 /**
  * Upper bound on rows returned by a single export. Exports run through the same
@@ -53,5 +53,17 @@ export function aggregatedToCsv(config: ChartConfig, result: AggregatedResult): 
       return v === null || v === undefined ? '' : v;
     }),
   ]);
+  return Papa.unparse({ fields, data });
+}
+
+/**
+ * Serialise an aggregated table to CSV — the grouped numbers exactly as shown on screen.
+ * Headers reuse the same labels as the table card (dimensions first, then measures), and rows
+ * come straight from the provider's TableResult, which already passed through
+ * AccessControlledProvider — so no additional access check is needed here.
+ */
+export function tableToCsv(config: TableConfig, result: TableResult): string {
+  const fields = tableColumnLabels(config);
+  const data = result.rows.map((row) => row.map((v) => (v === null || v === undefined ? '' : v)));
   return Papa.unparse({ fields, data });
 }

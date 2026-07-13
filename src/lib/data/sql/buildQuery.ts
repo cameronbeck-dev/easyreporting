@@ -1,4 +1,12 @@
-import type { Filter, AggregatedQuery, RowsQuery, SummaryQuery, ComputedMeasureSpec } from '../types';
+import type {
+  Filter,
+  AggregatedQuery,
+  RowsQuery,
+  SummaryQuery,
+  ComputedMeasureSpec,
+  TableQuery,
+  OrderSpec,
+} from '../types';
 import { Aggregation } from '../types';
 import type { ColumnSchema } from '../types';
 import type { TableSource, JoinStep } from '../types';
@@ -210,6 +218,113 @@ export function buildSummary(
     .filter(Boolean)
     .join(' ');
 
+  return { text, values };
+}
+
+/**
+ * A grouped/pivot table query: one or two dimensions down the rows, N measures across.
+ *
+ * Emits a single grouped statement — never client-side fan-out — reusing measureExpr (so
+ * computed fields push down to SQL just like charts), buildWhere, and the identifier guards.
+ * Dimensions are aliased d0/d1 and measures m0..mN; orderBy terms reference those aliases so
+ * ORDER BY works identically in the plain, subquery, and CTE shapes below.
+ *
+ * TOP-N semantics:
+ *   • one dimension  → keep the top-N rows by the ranking measure, then re-sort for display;
+ *   • two dimensions → keep the top-N PRIMARY dimension values (ranked by the ranking
+ *     measure's group total when re-summable — Sum/Count — else by child-row count), then
+ *     return ALL their child rows so no group is chopped mid-way.
+ * The ranking measure is the first measure display-sorted on (if any is), else the first
+ * measure descending — so "sort revenue smallest" yields the N smallest, while a dimension
+ * A–Z sort still ranks the surviving rows by the leading measure.
+ */
+export function buildTable(
+  src: TableSource,
+  q: TableQuery,
+  allowedCols: Set<string>,
+  columns: ColumnSchema[],
+): BuiltQuery {
+  if (q.dimensions.length === 0) throw new Error('A table needs at least one dimension');
+  if (q.measures.length === 0) throw new Error('A table needs at least one measure');
+
+  for (const d of q.dimensions) assertKnown(d, allowedCols);
+  for (const m of q.measures) {
+    // Computed measures validate their dependency columns inside measureExpr; Count ignores
+    // its column. Plain aggregates must reference an allowed column.
+    if (m.measure) continue;
+    if (m.aggregation !== Aggregation.Count) assertKnown(m.y, allowedCols);
+  }
+  void columns; // reserved for future date-bucketed dimensions; dimensions are plain today.
+
+  const filters = q.filters ?? [];
+  const { clause, values } = buildWhere(filters, allowedCols, 1);
+
+  const dimExprs = q.dimensions.map((d) => quoteIdent(d));
+  const dimSelects = dimExprs.map((e, i) => `${e} AS d${i}`);
+  const measureSelects = q.measures.map(
+    (m, i) => `${measureExpr(m.measure, m.y, m.aggregation, allowedCols)} AS m${i}`,
+  );
+  const selectList = [...dimSelects, ...measureSelects].join(', ');
+  const groupBy = `GROUP BY ${dimExprs.join(', ')}`;
+
+  // Map an OrderSpec to an alias-based ORDER BY term. Only dimension names and m{i} aliases
+  // are accepted — anything else is rejected, so orderBy can't smuggle in an arbitrary column.
+  const dimIndex = new Map(q.dimensions.map((d, i) => [d, i] as const));
+  const orderTerm = (o: OrderSpec): string => {
+    const dir = o.dir === 'asc' ? 'ASC' : 'DESC';
+    if (dimIndex.has(o.key)) return `d${dimIndex.get(o.key)} ${dir}`;
+    if (/^m\d+$/.test(o.key)) return `${o.key} ${dir}`;
+    throw new Error(`Invalid orderBy key: "${o.key}"`);
+  };
+  const displayOrder: OrderSpec[] =
+    q.orderBy && q.orderBy.length > 0 ? q.orderBy : [{ key: 'm0', dir: 'desc' }];
+  const displayOrderBy = `ORDER BY ${displayOrder.map(orderTerm).join(', ')}`;
+
+  const topN = clampTopN(q.limit);
+
+  // No top-N cap: one plain grouped query.
+  if (topN === null) {
+    const text = [`SELECT ${selectList}`, buildFrom(src), clause, groupBy, displayOrderBy]
+      .filter(Boolean)
+      .join(' ');
+    return { text, values };
+  }
+
+  // Ranking measure: honor a measure display-sort; otherwise the first measure, descending.
+  const measureSort = displayOrder.find((o) => /^m\d+$/.test(o.key));
+  const rankIdx = measureSort ? Number(measureSort.key.slice(1)) : 0;
+  const rankDir = measureSort ? (measureSort.dir === 'asc' ? 'ASC' : 'DESC') : 'DESC';
+
+  if (q.dimensions.length === 1) {
+    const inner = [
+      `SELECT ${selectList}`,
+      buildFrom(src),
+      clause,
+      groupBy,
+      `ORDER BY m${rankIdx} ${rankDir}`,
+      `LIMIT ${topN}`,
+    ]
+      .filter(Boolean)
+      .join(' ');
+    return { text: `SELECT * FROM (${inner}) t ${displayOrderBy}`, values };
+  }
+
+  // Two dimensions: rank the primary dimension, keep the top-N, then all their child rows.
+  const rankMeasure = q.measures[rankIdx];
+  const reSummable =
+    rankMeasure.aggregation === Aggregation.Sum || rankMeasure.aggregation === Aggregation.Count;
+  const rankAgg = reSummable ? `SUM(m${rankIdx})` : 'COUNT(*)';
+  const text = [
+    `WITH grouped AS (SELECT ${selectList}`,
+    buildFrom(src),
+    clause,
+    `${groupBy})`,
+    `, ranked AS (SELECT d0 AS rk FROM grouped GROUP BY d0 ORDER BY ${rankAgg} ${rankDir} LIMIT ${topN})`,
+    `SELECT g.* FROM grouped g JOIN ranked r ON g.d0 IS NOT DISTINCT FROM r.rk`,
+    displayOrderBy,
+  ]
+    .filter(Boolean)
+    .join(' ');
   return { text, values };
 }
 

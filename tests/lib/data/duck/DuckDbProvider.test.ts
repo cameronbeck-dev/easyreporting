@@ -109,4 +109,76 @@ describe('DuckDbProvider', () => {
     expect(res.metrics[0].value).toBe(175.5);
     expect(res.metrics[1].value).toBe(3);
   });
+
+  describe('queryTable (real DuckDB — validates the generated SQL executes)', () => {
+    it('single dimension, multiple measures, default order (first measure desc)', async () => {
+      const res = await provider.queryTable('test', {
+        dimensions: ['region'],
+        measures: [
+          { y: 'amount', aggregation: Aggregation.Sum },
+          { y: 'qty', aggregation: Aggregation.Sum },
+        ],
+        filters: [],
+      });
+      expect(res.columns.map((c) => c.key)).toEqual(['region', 'm0', 'm1']);
+      // NSW amount=125.5, VIC=50 → NSW first (desc by m0).
+      expect(res.rows[0][0]).toBe('NSW');
+      expect(res.rows[0][1]).toBe(125.5);
+      expect(res.rows[0][2]).toBe(3); // NSW qty = 2 + 1
+      expect(res.rows[1]).toEqual(['VIC', 50, 3]);
+    });
+
+    it('sorts a dimension A–Z when asked', async () => {
+      const res = await provider.queryTable('test', {
+        dimensions: ['region'],
+        measures: [{ y: 'amount', aggregation: Aggregation.Sum }],
+        orderBy: [{ key: 'region', dir: 'asc' }],
+        filters: [],
+      });
+      expect(res.rows.map((r) => r[0])).toEqual(['NSW', 'VIC']);
+    });
+
+    it('single-dimension top-N by smallest measure (subquery ranks, then re-sorts)', async () => {
+      const res = await provider.queryTable('test', {
+        dimensions: ['region'],
+        measures: [{ y: 'amount', aggregation: Aggregation.Sum }],
+        orderBy: [{ key: 'm0', dir: 'asc' }],
+        limit: 1,
+      });
+      // Smallest amount is VIC (50); top-1 by smallest keeps only VIC.
+      expect(res.rows).toHaveLength(1);
+      expect(res.rows[0][0]).toBe('VIC');
+    });
+
+    it('two dimensions: ranking CTE + IS NOT DISTINCT FROM + grouped ordering all execute', async () => {
+      const res = await provider.queryTable('test', {
+        dimensions: ['region', 'd'],
+        measures: [{ y: 'amount', aggregation: Aggregation.Sum }],
+        orderBy: [
+          { key: 'region', dir: 'asc' },
+          { key: 'm0', dir: 'desc' },
+        ],
+        limit: 5,
+        filters: [],
+      });
+      expect(res.columns.map((c) => c.key)).toEqual(['region', 'd', 'm0']);
+      // Primary dimension A–Z: all NSW rows before VIC.
+      const regions = res.rows.map((r) => r[0]);
+      expect(regions).toEqual(['NSW', 'NSW', 'VIC']);
+      // Within NSW, ordered by amount desc: 2024-01-10 (100) before 2024-02-05 (25.5).
+      const nsw = res.rows.filter((r) => r[0] === 'NSW');
+      expect(nsw[0][2]).toBe(100);
+      expect(nsw[1][2]).toBe(25.5);
+    });
+
+    it('computes a totals-compatible Count measure', async () => {
+      const res = await provider.queryTable('test', {
+        dimensions: ['region'],
+        measures: [{ y: '__count__', aggregation: Aggregation.Count }],
+        filters: [],
+      });
+      const nsw = res.rows.find((r) => r[0] === 'NSW')!;
+      expect(nsw[1]).toBe(2);
+    });
+  });
 });

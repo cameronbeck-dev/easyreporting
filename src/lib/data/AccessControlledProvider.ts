@@ -11,6 +11,9 @@ import type {
   SummaryQuery,
   SummaryResult,
   SummaryMetric,
+  TableQuery,
+  TableResult,
+  TableMeasure,
   Filter,
 } from './types';
 import { Aggregation } from './types';
@@ -211,6 +214,40 @@ export class AccessControlledProvider implements DataProvider {
 
     const filters = [...(q.filters ?? []), ...this.securityFilters()];
     return this.inner.querySummary(datasetId, { metrics: delegatedMetrics, filters });
+  }
+
+  async queryTable(datasetId: string, q: TableQuery): Promise<TableResult> {
+    // Dimensions are real (non-computed) grouping columns — must be allowed source columns.
+    for (const d of q.dimensions) {
+      this.assertColumn(d);
+    }
+
+    // Measures mirror querySummary: computed measures carry a pushed-down formula (so the DB
+    // aggregates it); plain measures keep their column/aggregation. `measure` is always set
+    // here — never taken from the client — so a plain measure can't smuggle one in.
+    const delegatedMeasures: TableMeasure[] = q.measures.map((m) => {
+      const cf = this.isVisibleComputedField(m.y);
+      if (cf) {
+        return {
+          y: m.y,
+          aggregation: m.aggregation,
+          measure: { expression: cf.expression, dependencies: cf.dependencies },
+        };
+      }
+      if (m.aggregation !== Aggregation.Count) {
+        this.assertColumn(m.y);
+      }
+      return { y: m.y, aggregation: m.aggregation, measure: undefined };
+    });
+
+    for (const f of q.filters ?? []) {
+      this.assertColumn(f.column);
+    }
+
+    // orderBy is validated structurally by the query builder (dimension names / m{i} aliases
+    // only), and dimensions are already access-checked above — nothing else to assert.
+    const filters = [...(q.filters ?? []), ...this.securityFilters()];
+    return this.inner.queryTable(datasetId, { ...q, measures: delegatedMeasures, filters });
   }
 
   async queryRows(datasetId: string, q: RowsQuery): Promise<RowsResult> {

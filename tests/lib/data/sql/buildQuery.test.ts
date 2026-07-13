@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildWhere, buildAggregated, buildSummary, buildRows, buildFrom } from '@/lib/data/sql/buildQuery';
+import { buildWhere, buildAggregated, buildSummary, buildRows, buildFrom, buildTable } from '@/lib/data/sql/buildQuery';
 import { Aggregation } from '@/lib/data/types';
 import type { ColumnSchema, TableSource } from '@/lib/data/types';
 
@@ -479,5 +479,235 @@ describe('buildRows — multi-table explicit projection', () => {
     );
     expect(text).toContain('INNER JOIN');
     expect(text).toContain('SUM("orders"."revenue")');
+  });
+});
+
+// ── buildTable ───────────────────────────────────────────────────────────────
+
+describe('buildTable', () => {
+  const tableCols: ColumnSchema[] = [
+    { name: 'region', type: 'string' },
+    { name: 'category', type: 'string' },
+    { name: 'revenue', type: 'number' },
+    { name: 'cost', type: 'number' },
+  ];
+
+  it('single dimension, single measure → grouped SELECT with aliases, default order', () => {
+    const { text, values } = buildTable(
+      singleSrc,
+      { dimensions: ['region'], measures: [{ y: 'revenue', aggregation: Aggregation.Sum }] },
+      allCols,
+      tableCols,
+    );
+    expect(text).toBe(
+      'SELECT "region" AS d0, SUM("revenue") AS m0 FROM "public"."sales" GROUP BY "region" ORDER BY m0 DESC',
+    );
+    expect(values).toEqual([]);
+  });
+
+  it('multiple measures aliased m0..mN', () => {
+    const { text } = buildTable(
+      singleSrc,
+      {
+        dimensions: ['region'],
+        measures: [
+          { y: 'revenue', aggregation: Aggregation.Sum },
+          { y: 'cost', aggregation: Aggregation.Avg },
+        ],
+      },
+      allCols,
+      tableCols,
+    );
+    expect(text).toContain('SUM("revenue") AS m0');
+    expect(text).toContain('AVG("cost") AS m1');
+  });
+
+  it('Count measure uses COUNT(*)', () => {
+    const { text } = buildTable(
+      singleSrc,
+      { dimensions: ['region'], measures: [{ y: '__count__', aggregation: Aggregation.Count }] },
+      allCols,
+      tableCols,
+    );
+    expect(text).toContain('COUNT(*) AS m0');
+  });
+
+  it('orderBy on a dimension maps to its alias A–Z / Z–A', () => {
+    const { text } = buildTable(
+      singleSrc,
+      {
+        dimensions: ['region'],
+        measures: [{ y: 'revenue', aggregation: Aggregation.Sum }],
+        orderBy: [{ key: 'region', dir: 'asc' }],
+      },
+      allCols,
+      tableCols,
+    );
+    expect(text).toContain('ORDER BY d0 ASC');
+  });
+
+  it('single dimension top-N wraps in a subquery ranked by the sort measure', () => {
+    const { text } = buildTable(
+      singleSrc,
+      {
+        dimensions: ['region'],
+        measures: [{ y: 'revenue', aggregation: Aggregation.Sum }],
+        orderBy: [{ key: 'm0', dir: 'asc' }],
+        limit: 5,
+      },
+      allCols,
+      tableCols,
+    );
+    // Inner ranks by the chosen measure/direction (smallest here), outer re-sorts for display.
+    expect(text).toContain('ORDER BY m0 ASC LIMIT 5');
+    expect(text).toMatch(/SELECT \* FROM \(.*\) t ORDER BY m0 ASC/);
+  });
+
+  it('two dimensions with top-N uses a ranking CTE keyed on the primary dimension', () => {
+    const { text } = buildTable(
+      singleSrc,
+      {
+        dimensions: ['region', 'category'],
+        measures: [{ y: 'revenue', aggregation: Aggregation.Sum }],
+        orderBy: [
+          { key: 'region', dir: 'asc' },
+          { key: 'm0', dir: 'desc' },
+        ],
+        limit: 3,
+      },
+      allCols,
+      tableCols,
+    );
+    expect(text).toContain('WITH grouped AS');
+    expect(text).toContain('ranked AS (SELECT d0 AS rk FROM grouped GROUP BY d0 ORDER BY SUM(m0) DESC LIMIT 3)');
+    expect(text).toContain('JOIN ranked r ON g.d0 IS NOT DISTINCT FROM r.rk');
+    expect(text).toContain('ORDER BY d0 ASC, m0 DESC');
+  });
+
+  it('two dimensions with a non-re-summable rank measure falls back to COUNT(*)', () => {
+    const { text } = buildTable(
+      singleSrc,
+      {
+        dimensions: ['region', 'category'],
+        measures: [{ y: 'revenue', aggregation: Aggregation.Avg }],
+        orderBy: [{ key: 'region', dir: 'asc' }, { key: 'm0', dir: 'desc' }],
+        limit: 3,
+      },
+      allCols,
+      tableCols,
+    );
+    expect(text).toContain('ORDER BY COUNT(*) DESC LIMIT 3');
+  });
+
+  it('a computed measure pushes the formula down instead of aggregation(column)', () => {
+    const { text } = buildTable(
+      singleSrc,
+      {
+        dimensions: ['region'],
+        measures: [
+          {
+            y: 'margin',
+            aggregation: Aggregation.Sum,
+            measure: { expression: 'revenue - cost', dependencies: ['revenue', 'cost'] },
+          },
+        ],
+      },
+      allCols,
+      tableCols,
+    );
+    expect(text).toContain('SUM("revenue") - SUM("cost")');
+  });
+
+  it('filters are parameterised and included', () => {
+    const { text, values } = buildTable(
+      singleSrc,
+      {
+        dimensions: ['region'],
+        measures: [{ y: 'revenue', aggregation: Aggregation.Sum }],
+        filters: [{ column: 'category', operator: 'eq', value: 'A' }],
+      },
+      allCols,
+      tableCols,
+    );
+    expect(text).toContain('WHERE "category" = $1');
+    expect(values).toEqual(['A']);
+  });
+
+  it('disallowed dimension throws', () => {
+    expect(() =>
+      buildTable(
+        singleSrc,
+        { dimensions: ['secret'], measures: [{ y: 'revenue', aggregation: Aggregation.Sum }] },
+        allCols,
+        tableCols,
+      ),
+    ).toThrow();
+  });
+
+  it('disallowed measure column throws', () => {
+    expect(() =>
+      buildTable(
+        singleSrc,
+        { dimensions: ['region'], measures: [{ y: 'secret', aggregation: Aggregation.Sum }] },
+        allCols,
+        tableCols,
+      ),
+    ).toThrow();
+  });
+
+  it('invalid orderBy key throws', () => {
+    expect(() =>
+      buildTable(
+        singleSrc,
+        {
+          dimensions: ['region'],
+          measures: [{ y: 'revenue', aggregation: Aggregation.Sum }],
+          orderBy: [{ key: 'revenue', dir: 'asc' }],
+        },
+        allCols,
+        tableCols,
+      ),
+    ).toThrow('Invalid orderBy key');
+  });
+
+  it('no dimensions throws', () => {
+    expect(() =>
+      buildTable(singleSrc, { dimensions: [], measures: [{ y: 'revenue', aggregation: Aggregation.Sum }] }, allCols, tableCols),
+    ).toThrow();
+  });
+
+  it('no measures throws', () => {
+    expect(() =>
+      buildTable(singleSrc, { dimensions: ['region'], measures: [] }, allCols, tableCols),
+    ).toThrow();
+  });
+
+  it('multi-table: uses JOIN in FROM and the grouped CTE', () => {
+    const multiSrc: TableSource = {
+      schemaName: 'public',
+      tableName: 'orders',
+      joins: [
+        { tableName: 'customers', joinType: 'inner', leftTable: 'orders', leftColumn: 'customer_id', rightColumn: 'id' },
+      ],
+    };
+    const qualCols = new Set(['orders.region', 'customers.name', 'orders.revenue']);
+    const qualColumns: ColumnSchema[] = [
+      { name: 'orders.region', type: 'string' },
+      { name: 'customers.name', type: 'string' },
+      { name: 'orders.revenue', type: 'number' },
+    ];
+    const { text } = buildTable(
+      multiSrc,
+      {
+        dimensions: ['customers.name', 'orders.region'],
+        measures: [{ y: 'orders.revenue', aggregation: Aggregation.Sum }],
+        limit: 5,
+      },
+      qualCols,
+      qualColumns,
+    );
+    expect(text).toContain('INNER JOIN');
+    expect(text).toContain('"customers"."name" AS d0');
+    expect(text).toContain('SUM("orders"."revenue") AS m0');
   });
 });

@@ -89,6 +89,62 @@ export interface AggregatedResult {
   series: { name: string; data: number[] }[];
 }
 
+/** One aggregated measure (column) of a table. */
+export interface TableMeasure {
+  /** Source column name, or a computed-field name (self-aggregating). */
+  y: string;
+  aggregation: Aggregation;
+  /**
+   * When set, the measure is this computed-field expression (aggregated in SQL) instead of
+   * `aggregation(y)`. Trusted; see ComputedMeasureSpec.
+   */
+  measure?: ComputedMeasureSpec;
+}
+
+/**
+ * A single ORDER BY term. `key` is either a dimension column name or a measure alias
+ * (`m0`, `m1`, …). Assembled by the client so top-N and display sort stay consistent.
+ */
+export interface OrderSpec {
+  key: string;
+  dir: 'asc' | 'desc';
+}
+
+/**
+ * A grouped/pivot query: one or two dimensions down the rows, one-or-more measures across
+ * the columns — the aggregated-table analog of AggregatedQuery. Emits a single grouped
+ * query (SELECT dims, m0..mN FROM ... GROUP BY dims), never client-side fan-out.
+ */
+export interface TableQuery {
+  /** GROUP BY columns, in order. 1 or 2 for now (array leaves room for more later). */
+  dimensions: string[];
+  /** Aggregated measures, in output order (aliased m0..mN). */
+  measures: TableMeasure[];
+  filters?: Filter[];
+  /** ORDER BY terms, applied in order. Referenced keys are dimensions or `m{i}` aliases. */
+  orderBy?: OrderSpec[];
+  /**
+   * Keep only the top-N values of the PRIMARY dimension (by the first re-summable measure,
+   * else row count). Clamped by the query builder. Omit for no limit.
+   */
+  limit?: number;
+}
+
+/** A resolved output column of a table result. */
+export interface TableColumnMeta {
+  /** Dimension column name, or measure alias `m{i}`. */
+  key: string;
+  /** Human-friendly header. */
+  label: string;
+  type: ColumnType;
+}
+
+/** A grouped table result: column metadata + rows as arrays aligned to `columns`. */
+export interface TableResult {
+  columns: TableColumnMeta[];
+  rows: (string | number | null)[][];
+}
+
 export interface RowsQuery {
   filters?: Filter[];
   page: number;

@@ -11,6 +11,8 @@ import type {
   RowsResult,
   SummaryQuery,
   SummaryResult,
+  TableQuery,
+  TableResult,
   Filter,
 } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
@@ -19,6 +21,7 @@ interface CapturedArgs {
   aggregated?: { datasetId: string; q: AggregatedQuery };
   summary?: { datasetId: string; q: SummaryQuery };
   rows?: { datasetId: string; q: RowsQuery };
+  table?: { datasetId: string; q: TableQuery };
 }
 
 function makeStubProvider(captured: CapturedArgs): DataProvider {
@@ -63,6 +66,16 @@ function makeStubProvider(captured: CapturedArgs): DataProvider {
         total: 2,
         page: 1,
         pageSize: 10,
+      };
+    },
+    async queryTable(datasetId: string, q: TableQuery): Promise<TableResult> {
+      captured.table = { datasetId, q };
+      return {
+        columns: [
+          ...q.dimensions.map((d) => ({ key: d, label: d, type: 'string' as const })),
+          ...q.measures.map((_, i) => ({ key: `m${i}`, label: `m${i}`, type: 'number' as const })),
+        ],
+        rows: [['North', 100]],
       };
     },
   };
@@ -374,6 +387,84 @@ describe('AccessControlledProvider', () => {
       ).rejects.toBeInstanceOf(AccessError);
     });
   });
+
+  describe('queryTable', () => {
+    it('injects the tenant isolation filter', async () => {
+      const captured: CapturedArgs = {};
+      const ctx = makeUserContext({ tenantId: 'acme' });
+      const provider = new AccessControlledProvider(makeStubProvider(captured), ctx);
+
+      await provider.queryTable('sales', {
+        dimensions: ['region'],
+        measures: [{ y: 'revenue', aggregation: Aggregation.Sum }],
+      });
+
+      const filters = captured.table!.q.filters as Filter[];
+      const isoFilter = filters.find((f) => f.column === 'tenant_id');
+      expect(isoFilter).toBeDefined();
+      expect(isoFilter!.operator).toBe('eq');
+      expect(isoFilter!.value).toBe('acme');
+    });
+
+    it('a disallowed dimension throws AccessError', async () => {
+      const captured: CapturedArgs = {};
+      const ctx = makeUserContext({ allowedColumns: ['revenue'] });
+      const provider = new AccessControlledProvider(makeStubProvider(captured), ctx);
+
+      await expect(
+        provider.queryTable('sales', {
+          dimensions: ['cost'],
+          measures: [{ y: 'revenue', aggregation: Aggregation.Sum }],
+        }),
+      ).rejects.toBeInstanceOf(AccessError);
+    });
+
+    it('a disallowed measure column throws AccessError', async () => {
+      const captured: CapturedArgs = {};
+      const ctx = makeUserContext({ allowedColumns: ['region'] });
+      const provider = new AccessControlledProvider(makeStubProvider(captured), ctx);
+
+      await expect(
+        provider.queryTable('sales', {
+          dimensions: ['region'],
+          measures: [{ y: 'cost', aggregation: Aggregation.Sum }],
+        }),
+      ).rejects.toBeInstanceOf(AccessError);
+    });
+
+    it('Count measures skip the column check', async () => {
+      const captured: CapturedArgs = {};
+      const ctx = makeUserContext({ allowedColumns: ['region'] });
+      const provider = new AccessControlledProvider(makeStubProvider(captured), ctx);
+
+      await expect(
+        provider.queryTable('sales', {
+          dimensions: ['region'],
+          measures: [{ y: '__count__', aggregation: Aggregation.Count }],
+        }),
+      ).resolves.toBeDefined();
+    });
+
+    it('strips any client-supplied measure spec on a plain measure', async () => {
+      const captured: CapturedArgs = {};
+      const ctx = makeUserContext({ allowedColumns: ['revenue', 'region'] });
+      const provider = new AccessControlledProvider(makeStubProvider(captured), ctx);
+
+      await provider.queryTable('sales', {
+        dimensions: ['region'],
+        measures: [
+          {
+            y: 'revenue',
+            aggregation: Aggregation.Sum,
+            measure: { expression: 'revenue * 1000', dependencies: ['revenue'] },
+          },
+        ],
+      });
+
+      // The wrapper must clear the smuggled measure — a plain column can never carry one.
+      expect(captured.table!.q.measures[0].measure).toBeUndefined();
+    });
+  });
 });
 
 // ── MULTI-TABLE TESTS ────────────────────────────────────────────────────────
@@ -419,6 +510,16 @@ function makeMultiTableStubProvider(captured: CapturedArgs): DataProvider {
         total: 1,
         page: 1,
         pageSize: 10,
+      };
+    },
+    async queryTable(datasetId: string, q: TableQuery): Promise<TableResult> {
+      captured.table = { datasetId, q };
+      return {
+        columns: [
+          ...q.dimensions.map((d) => ({ key: d, label: d, type: 'string' as const })),
+          ...q.measures.map((_, i) => ({ key: `m${i}`, label: `m${i}`, type: 'number' as const })),
+        ],
+        rows: [['North', 100]],
       };
     },
   };

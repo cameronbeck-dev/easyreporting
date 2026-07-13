@@ -8,7 +8,16 @@
 //
 // File datasets are always single-table (a folder of files becomes one Parquet), so
 // there is no JOIN handling here.
-import type { Filter, AggregatedQuery, RowsQuery, SummaryQuery, ColumnSchema, ComputedMeasureSpec } from '../types';
+import type {
+  Filter,
+  AggregatedQuery,
+  RowsQuery,
+  SummaryQuery,
+  ColumnSchema,
+  ComputedMeasureSpec,
+  TableQuery,
+  OrderSpec,
+} from '../types';
 import { Aggregation } from '../types';
 import { quoteIdent, assertKnown, clampTopN } from '../sql/identifiers';
 import { parseComputedExpression } from '../computed/parser';
@@ -200,6 +209,96 @@ export function buildDuckSummary(
     .filter(Boolean)
     .join(' ');
 
+  return { text, values };
+}
+
+/**
+ * DuckDB analog of sql/buildQuery.ts's buildTable — same grouped-table semantics, same
+ * dimension/measure aliasing and top-N rules (see that function's doc), speaking DuckDB's
+ * dialect (read_parquet source, IN (...) lists via buildDuckWhere). File datasets are always
+ * single-table, so there is no JOIN handling.
+ */
+export function buildDuckTable(
+  parquetLiteral: string,
+  q: TableQuery,
+  allowedCols: Set<string>,
+  columns: ColumnSchema[],
+): BuiltQuery {
+  if (q.dimensions.length === 0) throw new Error('A table needs at least one dimension');
+  if (q.measures.length === 0) throw new Error('A table needs at least one measure');
+
+  for (const d of q.dimensions) assertKnown(d, allowedCols);
+  for (const m of q.measures) {
+    if (m.measure) continue;
+    if (m.aggregation !== Aggregation.Count) assertKnown(m.y, allowedCols);
+  }
+  void columns; // reserved for future date-bucketed dimensions; dimensions are plain today.
+
+  const filters = q.filters ?? [];
+  const { clause, values } = buildDuckWhere(filters, allowedCols, 1);
+
+  const dimExprs = q.dimensions.map((d) => quoteIdent(d));
+  const dimSelects = dimExprs.map((e, i) => `${e} AS d${i}`);
+  const measureSelects = q.measures.map(
+    (m, i) => `${measureExpr(m.measure, m.y, m.aggregation, allowedCols)} AS m${i}`,
+  );
+  const selectList = [...dimSelects, ...measureSelects].join(', ');
+  const groupBy = `GROUP BY ${dimExprs.join(', ')}`;
+  const from = `FROM read_parquet(${parquetLiteral})`;
+
+  const dimIndex = new Map(q.dimensions.map((d, i) => [d, i] as const));
+  const orderTerm = (o: OrderSpec): string => {
+    const dir = o.dir === 'asc' ? 'ASC' : 'DESC';
+    if (dimIndex.has(o.key)) return `d${dimIndex.get(o.key)} ${dir}`;
+    if (/^m\d+$/.test(o.key)) return `${o.key} ${dir}`;
+    throw new Error(`Invalid orderBy key: "${o.key}"`);
+  };
+  const displayOrder: OrderSpec[] =
+    q.orderBy && q.orderBy.length > 0 ? q.orderBy : [{ key: 'm0', dir: 'desc' }];
+  const displayOrderBy = `ORDER BY ${displayOrder.map(orderTerm).join(', ')}`;
+
+  const topN = clampTopN(q.limit);
+
+  if (topN === null) {
+    const text = [`SELECT ${selectList}`, from, clause, groupBy, displayOrderBy]
+      .filter(Boolean)
+      .join(' ');
+    return { text, values };
+  }
+
+  const measureSort = displayOrder.find((o) => /^m\d+$/.test(o.key));
+  const rankIdx = measureSort ? Number(measureSort.key.slice(1)) : 0;
+  const rankDir = measureSort ? (measureSort.dir === 'asc' ? 'ASC' : 'DESC') : 'DESC';
+
+  if (q.dimensions.length === 1) {
+    const inner = [
+      `SELECT ${selectList}`,
+      from,
+      clause,
+      groupBy,
+      `ORDER BY m${rankIdx} ${rankDir}`,
+      `LIMIT ${topN}`,
+    ]
+      .filter(Boolean)
+      .join(' ');
+    return { text: `SELECT * FROM (${inner}) t ${displayOrderBy}`, values };
+  }
+
+  const rankMeasure = q.measures[rankIdx];
+  const reSummable =
+    rankMeasure.aggregation === Aggregation.Sum || rankMeasure.aggregation === Aggregation.Count;
+  const rankAgg = reSummable ? `SUM(m${rankIdx})` : 'COUNT(*)';
+  const text = [
+    `WITH grouped AS (SELECT ${selectList}`,
+    from,
+    clause,
+    `${groupBy})`,
+    `, ranked AS (SELECT d0 AS rk FROM grouped GROUP BY d0 ORDER BY ${rankAgg} ${rankDir} LIMIT ${topN})`,
+    `SELECT g.* FROM grouped g JOIN ranked r ON g.d0 IS NOT DISTINCT FROM r.rk`,
+    displayOrderBy,
+  ]
+    .filter(Boolean)
+    .join(' ');
   return { text, values };
 }
 

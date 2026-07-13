@@ -20,10 +20,13 @@ import type {
   RowsResult,
   SummaryQuery,
   SummaryResult,
+  TableQuery,
+  TableResult,
+  TableColumnMeta,
 } from './types';
 import { Aggregation } from './types';
 import { queryDuck, parquetLiteral, toNumber, coerceByType } from './duck/connection';
-import { buildDuckAggregated, buildDuckSummary, buildDuckRows } from './duck/buildDuckQuery';
+import { buildDuckAggregated, buildDuckSummary, buildDuckRows, buildDuckTable } from './duck/buildDuckQuery';
 import { formatBucketKey } from './dateBuckets';
 
 interface FileDataset {
@@ -104,6 +107,42 @@ export class DuckDbProvider implements DataProvider {
     }));
 
     return { metrics };
+  }
+
+  async queryTable(datasetId: string, q: TableQuery): Promise<TableResult> {
+    if (datasetId !== this.dataset.id) throw new Error(`Unknown dataset: ${datasetId}`);
+
+    const columns = this.getColumns();
+    const { text, values } = buildDuckTable(this.parquet, q, this.getAllowedCols(), columns);
+    const rowsRaw = await queryDuck(text, values);
+
+    const typeByName = new Map(columns.map((c) => [c.name, c.type]));
+    const colMeta: TableColumnMeta[] = [
+      ...q.dimensions.map((d) => ({
+        key: d,
+        label: d,
+        type: typeByName.get(d) ?? 'string',
+      })),
+      ...q.measures.map((m, i) => ({ key: `m${i}`, label: m.y, type: 'number' as const })),
+    ];
+
+    const rows: (string | number | null)[][] = rowsRaw.map((r) => {
+      const out: (string | number | null)[] = [];
+      q.dimensions.forEach((d, i) => {
+        const v = coerceByType(r[`d${i}`], typeByName.get(d) ?? 'string');
+        if (v === null || v === undefined) out.push(null);
+        else if (v instanceof Date) out.push(v.toISOString());
+        else if (typeof v === 'boolean') out.push(String(v));
+        else out.push(v as string | number);
+      });
+      q.measures.forEach((_, i) => {
+        const v = r[`m${i}`];
+        out.push(v === null || v === undefined ? null : toNumber(v));
+      });
+      return out;
+    });
+
+    return { columns: colMeta, rows };
   }
 
   async queryRows(datasetId: string, q: RowsQuery): Promise<RowsResult> {

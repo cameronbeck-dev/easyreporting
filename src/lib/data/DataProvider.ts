@@ -7,6 +7,8 @@ import type {
   RowsResult,
   SummaryQuery,
   SummaryResult,
+  TableQuery,
+  TableResult,
 } from './types';
 
 export interface DataProvider {
@@ -16,4 +18,6 @@ export interface DataProvider {
   queryRows(datasetId: string, q: RowsQuery): Promise<RowsResult>;
   /** Headline totals across the whole (filtered) dataset — no grouping. */
   querySummary(datasetId: string, q: SummaryQuery): Promise<SummaryResult>;
+  /** Grouped/pivot table: one or two dimensions down the rows, N measures across. */
+  queryTable(datasetId: string, q: TableQuery): Promise<TableResult>;
 }

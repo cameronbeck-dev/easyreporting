@@ -6,6 +6,7 @@ import { Aggregation } from '@/lib/data/types';
 import type { TileConfig } from './chartTypes';
 import { metricLabel, prettify, aggregationOptionLabel } from './chartTypes';
 import { fieldColor } from './fieldColors';
+import { formatMetric } from './formatNumber';
 import { postJson } from '@/lib/api/client';
 
 interface Props {
@@ -28,15 +29,6 @@ function tileLabel(t: TileConfig, isComputed: boolean): string {
 
 function tileColorKey(t: TileConfig): string {
   return t.aggregation === Aggregation.Count ? 'records' : t.column;
-}
-
-function formatValue(v: number): string {
-  if (!isFinite(v)) return '—';
-  const abs = Math.abs(v);
-  if (abs >= 1000) {
-    return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(v);
-  }
-  return new Intl.NumberFormat('en', { maximumFractionDigits: 2 }).format(v);
 }
 
 function toMetric(t: TileConfig): SummaryMetric {
@@ -221,7 +213,7 @@ export default function KpiSnapshot({
                 </div>
                 <div className="flex items-baseline gap-2">
                   <span className="tnum text-3xl font-extrabold leading-none text-foreground">
-                    {values === null ? '—' : formatValue(values[i])}
+                    {values === null ? '—' : formatMetric(values[i])}
                   </span>
                   {renderDelta(i)}
                 </div>

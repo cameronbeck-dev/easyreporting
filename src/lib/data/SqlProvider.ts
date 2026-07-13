@@ -9,13 +9,17 @@ import type {
   RowsResult,
   SummaryQuery,
   SummaryResult,
+  TableQuery,
+  TableResult,
+  TableColumnMeta,
+  ColumnType,
   JoinStep,
 } from './types';
 import { Aggregation } from './types';
 import type { DecryptedConnection } from './sql/pool';
 import { getPool } from './sql/pool';
 import { listColumns } from './sql/introspect';
-import { buildAggregated, buildSummary, buildRows } from './sql/buildQuery';
+import { buildAggregated, buildSummary, buildRows, buildTable } from './sql/buildQuery';
 import { formatBucketKey } from './dateBuckets';
 
 interface DatasetRow {
@@ -178,6 +182,46 @@ export class SqlProvider implements DataProvider {
     }));
 
     return { metrics };
+  }
+
+  async queryTable(datasetId: string, q: TableQuery): Promise<TableResult> {
+    if (datasetId !== this.dataset.id) throw new Error(`Unknown dataset: ${datasetId}`);
+    await this.validateStoredColumnsExist();
+
+    const allowedCols = this.getAllowedCols();
+    const columns = this.getColumns();
+    const { text, values } = buildTable(this.buildTableSource(), q, allowedCols, columns);
+
+    const pool = await getPool(this.connection);
+    const result = await pool.query(text, values);
+
+    const typeByName = new Map(columns.map((c) => [c.name, c.type]));
+    const colMeta: TableColumnMeta[] = [
+      ...q.dimensions.map((d) => ({
+        key: d,
+        label: d,
+        type: (typeByName.get(d) ?? 'string') as ColumnType,
+      })),
+      ...q.measures.map((m, i) => ({ key: `m${i}`, label: m.y, type: 'number' as ColumnType })),
+    ];
+
+    const rows: (string | number | null)[][] = result.rows.map((r: Record<string, unknown>) => {
+      const out: (string | number | null)[] = [];
+      q.dimensions.forEach((_, i) => {
+        const v = r[`d${i}`];
+        if (v === null || v === undefined) out.push(null);
+        else if (v instanceof Date) out.push(v.toISOString());
+        else if (typeof v === 'boolean') out.push(String(v));
+        else out.push(v as string | number);
+      });
+      q.measures.forEach((_, i) => {
+        const v = r[`m${i}`];
+        out.push(v === null || v === undefined ? null : Number(v));
+      });
+      return out;
+    });
+
+    return { columns: colMeta, rows };
   }
 
   async queryRows(datasetId: string, q: RowsQuery): Promise<RowsResult> {

@@ -4,13 +4,15 @@ import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import ChartCard from '@/components/ChartCard';
 import AddChartDialog from '@/components/AddChartDialog';
+import TableCard from '@/components/TableCard';
+import AddTableDialog from '@/components/AddTableDialog';
 import KpiSnapshot from '@/components/KpiSnapshot';
 import GlobalControls from '@/components/GlobalControls';
 import { useSchema } from '@/components/useSchema';
 import { useActiveDatasetId } from '@/components/useActiveDatasetId';
 import { buildGlobalFilters, resolveDateColumn, previousPeriod } from '@/components/dashboardUtils';
-import type { ChartConfig, GlobalControls as Globals, TileConfig, DashboardLayout } from '@/components/chartTypes';
-import { DEFAULT_GLOBALS, migrateGlobals } from '@/components/chartTypes';
+import type { ChartConfig, GlobalControls as Globals, TileConfig, TableConfig, DashboardLayout } from '@/components/chartTypes';
+import { DEFAULT_GLOBALS, migrateGlobals, migrateTables } from '@/components/chartTypes';
 import type { ColumnSchema, Filter } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import { getJson, putJson, delJson } from '@/lib/api/client';
@@ -25,7 +27,12 @@ const COL_MIN = 260;
 const COL_MAX = 720;
 const SAVE_DEBOUNCE_MS = 600;
 
-type DialogState = { mode: 'add' } | { mode: 'edit'; config: ChartConfig } | null;
+type DialogState =
+  | { mode: 'add' }
+  | { mode: 'edit'; config: ChartConfig }
+  | { mode: 'add-table' }
+  | { mode: 'edit-table'; config: TableConfig }
+  | null;
 
 function readJSON<T>(key: string): T | null {
   try {
@@ -43,7 +50,7 @@ function defaultLayout(columns: ColumnSchema[]): DashboardLayout {
   for (const c of columns.filter((c) => c.type === 'number')) {
     tiles.push({ id: `tile-${c.name}`, column: c.name, aggregation: Aggregation.Sum });
   }
-  return { charts: [], tiles: tiles.slice(0, 4), globals: DEFAULT_GLOBALS };
+  return { charts: [], tables: [], tiles: tiles.slice(0, 4), globals: DEFAULT_GLOBALS };
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
@@ -55,6 +62,7 @@ function DashboardInner() {
   const { columns, loading: schemaLoading } = useSchema(datasetId);
 
   const [charts, setCharts] = useState<ChartConfig[]>([]);
+  const [tables, setTables] = useState<TableConfig[]>([]);
   const [globals, setGlobals] = useState<Globals>(DEFAULT_GLOBALS);
   const [tiles, setTiles] = useState<TileConfig[]>([]);
   const [ready, setReady] = useState(false);
@@ -92,13 +100,16 @@ function DashboardInner() {
   }, [datasetId]);
 
   const applyLayout = useCallback((layout: DashboardLayout) => {
-    // Normalise the persisted globals (upgrades pre-additive-filter dashboards).
+    // Normalise the persisted blob (upgrades pre-additive-filter globals; supplies an empty
+    // tables list for dashboards saved before tables existed).
     const migrated = {
       charts: layout.charts,
+      tables: migrateTables(layout.tables),
       tiles: layout.tiles,
       globals: migrateGlobals(layout.globals),
     };
     setCharts(migrated.charts);
+    setTables(migrated.tables);
     setTiles(migrated.tiles);
     setGlobals(migrated.globals);
     baselineRef.current = JSON.stringify(migrated);
@@ -153,18 +164,19 @@ function DashboardInner() {
   // Persist real changes (debounced). Skips the initial load and the untouched defaults.
   useEffect(() => {
     if (!ready) return;
-    const current = JSON.stringify({ charts, tiles, globals });
+    const current = JSON.stringify({ charts, tables, tiles, globals });
     if (current === baselineRef.current) return;
     const t = setTimeout(() => {
       baselineRef.current = current;
-      putJson(`/api/dashboard`, { datasetId, layout: { charts, tiles, globals } }).catch(() => {});
+      putJson(`/api/dashboard`, { datasetId, layout: { charts, tables, tiles, globals } }).catch(() => {});
     }, SAVE_DEBOUNCE_MS);
     return () => clearTimeout(t);
-  }, [ready, charts, tiles, globals, datasetId]);
+  }, [ready, charts, tables, tiles, globals, datasetId]);
 
   const resetToDefault = () => {
     const layout = defaultLayout(columns);
     setCharts(layout.charts);
+    setTables(layout.tables);
     setTiles(layout.tiles);
     setGlobals(layout.globals);
     baselineRef.current = JSON.stringify(layout);
@@ -191,6 +203,20 @@ function DashboardInner() {
   };
 
   const removeChart = (id: string) => setCharts((prev) => prev.filter((c) => c.id !== id));
+
+  const submitTable = (config: TableConfig) => {
+    setTables((prev) => {
+      const exists = prev.some((t) => t.id === config.id);
+      return exists ? prev.map((t) => (t.id === config.id ? config : t)) : [...prev, config];
+    });
+    setDialog(null);
+  };
+
+  // Header-click sorting edits a table in place (persisted via the debounced save).
+  const updateTable = (config: TableConfig) =>
+    setTables((prev) => prev.map((t) => (t.id === config.id ? config : t)));
+
+  const removeTable = (id: string) => setTables((prev) => prev.filter((t) => t.id !== id));
 
   // Drag the gutter between cards to resize the grid column width.
   const gridRef = useRef<HTMLDivElement>(null);
@@ -281,6 +307,12 @@ function DashboardInner() {
             Reset to default
           </button>
           <button
+            onClick={() => setDialog({ mode: 'add-table' })}
+            className="rounded-full border border-border px-4 py-2.5 text-sm font-medium text-foreground transition-colors hover:bg-surface-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            + Add Table
+          </button>
+          <button
             onClick={() => setDialog({ mode: 'add' })}
             className="rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-card transition-colors hover:bg-primary-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
           >
@@ -289,15 +321,16 @@ function DashboardInner() {
         </div>
       </div>
 
-      {ready && charts.length === 0 && (
+      {ready && charts.length === 0 && tables.length === 0 && (
         <div className="rounded-card border border-dashed border-border bg-surface/60 py-16 text-center">
           <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-2xl">
             📊
           </div>
           <p className="text-lg font-bold text-foreground">No reports yet</p>
           <p className="mx-auto mt-1 max-w-sm text-sm text-foreground-muted">
-            Pick what you want to see and we&apos;ll chart it for you — no setup, no jargon.
-            Click <span className="font-semibold text-foreground">Add Chart</span> to begin.
+            Pick what you want to see and we&apos;ll build it for you — no setup, no jargon.
+            Click <span className="font-semibold text-foreground">Add Chart</span> or{' '}
+            <span className="font-semibold text-foreground">Add Table</span> to begin.
           </p>
         </div>
       )}
@@ -315,6 +348,17 @@ function DashboardInner() {
             granularity={globals.granularity}
             onRemove={() => removeChart(chart.id)}
             onEdit={() => setDialog({ mode: 'edit', config: chart })}
+            onResizePointerDown={onResizePointerDown}
+          />
+        ))}
+        {tables.map((table) => (
+          <TableCard
+            key={table.id}
+            config={table}
+            globalFilters={globalFilters}
+            onRemove={() => removeTable(table.id)}
+            onEdit={() => setDialog({ mode: 'edit-table', config: table })}
+            onChange={updateTable}
             onResizePointerDown={onResizePointerDown}
           />
         ))}
@@ -336,11 +380,20 @@ function DashboardInner() {
         </div>
       )}
 
-      {dialog && (
+      {dialog && (dialog.mode === 'add' || dialog.mode === 'edit') && (
         <AddChartDialog
           datasetId={datasetId}
           initial={dialog.mode === 'edit' ? dialog.config : undefined}
           onSubmit={submitChart}
+          onClose={() => setDialog(null)}
+        />
+      )}
+
+      {dialog && (dialog.mode === 'add-table' || dialog.mode === 'edit-table') && (
+        <AddTableDialog
+          datasetId={datasetId}
+          initial={dialog.mode === 'edit-table' ? dialog.config : undefined}
+          onSubmit={submitTable}
           onClose={() => setDialog(null)}
         />
       )}

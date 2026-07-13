@@ -124,6 +124,73 @@ export interface TileConfig {
   aggregation: Aggregation;
 }
 
+/** One aggregated measure (column) of a dashboard table. */
+export interface TableMeasureConfig {
+  /** Source column name, or a computed-field name (self-aggregating). */
+  y: string;
+  aggregation: Aggregation;
+  /** Optional header override; falls back to a metric label. */
+  label?: string;
+}
+
+/**
+ * A column sort. `key` is a dimension column name (sorts A–Z / Z–A) or a measure alias
+ * `m{i}` matching the measure's position in `columns` (sorts smallest / biggest).
+ */
+export interface TableSort {
+  key: string;
+  dir: 'asc' | 'desc';
+}
+
+/**
+ * A configurable aggregated table: one or two breakdown dimensions down the rows, a list of
+ * measures across the columns. The dashboard analog of ChartConfig. Persisted in
+ * DashboardLayout.tables.
+ */
+export interface TableConfig {
+  id: string;
+  title: string;
+  datasetId: string;
+  /** Breakdown categories down the rows. 1 or 2 (array leaves room for more later). */
+  dimensions: string[];
+  /** Measures across the columns (up to a handful). */
+  columns: TableMeasureConfig[];
+  /**
+   * Row sort. For a single dimension this orders the whole table; for two dimensions it
+   * orders rows WITHIN each primary-dimension group. Defaults to the first measure, biggest.
+   */
+  sort?: TableSort;
+  /**
+   * Two dimensions only: ordering of the grouped primary dimension itself (A–Z by default).
+   * Its `key` is always the primary dimension name.
+   */
+  primarySort?: TableSort;
+  /** Keep only the top-N primary-dimension values (by the first re-summable measure). */
+  limit?: number;
+  /** Append a grand-total footer row. */
+  showTotals?: boolean;
+}
+
+/**
+ * Display labels for a table's result columns, in column order (dimensions first, then
+ * measures) — so it lines up with the provider's TableResult.columns. Dimensions are
+ * prettified; measures use their custom label or a metric label. Shared by the card header
+ * and the CSV export so the file matches the screen.
+ */
+export function tableColumnLabels(config: TableConfig): string[] {
+  const dimLabels = config.dimensions.map(prettify);
+  const measureLabels = config.columns.map((c) => c.label?.trim() || metricLabel(c.aggregation, c.y));
+  return [...dimLabels, ...measureLabels];
+}
+
+/** Default title for a table, e.g. "Total revenue by Receiver State". */
+export function defaultTableTitle(dimensions: string[], columns: TableMeasureConfig[]): string {
+  const dims = dimensions.map(prettify).join(' & ');
+  const first = columns[0];
+  const measure = first ? metricLabel(first.aggregation, first.y) : 'Summary';
+  return `${measure} by ${dims}`;
+}
+
 /** One additive dashboard filter. Stacks with the others (all AND-ed together). */
 export interface DashFilter {
   id: string;
@@ -162,11 +229,20 @@ export interface GlobalControls {
   compare: boolean;
 }
 
-/** A user's persisted dashboard for one dataset (charts + tiles + filters). */
+/** A user's persisted dashboard for one dataset (charts + tables + tiles + filters). */
 export interface DashboardLayout {
   charts: ChartConfig[];
+  tables: TableConfig[];
   tiles: TileConfig[];
   globals: GlobalControls;
+}
+
+/**
+ * Normalise a persisted `tables` blob. Dashboards saved before tables existed have no field;
+ * anything non-array becomes an empty list so old layouts keep loading. Mirrors migrateGlobals.
+ */
+export function migrateTables(raw: unknown): TableConfig[] {
+  return Array.isArray(raw) ? (raw as TableConfig[]) : [];
 }
 
 export const DEFAULT_GLOBALS: GlobalControls = {
