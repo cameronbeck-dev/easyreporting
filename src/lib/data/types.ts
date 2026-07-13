@@ -124,10 +124,16 @@ export interface TableQuery {
   /** ORDER BY terms, applied in order. Referenced keys are dimensions or `m{i}` aliases. */
   orderBy?: OrderSpec[];
   /**
-   * Keep only the top-N values of the PRIMARY dimension (by the first re-summable measure,
-   * else row count). Clamped by the query builder. Omit for no limit.
+   * Keep only the top-N values of the PRIMARY dimension (ranked by the `rankBy` measure when
+   * re-summable, else row count). Clamped by the query builder. Omit for no limit.
    */
   limit?: number;
+  /**
+   * Which measure ranks the top-N cut: an index into `measures`, ranked biggest-first. When
+   * unset (or out of range) the ranking falls back to a measure display-sort, else the first
+   * measure. Only meaningful alongside `limit`.
+   */
+  rankBy?: number;
 }
 
 /** A resolved output column of a table result. */

@@ -266,9 +266,14 @@ export function buildDuckTable(
     return { text, values };
   }
 
+  // Ranking measure: an explicit rankBy wins (biggest-first); otherwise honor a measure
+  // display-sort; otherwise the first measure, descending.
+  const explicitRank =
+    typeof q.rankBy === 'number' && q.rankBy >= 0 && q.rankBy < q.measures.length ? q.rankBy : null;
   const measureSort = displayOrder.find((o) => /^m\d+$/.test(o.key));
-  const rankIdx = measureSort ? Number(measureSort.key.slice(1)) : 0;
-  const rankDir = measureSort ? (measureSort.dir === 'asc' ? 'ASC' : 'DESC') : 'DESC';
+  const rankIdx = explicitRank ?? (measureSort ? Number(measureSort.key.slice(1)) : 0);
+  const rankDir =
+    explicitRank !== null ? 'DESC' : measureSort ? (measureSort.dir === 'asc' ? 'ASC' : 'DESC') : 'DESC';
 
   if (q.dimensions.length === 1) {
     const inner = [

@@ -169,8 +169,13 @@ export interface TableConfig {
    * Its `key` is always the primary dimension name.
    */
   primarySort?: TableSort;
-  /** Keep only the top-N primary-dimension values (by the first re-summable measure). */
+  /** Keep only the top-N primary-dimension values (ranked by the `rankBy` measure). */
   limit?: number;
+  /**
+   * Which measure ranks the top-N cut: an index into `columns`. Ranks biggest-first.
+   * Defaults to 0 (the first measure) when a `limit` is set but this is unset.
+   */
+  rankBy?: number;
   /** Append a grand-total footer row. */
   showTotals?: boolean;
   /** Dashboard grid span, in columns. Defaults to 1. */

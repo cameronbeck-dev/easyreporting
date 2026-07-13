@@ -4,6 +4,7 @@ import {
   buildDuckAggregated,
   buildDuckSummary,
   buildDuckRows,
+  buildDuckTable,
 } from '@/lib/data/duck/buildDuckQuery';
 import { Aggregation } from '@/lib/data/types';
 import type { ColumnSchema } from '@/lib/data/types';
@@ -264,5 +265,69 @@ describe('buildDuckRows', () => {
     expect(dataQuery.text).toBe(`SELECT * FROM read_parquet(${P}) LIMIT $1 OFFSET $2`);
     expect(dataQuery.values).toEqual([50, 0]);
     expect(countQuery.text).toBe(`SELECT COUNT(*) AS total FROM read_parquet(${P})`);
+  });
+});
+
+describe('buildDuckTable', () => {
+  const tableCols = new Set(['region', 'category', 'revenue', 'cost']);
+  const tableSchema: ColumnSchema[] = [
+    { name: 'region', type: 'string' },
+    { name: 'category', type: 'string' },
+    { name: 'revenue', type: 'number' },
+    { name: 'cost', type: 'number' },
+  ];
+
+  it('rankBy ranks the single-dimension top-N by the chosen measure, biggest-first', () => {
+    const { text } = buildDuckTable(
+      P,
+      {
+        dimensions: ['region'],
+        measures: [
+          { y: 'revenue', aggregation: Aggregation.Sum },
+          { y: 'cost', aggregation: Aggregation.Sum },
+        ],
+        orderBy: [{ key: 'region', dir: 'asc' }],
+        limit: 5,
+        rankBy: 1,
+      },
+      tableCols,
+      tableSchema,
+    );
+    expect(text).toContain('ORDER BY m1 DESC LIMIT 5');
+    expect(text).toMatch(/SELECT \* FROM \(.*\) t ORDER BY d0 ASC/);
+  });
+
+  it('rankBy ranks the two-dimension primary cut by the chosen measure', () => {
+    const { text } = buildDuckTable(
+      P,
+      {
+        dimensions: ['region', 'category'],
+        measures: [
+          { y: 'revenue', aggregation: Aggregation.Sum },
+          { y: 'cost', aggregation: Aggregation.Sum },
+        ],
+        orderBy: [{ key: 'region', dir: 'asc' }],
+        limit: 3,
+        rankBy: 1,
+      },
+      tableCols,
+      tableSchema,
+    );
+    expect(text).toContain('ORDER BY SUM(m1) DESC LIMIT 3');
+  });
+
+  it('an out-of-range rankBy falls back to the default ranking', () => {
+    const { text } = buildDuckTable(
+      P,
+      {
+        dimensions: ['region'],
+        measures: [{ y: 'revenue', aggregation: Aggregation.Sum }],
+        limit: 5,
+        rankBy: 9,
+      },
+      tableCols,
+      tableSchema,
+    );
+    expect(text).toContain('ORDER BY m0 DESC LIMIT 5');
   });
 });

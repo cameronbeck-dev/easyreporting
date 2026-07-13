@@ -46,12 +46,19 @@ function buildOrderBy(config: TableConfig): OrderSpec[] {
 }
 
 export function buildTableQuery(config: TableConfig, globalFilters: Filter[]): TableQuery {
+  // Only forward a rank measure that points at an existing column (a stale index — e.g. after
+  // a measure was removed — falls back to the builder's default ranking).
+  const rankBy =
+    typeof config.rankBy === 'number' && config.rankBy >= 0 && config.rankBy < config.columns.length
+      ? config.rankBy
+      : undefined;
   return {
     dimensions: config.dimensions,
     measures: config.columns.map((c) => ({ y: c.y, aggregation: c.aggregation })),
     filters: globalFilters,
     orderBy: buildOrderBy(config),
     limit: config.limit,
+    rankBy,
   };
 }
 

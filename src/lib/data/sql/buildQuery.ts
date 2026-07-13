@@ -234,9 +234,10 @@ export function buildSummary(
  *   • two dimensions → keep the top-N PRIMARY dimension values (ranked by the ranking
  *     measure's group total when re-summable — Sum/Count — else by child-row count), then
  *     return ALL their child rows so no group is chopped mid-way.
- * The ranking measure is the first measure display-sorted on (if any is), else the first
- * measure descending — so "sort revenue smallest" yields the N smallest, while a dimension
- * A–Z sort still ranks the surviving rows by the leading measure.
+ * The ranking measure is q.rankBy when set (biggest-first); otherwise the first measure
+ * display-sorted on (if any is), else the first measure descending — so "sort revenue
+ * smallest" yields the N smallest, while a dimension A–Z sort still ranks the surviving rows
+ * by the leading measure.
  */
 export function buildTable(
   src: TableSource,
@@ -290,10 +291,14 @@ export function buildTable(
     return { text, values };
   }
 
-  // Ranking measure: honor a measure display-sort; otherwise the first measure, descending.
+  // Ranking measure: an explicit rankBy wins (biggest-first); otherwise honor a measure
+  // display-sort; otherwise the first measure, descending.
+  const explicitRank =
+    typeof q.rankBy === 'number' && q.rankBy >= 0 && q.rankBy < q.measures.length ? q.rankBy : null;
   const measureSort = displayOrder.find((o) => /^m\d+$/.test(o.key));
-  const rankIdx = measureSort ? Number(measureSort.key.slice(1)) : 0;
-  const rankDir = measureSort ? (measureSort.dir === 'asc' ? 'ASC' : 'DESC') : 'DESC';
+  const rankIdx = explicitRank ?? (measureSort ? Number(measureSort.key.slice(1)) : 0);
+  const rankDir =
+    explicitRank !== null ? 'DESC' : measureSort ? (measureSort.dir === 'asc' ? 'ASC' : 'DESC') : 'DESC';
 
   if (q.dimensions.length === 1) {
     const inner = [

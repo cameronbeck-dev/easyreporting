@@ -3,8 +3,8 @@
 import { useEffect, useState } from 'react';
 import type { ColumnSchema, DatasetSchema } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
-import type { TableConfig, TableMeasureConfig } from './chartTypes';
-import { defaultTableTitle, prettify, aggregationOptionLabel } from './chartTypes';
+import type { TableConfig, TableMeasureConfig, TableSort } from './chartTypes';
+import { defaultTableTitle, prettify, aggregationOptionLabel, metricLabel } from './chartTypes';
 import { inputClass } from './ui/forms';
 import { getJson } from '@/lib/api/client';
 
@@ -35,6 +35,9 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
     initial?.columns.map((c) => ({ y: c.y, aggregation: c.aggregation })) ?? [],
   );
   const [limit, setLimit] = useState<number | ''>(initial?.limit ?? '');
+  // Which measure ranks the top-N cut (index into `measures`). Clamped for display below so a
+  // removed measure never leaves the dropdown pointing at nothing.
+  const [rankBy, setRankBy] = useState<number>(initial?.rankBy ?? 0);
   const [showTotals, setShowTotals] = useState(initial?.showTotals ?? false);
 
   const isComputedCol = (name: string) => columns.find((c) => c.name === name)?.isComputed ?? false;
@@ -81,6 +84,14 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
     const dimensions = [dim1, ...(dim2 && dim2 !== dim1 ? [dim2] : [])];
     const cols: TableMeasureConfig[] = measures.map((m) => ({ y: m.y, aggregation: m.aggregation }));
 
+    // When a top-N ranks by a chosen measure, default the display sort to that measure
+    // (biggest-first) so the surviving rows read in rank order. Preserve any existing sort
+    // (e.g. a header-click choice) unless this is a new table or the rank measure just changed
+    // — then the user is still free to re-sort by clicking a header afterward.
+    const rankChanged = !editing || effectiveRank !== (initial?.rankBy ?? 0);
+    const sort: TableSort | undefined =
+      hasLimit && rankChanged ? { key: `m${effectiveRank}`, dir: 'desc' } : initial?.sort;
+
     onSubmit({
       id: initial?.id ?? `table-${Date.now()}`,
       datasetId,
@@ -88,16 +99,23 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
       dimensions,
       columns: cols,
       limit: typeof limit === 'number' && limit > 0 ? limit : undefined,
+      // Only meaningful with a limit; clamp against the current measure list. Omit index 0 so
+      // the default (rank by first measure) stays implicit and tables round-trip unchanged.
+      rankBy: hasLimit && rankBy > 0 && rankBy < cols.length ? rankBy : undefined,
       showTotals,
-      // Preserve any header-click sort choices across an edit; new tables start with the
-      // builder's defaults (first measure biggest; primary dimension A–Z), resolved downstream.
-      sort: initial?.sort,
+      sort,
       primarySort: initial?.primarySort,
     });
   };
 
   const fieldClass = `${inputClass} w-full`;
   const canSubmit = dim1 !== '' && measures.length > 0;
+
+  const hasLimit = typeof limit === 'number' && limit > 0;
+  // Clamp the ranking measure to the current list so a removed measure can't leave the
+  // dropdown (or the help text) pointing past the end.
+  const effectiveRank = rankBy < measures.length ? rankBy : 0;
+  const rankMeasure = measures[effectiveRank];
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/40 p-4">
@@ -224,8 +242,23 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
                 placeholder={dim2 ? 'All groups' : 'All rows'}
                 className={`${fieldClass} placeholder:text-foreground-muted`}
               />
+              {hasLimit && measures.length > 1 && (
+                <div className="mt-2 flex items-center gap-2">
+                  <span className="text-xs font-medium text-foreground-muted">Ranked by</span>
+                  <select
+                    value={effectiveRank}
+                    onChange={(e) => setRankBy(Number(e.target.value))}
+                    className={inputClass}
+                  >
+                    {measures.map((m, i) => (
+                      <option key={i} value={i}>{metricLabel(m.aggregation, m.y)}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <p className="mt-1 text-xs text-foreground-muted">
-                Keep only the highest-ranked {dim2 ? `${dim1 ? prettify(dim1) : 'primary'} groups` : 'rows'} by the first measure.
+                Keep only the highest {dim2 ? `${dim1 ? prettify(dim1) : 'primary'} groups` : 'rows'} by{' '}
+                {rankMeasure ? metricLabel(rankMeasure.aggregation, rankMeasure.y) : 'the first measure'}.
               </p>
             </div>
 

@@ -584,6 +584,82 @@ describe('buildTable', () => {
     expect(text).toContain('ORDER BY d0 ASC, m0 DESC');
   });
 
+  it('rankBy ranks the single-dimension top-N by the chosen measure, biggest-first', () => {
+    const { text } = buildTable(
+      singleSrc,
+      {
+        dimensions: ['region'],
+        measures: [
+          { y: 'revenue', aggregation: Aggregation.Sum },
+          { y: 'cost', aggregation: Aggregation.Sum },
+        ],
+        // Display sorted A–Z by dimension, but the cut is ranked by the 2nd measure.
+        orderBy: [{ key: 'region', dir: 'asc' }],
+        limit: 5,
+        rankBy: 1,
+      },
+      allCols,
+      tableCols,
+    );
+    expect(text).toContain('ORDER BY m1 DESC LIMIT 5');
+    // Display order still follows orderBy.
+    expect(text).toMatch(/SELECT \* FROM \(.*\) t ORDER BY d0 ASC/);
+  });
+
+  it('rankBy overrides a measure display-sort for the top-N cut', () => {
+    const { text } = buildTable(
+      singleSrc,
+      {
+        dimensions: ['region'],
+        measures: [
+          { y: 'revenue', aggregation: Aggregation.Sum },
+          { y: 'cost', aggregation: Aggregation.Sum },
+        ],
+        orderBy: [{ key: 'm0', dir: 'asc' }],
+        limit: 5,
+        rankBy: 1,
+      },
+      allCols,
+      tableCols,
+    );
+    // Ranked by m1 (biggest-first), not m0 ascending.
+    expect(text).toContain('ORDER BY m1 DESC LIMIT 5');
+  });
+
+  it('rankBy ranks the two-dimension primary cut by the chosen measure', () => {
+    const { text } = buildTable(
+      singleSrc,
+      {
+        dimensions: ['region', 'category'],
+        measures: [
+          { y: 'revenue', aggregation: Aggregation.Sum },
+          { y: 'cost', aggregation: Aggregation.Sum },
+        ],
+        orderBy: [{ key: 'region', dir: 'asc' }],
+        limit: 3,
+        rankBy: 1,
+      },
+      allCols,
+      tableCols,
+    );
+    expect(text).toContain('ORDER BY SUM(m1) DESC LIMIT 3');
+  });
+
+  it('an out-of-range rankBy falls back to the default ranking', () => {
+    const { text } = buildTable(
+      singleSrc,
+      {
+        dimensions: ['region'],
+        measures: [{ y: 'revenue', aggregation: Aggregation.Sum }],
+        limit: 5,
+        rankBy: 9,
+      },
+      allCols,
+      tableCols,
+    );
+    expect(text).toContain('ORDER BY m0 DESC LIMIT 5');
+  });
+
   it('two dimensions with a non-re-summable rank measure falls back to COUNT(*)', () => {
     const { text } = buildTable(
       singleSrc,
