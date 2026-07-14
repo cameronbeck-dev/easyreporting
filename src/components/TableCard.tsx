@@ -19,6 +19,12 @@ interface Props {
   onEdit: () => void;
   /** Persist a header-click sort change (bubbles to the dashboard's debounced save). */
   onChange: (config: TableConfig) => void;
+  /**
+   * Open the Data Explorer on the rows behind this table. The header button passes no drills (the
+   * whole filtered dataset); clicking a category cell passes that row's group path (the clicked
+   * dimension and any dimensions to its left) to filter down to that category.
+   */
+  onGoToData?: (drills?: { column: string; value: string | number }[]) => void;
   onSpanResize?: (edge: ResizeEdge, e: React.PointerEvent) => void;
   /** Grab the title to start dragging the card to a new position. */
   onDragStart?: (e: React.PointerEvent) => void;
@@ -32,6 +38,7 @@ export default function TableCard({
   onRemove,
   onEdit,
   onChange,
+  onGoToData,
   onSpanResize,
   onDragStart,
 }: Props) {
@@ -150,6 +157,16 @@ export default function TableCard({
           {config.title}
         </h3>
         <div className="flex items-center gap-1">
+          {onGoToData && (
+            <button
+              onClick={() => onGoToData()}
+              className="rounded-control px-2 py-1 text-xs text-foreground-muted transition-colors hover:bg-surface-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Go to the data behind this table"
+              title="Go to the data behind this table"
+            >
+              Go to data
+            </button>
+          )}
           <button
             onClick={handleExport}
             disabled={!canExport}
@@ -238,9 +255,34 @@ export default function TableCard({
                         );
                       }
                       const hide = cIdx === 0 && repeatPrimary;
+                      // A category cell drills into the rows behind it: filter by this dimension
+                      // and any dimensions to its left (the row's group path), by exact value.
+                      const canDrill = !!onGoToData && !hide && v !== null && v !== undefined && v !== '';
+                      const drillHere = () =>
+                        onGoToData?.(
+                          config.dimensions
+                            .slice(0, cIdx + 1)
+                            .map((column, i) => ({ column, value: row[i] }))
+                            .filter((d): d is { column: string; value: string | number } =>
+                              d.value !== null && d.value !== undefined && d.value !== '',
+                            ),
+                        );
                       return (
                         <td key={cIdx} className="whitespace-nowrap px-3 py-1.5 text-left text-foreground">
-                          {hide ? '' : dimCell(v)}
+                          {hide ? (
+                            ''
+                          ) : canDrill ? (
+                            <button
+                              type="button"
+                              onClick={drillHere}
+                              className="rounded-control text-left underline-offset-2 transition-colors hover:text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              title="Go to the data for this category"
+                            >
+                              {dimCell(v)}
+                            </button>
+                          ) : (
+                            dimCell(v)
+                          )}
                         </td>
                       );
                     })}

@@ -1,7 +1,7 @@
 'use client';
 
 import { Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import ChartCard from '@/components/ChartCard';
 import AddChartDialog from '@/components/AddChartDialog';
 import TableCard from '@/components/TableCard';
@@ -9,11 +9,12 @@ import AddTableDialog from '@/components/AddTableDialog';
 import KpiSnapshot from '@/components/KpiSnapshot';
 import GlobalControls from '@/components/GlobalControls';
 import { useSchema } from '@/components/useSchema';
-import { useActiveDatasetId } from '@/components/useActiveDatasetId';
+import { useActiveDataset } from '@/components/ActiveDatasetProvider';
 import { buildGlobalFilters, resolveDateColumn, previousPeriod } from '@/components/dashboardUtils';
+import { buildExplorerState, saveExplorerState, type DrillClick } from '@/components/dataExplorer';
 import type { ChartConfig, GlobalControls as Globals, TileConfig, TableConfig, DashboardLayout } from '@/components/chartTypes';
 import { DEFAULT_GLOBALS, migrateGlobals, migrateTables, migrateOrder } from '@/components/chartTypes';
-import type { ColumnSchema, Filter } from '@/lib/data/types';
+import type { ColumnSchema, Filter, DateBucket } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import { getJson, putJson, delJson } from '@/lib/api/client';
 import type { ResizeEdge } from '@/components/ResizeHandles';
@@ -68,8 +69,8 @@ const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v
 const useIsomorphicLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function DashboardInner() {
-  const searchParams = useSearchParams();
-  const datasetId = searchParams.get('datasetId') ?? '';
+  const { datasetId } = useActiveDataset();
+  const router = useRouter();
 
   const { columns, loading: schemaLoading } = useSchema(datasetId);
 
@@ -216,6 +217,29 @@ function DashboardInner() {
       compareFilters = buildGlobalFilters({ ...globals, dateFrom: prev.from, dateTo: prev.to }, dateColumn);
     }
   }
+
+  // "Go to data": snapshot the dashboard's current filter context into the Data Explorer store
+  // (replacing it), plus any click-drills, then open the data tab.
+  const openData = (drills: DrillClick[]) => {
+    saveExplorerState(datasetId, buildExplorerState(globals, dateColumn, drills));
+    router.push('/data');
+  };
+
+  // Chart: the header button carries no drill (whole filtered dataset); a point-click narrows to
+  // the clicked value — a date x becomes that bucket's range, any other x an exact `in` filter.
+  // Date-ness is resolved here from the schema (the card doesn't carry column types).
+  const goToData = (drill?: { column: string; value: string; bucket: DateBucket }) => {
+    if (!drill) return openData([]);
+    const isDate = columns.find((c) => c.name === drill.column)?.type === 'date';
+    openData([{ column: drill.column, value: drill.value, isDate, bucket: drill.bucket }]);
+  };
+
+  // Table: category (dimension) cells drill by exact value — dimensions are unbucketed, so even a
+  // date dimension filters by equality. A two-dimension cell passes its group path (primary [+
+  // secondary]) so it lands on exactly the rows behind that cell.
+  const goToDataCells = (drills?: { column: string; value: string | number }[]) => {
+    openData((drills ?? []).map((d) => ({ column: d.column, value: d.value, isDate: false })));
+  };
 
   const submitChart = (config: ChartConfig) => {
     setCharts((prev) => {
@@ -586,6 +610,7 @@ function DashboardInner() {
                   granularity={globals.granularity}
                   onRemove={() => removeChart(id)}
                   onEdit={() => setDialog({ mode: 'edit', config: chart })}
+                  onGoToData={goToData}
                   onSpanResize={startSpanResize('chart', id, cs, rs)}
                   onDragStart={startCardDrag(id)}
                 />
@@ -609,6 +634,7 @@ function DashboardInner() {
                 onRemove={() => removeTable(id)}
                 onEdit={() => setDialog({ mode: 'edit-table', config: table })}
                 onChange={updateTable}
+                onGoToData={goToDataCells}
                 onSpanResize={startSpanResize('table', id, cs, rs)}
                 onDragStart={startCardDrag(id)}
               />
@@ -669,7 +695,7 @@ function NoDatasets() {
 // Resolve the active dataset (redirect to the first, or show the empty state) before
 // mounting the dashboard, so DashboardInner always has a real datasetId.
 function DashboardGate() {
-  const { status } = useActiveDatasetId();
+  const { status } = useActiveDataset();
   if (status === 'empty') return <NoDatasets />;
   if (status !== 'ready') {
     return <div className="px-6 py-8 text-sm text-foreground-muted">Loading…</div>;

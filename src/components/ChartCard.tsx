@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import ReactECharts, { echarts } from './echartsCore';
 import type { ChartConfig } from './chartTypes';
 import type { AggregatedResult, Filter, DateBucket } from '@/lib/data/types';
@@ -20,6 +19,9 @@ interface Props {
   granularity: DateBucket;
   onRemove: () => void;
   onEdit: () => void;
+  /** Open the Data Explorer on the rows behind this card. A point-click passes the clicked value
+   *  as a drill; the header button passes nothing (the whole filtered dataset). */
+  onGoToData?: (drill?: { column: string; value: string; bucket: DateBucket }) => void;
   onSpanResize?: (edge: ResizeEdge, e: React.PointerEvent) => void;
   /** Grab the title to start dragging the card to a new position. */
   onDragStart?: (e: React.PointerEvent) => void;
@@ -31,10 +33,10 @@ export default function ChartCard({
   granularity,
   onRemove,
   onEdit,
+  onGoToData,
   onSpanResize,
   onDragStart,
 }: Props) {
-  const router = useRouter();
   const theme = useChartTheme();
   const [result, setResult] = useState<AggregatedResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -101,9 +103,7 @@ export default function ChartCard({
   };
 
   const onChartClick = (params: { name: string }) => {
-    router.push(
-      `/data?datasetId=${encodeURIComponent(config.datasetId)}&filterCol=${encodeURIComponent(config.x)}&filterVal=${encodeURIComponent(params.name)}`,
-    );
+    onGoToData?.({ column: config.x, value: params.name, bucket: effectiveBucket });
   };
 
   const canExport = !loading && !error && result !== null && result.x.length > 0;
@@ -135,6 +135,16 @@ export default function ChartCard({
           {config.title}
         </h3>
         <div className="flex items-center gap-1">
+          {onGoToData && (
+            <button
+              onClick={() => onGoToData()}
+              className="rounded-control px-2 py-1 text-xs text-foreground-muted transition-colors hover:bg-surface-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-label="Go to the data behind this chart"
+              title="Go to the data behind this chart"
+            >
+              Go to data
+            </button>
+          )}
           <button
             onClick={handleExport}
             disabled={!canExport}

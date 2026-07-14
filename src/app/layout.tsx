@@ -6,6 +6,7 @@ import { redirect } from 'next/navigation';
 import './globals.css';
 import Nav from '@/components/Nav';
 import DatasetSwitcher from '@/components/DatasetSwitcher';
+import ActiveDatasetProvider from '@/components/ActiveDatasetProvider';
 import ThemeToggle from '@/components/ThemeToggle';
 import { getUserContext } from '@/lib/auth/getUserContext';
 import { listAllDatasets } from '@/lib/data/getProvider';
@@ -63,41 +64,43 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <script dangerouslySetInnerHTML={{ __html: noFlashTheme }} />
       </head>
       <body className="min-h-full flex flex-col bg-background font-sans text-foreground">
-        {ctx && (
-          <header className="sticky top-0 z-40 flex items-center gap-6 bg-primary px-6 py-3 text-primary-foreground shadow-card">
-            <div className="flex items-center gap-2">
-              {branding.logoUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={branding.logoUrl} alt={branding.companyName} className="h-6 w-auto" />
-              ) : (
-                <span className="text-lg font-bold tracking-tight text-primary-foreground">
-                  {branding.companyName}
-                </span>
-              )}
-            </div>
-            <div className="flex flex-1 items-center justify-between">
-              <div className="flex items-center gap-4">
-                <Nav isAdmin={ctx.isAdmin} />
-                <DatasetSwitcher datasets={datasets} />
+        <ActiveDatasetProvider datasets={datasets}>
+          {ctx && (
+            <header className="sticky top-0 z-40 flex items-center gap-6 bg-primary px-6 py-3 text-primary-foreground shadow-card">
+              <div className="flex items-center gap-2">
+                {branding.logoUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={branding.logoUrl} alt={branding.companyName} className="h-6 w-auto" />
+                ) : (
+                  <span className="text-lg font-bold tracking-tight text-primary-foreground">
+                    {branding.companyName}
+                  </span>
+                )}
               </div>
-              <div className="flex items-center gap-3">
-                <span className="hidden text-sm text-primary-foreground/80 sm:inline">
-                  {ctx.email}
-                </span>
-                <ThemeToggle />
-                <form action={signOutAction}>
-                  <button
-                    type="submit"
-                    className="rounded-full border border-primary-foreground/30 px-3 py-1.5 text-sm font-medium text-primary-foreground/90 transition-colors hover:bg-primary-foreground/10"
-                  >
-                    Sign out
-                  </button>
-                </form>
+              <div className="flex flex-1 items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <Nav isAdmin={ctx.isAdmin} />
+                  <DatasetSwitcher />
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="hidden text-sm text-primary-foreground/80 sm:inline">
+                    {ctx.email}
+                  </span>
+                  <ThemeToggle />
+                  <form action={signOutAction}>
+                    <button
+                      type="submit"
+                      className="rounded-full border border-primary-foreground/30 px-3 py-1.5 text-sm font-medium text-primary-foreground/90 transition-colors hover:bg-primary-foreground/10"
+                    >
+                      Sign out
+                    </button>
+                  </form>
+                </div>
               </div>
-            </div>
-          </header>
-        )}
-        {children}
+            </header>
+          )}
+          {children}
+        </ActiveDatasetProvider>
       </body>
     </html>
   );

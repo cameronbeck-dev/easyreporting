@@ -17,15 +17,25 @@ export function allDateColumns(columns: ColumnSchema[]): ColumnSchema[] {
  * The timeline column actually in force: the user's chosen `dateColumn` when it still
  * exists as a date column, otherwise the dataset's first date column (or null if none).
  */
-export function resolveDateColumn(globals: GlobalControls, columns: ColumnSchema[]): string | null {
+export function resolveDateColumn(
+  globals: Pick<GlobalControls, 'dateColumn'>,
+  columns: ColumnSchema[],
+): string | null {
   if (globals.dateColumn && columns.some((c) => c.name === globals.dateColumn && c.type === 'date')) {
     return globals.dateColumn;
   }
   return firstDateColumn(columns);
 }
 
-/** Translate global controls into provider filters (access control still applies). */
-export function buildGlobalFilters(globals: GlobalControls, dateColumn: string | null): Filter[] {
+/**
+ * Translate the row-affecting parts of the dashboard controls (date range + additive filters)
+ * into provider filters (access control still applies). Takes only the fields it reads, so the
+ * Data Explorer's trimmed filter state — which has no granularity/compare — can be passed too.
+ */
+export function buildGlobalFilters(
+  globals: Pick<GlobalControls, 'dateFrom' | 'dateTo' | 'filters'>,
+  dateColumn: string | null,
+): Filter[] {
   const filters: Filter[] = [];
 
   if (dateColumn && globals.dateFrom) {

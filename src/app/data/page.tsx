@@ -1,56 +1,107 @@
 'use client';
 
 import { Suspense, useEffect, useState } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import DataTable from '@/components/DataTable';
+import DataFilterBar from '@/components/DataFilterBar';
 import type { RowsResult, Filter } from '@/lib/data/types';
-import { prettify } from '@/components/chartTypes';
 import { postJson, downloadPost } from '@/lib/api/client';
+import { useActiveDataset } from '@/components/ActiveDatasetProvider';
 import { useActiveDatasetId } from '@/components/useActiveDatasetId';
+import { useSchema } from '@/components/useSchema';
+import { buildGlobalFilters, resolveDateColumn } from '@/components/dashboardUtils';
+import {
+  emptyExplorerState,
+  isEmptyExplorerState,
+  loadExplorerState,
+  saveExplorerState,
+  type DataExplorerState,
+} from '@/components/dataExplorer';
+
+const PAGE_SIZE = 20;
 
 function DataPageInner() {
-  const searchParams = useSearchParams();
+  const { datasetId } = useActiveDataset();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const { columns } = useSchema(datasetId);
 
-  const datasetId = searchParams.get('datasetId') ?? '';
-  const filterCol = searchParams.get('filterCol');
-  const filterVal = searchParams.get('filterVal');
-
+  const [state, setState] = useState<DataExplorerState>(emptyExplorerState);
+  const [hydrated, setHydrated] = useState(false);
   const [result, setResult] = useState<RowsResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [exporting, setExporting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const pageSize = 20;
 
-  const activeFilters: Filter[] =
-    filterCol && filterVal
-      ? [{ column: filterCol, operator: 'eq', value: filterVal }]
-      : [];
+  // Load this dataset's saved explorer state. A legacy `?filterCol=&filterVal=` deep-link (the
+  // old chart drill-down format) is honoured once, seeded into the store, then stripped.
+  useEffect(() => {
+    const legacyCol = searchParams.get('filterCol');
+    const legacyVal = searchParams.get('filterVal');
+    if (legacyCol && legacyVal) {
+      const seeded: DataExplorerState = {
+        ...emptyExplorerState(),
+        filters: [{ id: `legacy-${legacyCol}`, column: legacyCol, op: 'in', values: [legacyVal] }],
+      };
+      setState(seeded);
+      saveExplorerState(datasetId, seeded);
+      router.replace('/data');
+    } else {
+      setState(loadExplorerState(datasetId));
+    }
+    setPage(1);
+    setHydrated(true);
+    // Reload only when the active dataset changes; router/searchParams are read once per load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [datasetId]);
+
+  // Write-through persistence: save exactly on edit, keyed to the current dataset (an effect keyed
+  // on datasetId would race a dataset switch and save the old state under the new key).
+  const update = (patch: Partial<DataExplorerState>) => {
+    setState((prev) => {
+      const next = { ...prev, ...patch };
+      saveExplorerState(datasetId, next);
+      return next;
+    });
+    setPage(1);
+  };
+
+  const clearAll = () => update(emptyExplorerState());
+
+  const dateColumn = resolveDateColumn(state, columns);
+  const activeFilters: Filter[] = buildGlobalFilters(state, dateColumn);
+  const filtersKey = JSON.stringify(activeFilters);
 
   useEffect(() => {
+    if (!hydrated || !datasetId) return;
     setLoading(true);
     setError(null);
 
-    const filters = filterCol && filterVal
-      ? [{ column: filterCol, operator: 'eq' as const, value: filterVal }]
-      : [];
-
-    postJson<RowsResult>('/api/rows', { datasetId, query: { filters, page, pageSize } })
+    let cancelled = false;
+    postJson<RowsResult>('/api/rows', {
+      datasetId,
+      query: { filters: activeFilters, page, pageSize: PAGE_SIZE },
+    })
       .then((data) => {
-        setResult(data);
-        setLoading(false);
+        if (!cancelled) {
+          setResult(data);
+          setLoading(false);
+        }
       })
       .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : 'Unknown error');
-        setLoading(false);
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Unknown error');
+          setLoading(false);
+        }
       });
-  }, [datasetId, filterCol, filterVal, page, pageSize]);
 
-  const clearFilter = () => {
-    router.push(`/data?datasetId=${encodeURIComponent(datasetId)}`);
-  };
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [datasetId, filtersKey, page, hydrated]);
 
   const handleExport = async () => {
     setExporting(true);
@@ -75,6 +126,7 @@ function DataPageInner() {
   };
 
   const canExport = !loading && !error && result !== null && result.total > 0;
+  const hasFilters = !isEmptyExplorerState(state);
 
   return (
     <main className="flex-1 px-6 py-8">
@@ -106,19 +158,22 @@ function DataPageInner() {
         </button>
       </div>
 
-      {filterCol && filterVal && (
-        <div className="mb-4 flex items-center gap-2 rounded-control border border-primary/30 bg-primary/10 px-4 py-2 text-sm text-foreground">
-          <span>
-            Filtered by <strong>{prettify(filterCol)}</strong> = <strong>{filterVal}</strong>
-          </span>
+      <DataFilterBar datasetId={datasetId} columns={columns} state={state} onChange={update} />
+
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <span className="text-sm text-foreground-muted">
+          {result ? `${result.total.toLocaleString()} ${result.total === 1 ? 'row' : 'rows'}` : ''}
+          {hasFilters && result ? ' match your filters' : ''}
+        </span>
+        {hasFilters && (
           <button
-            onClick={clearFilter}
-            className="ml-2 font-medium text-primary underline-offset-2 transition-colors hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={clearAll}
+            className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-foreground-muted transition-colors hover:bg-surface-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            Clear filter
+            Clear all filters
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       {notice && (
         <div className="mb-4 rounded-control border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-foreground">
@@ -134,9 +189,7 @@ function DataPageInner() {
         </div>
       )}
 
-      {!loading && !error && result && (
-        <DataTable result={result} onPageChange={setPage} />
-      )}
+      {!loading && !error && result && <DataTable result={result} onPageChange={setPage} />}
     </main>
   );
 }
