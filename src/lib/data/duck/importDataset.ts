@@ -65,7 +65,6 @@ export function slugify(name: string): string {
 }
 
 const SLUG_RE = /^[a-z0-9_-]+$/;
-const FILENAME_RE = /^[A-Za-z0-9._-]+\.(csv|xlsx)$/i;
 
 /**
  * Validate an upload target built from client input and resolve the on-disk destination,
@@ -76,13 +75,27 @@ export function resolveUploadTarget(
   datasetId: string,
   filenameRaw: string,
 ): { ok: true; folder: string; dest: string; filename: string } | { ok: false; error: string } {
-  const filename = path.basename(filenameRaw); // strip any path components
   if (!SLUG_RE.test(datasetId)) {
     return { ok: false, error: 'Invalid datasetId.' };
   }
-  if (!FILENAME_RE.test(filename)) {
+  const base = path.basename(filenameRaw); // strip any path components
+  const ext = path.extname(base).toLowerCase();
+  if (ext !== '.csv' && ext !== '.xlsx') {
     return { ok: false, error: 'Only .csv or .xlsx files are allowed.' };
   }
+  // Sanitise the stem rather than reject it: browsers routinely produce names with spaces
+  // and "(1)" duplicate suffixes, which the on-disk allowlist would otherwise 400. Collapse
+  // any run of disallowed characters to a single underscore, then trim edge underscores.
+  // The CSV/xlsx files are globbed by extension at materialise time, so the exact stem does
+  // not affect the import.
+  const stem = base
+    .slice(0, base.length - ext.length)
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  if (!stem) {
+    return { ok: false, error: 'Invalid filename.' };
+  }
+  const filename = `${stem}${ext}`;
   const folder = path.join(DATASETS_DIR, datasetId);
   const dest = path.resolve(folder, filename);
   if (dest !== path.join(folder, filename) || !dest.startsWith(path.resolve(folder) + path.sep)) {

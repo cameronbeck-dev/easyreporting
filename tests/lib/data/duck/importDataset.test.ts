@@ -139,4 +139,13 @@ describe('resolveUploadTarget', () => {
     expect(resolveUploadTarget('orders', 'notes.txt')).toMatchObject({ ok: false });
     expect(resolveUploadTarget('orders', 'archive.csv.exe')).toMatchObject({ ok: false });
   });
+
+  it('sanitises spaces and "(1)" suffixes instead of rejecting them', () => {
+    const r = resolveUploadTarget('orders', 'ConsignmentExportReport2026-07-16 (1).csv');
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.filename).toBe('ConsignmentExportReport2026-07-16_1.csv');
+      expect(r.dest.startsWith(path.resolve(DATASETS_DIR, 'orders') + path.sep)).toBe(true);
+    }
+  });
 });
