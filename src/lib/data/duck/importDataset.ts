@@ -135,7 +135,14 @@ function buildSourceSelect(folderAbs: string, csv: boolean, xlsxFiles: string[])
     parts.push(`SELECT * FROM read_csv(${glob}, union_by_name=true, sample_size=-1)`);
   }
   for (const file of xlsxFiles) {
-    parts.push(`SELECT * FROM read_xlsx(${parquetLiteral(file)}, header=true)`);
+    // all_varchar=true → read every Excel column as text and let detectColumnTypes / the
+    // publish-time casts decide the real type. read_xlsx infers a column's type from its
+    // early cells and then HARD-ERRORS the moment a later cell doesn't fit (e.g. a mostly
+    // numeric column with a stray text note like "AM Delivery requested"), aborting the
+    // whole import. Reading as VARCHAR never fails: a column that is wholly numeric/date is
+    // promoted back by detection, and a genuinely mixed column simply stays text. This also
+    // mirrors the CSV path, whose sniffer already demotes such columns to VARCHAR.
+    parts.push(`SELECT * FROM read_xlsx(${parquetLiteral(file)}, header=true, all_varchar=true)`);
   }
   return parts.join(' UNION ALL BY NAME ');
 }

@@ -13,17 +13,32 @@ import {
   analyzeTenants,
   resolveUploadTarget,
 } from '@/lib/data/duck/importDataset';
+import { getDuckConnection, parquetLiteral } from '@/lib/data/duck/connection';
 
 // Unique folder names under the real data/datasets dir (materializeFolder resolves against
 // DATASETS_DIR = cwd/data/datasets). Cleaned up afterwards along with their staging Parquet.
 const OK = `__importtest_ok_${process.pid}`;
 const NO_TENANT = `__importtest_notenant_${process.pid}`;
 const DATES = `__importtest_dates_${process.pid}`;
+const MIXED = `__importtest_mixed_${process.pid}`;
+const XLSX = `__importtest_xlsx_${process.pid}`;
 
 function writeFolder(name: string, file: string, contents: string) {
   const dir = path.join(DATASETS_DIR, name);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, file), contents);
+}
+
+// Write a real .xlsx fixture using DuckDB's own excel writer, so the Excel import path can
+// be exercised end-to-end without checking a binary into the repo.
+async function writeXlsxFolder(name: string, file: string, sql: string) {
+  const dir = path.join(DATASETS_DIR, name);
+  fs.mkdirSync(dir, { recursive: true });
+  const conn = await getDuckConnection();
+  await conn.run('INSTALL excel; LOAD excel;');
+  await conn.run(
+    `COPY (${sql}) TO ${parquetLiteral(path.join(dir, file))} (FORMAT xlsx, HEADER true)`,
+  );
 }
 
 function cleanup(name: string) {
@@ -33,7 +48,7 @@ function cleanup(name: string) {
   fs.rmSync(path.join(WAREHOUSE_DIR, `${id}.parquet`), { force: true });
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   writeFolder(
     OK,
     'orders.csv',
@@ -48,12 +63,31 @@ beforeAll(() => {
     return `${day}/Jan/2025,${100 + i},globex`;
   }).join('\n');
   writeFolder(DATES, 'orders.csv', `despatch,amount,tenantId\n${rows}\n`);
+
+  // A column that is mostly numeric but carries one text value, so the CSV sniffer leaves
+  // it VARCHAR. Numeric detection must NOT promote it (a real value would be lost) — it
+  // stays text. This is the free-text-in-a-number-column case that used to crash Excel.
+  writeFolder(
+    MIXED,
+    'orders.csv',
+    'note,tenantId\n100,globex\n50,globex\nAM Delivery requested (8am-12pm),initech\n200,acme\n',
+  );
+
+  // A real Excel workbook: read as all-VARCHAR, then numeric detection promotes the wholly
+  // numeric "amount" back to a number while the text columns stay text.
+  await writeXlsxFolder(
+    XLSX,
+    'orders.xlsx',
+    `SELECT * FROM (VALUES (100,'NSW','globex'),(50,'VIC','globex'),(200,'QLD','initech')) t(amount, region, tenantId)`,
+  );
 });
 
 afterAll(() => {
   cleanup(OK);
   cleanup(NO_TENANT);
   cleanup(DATES);
+  cleanup(MIXED);
+  cleanup(XLSX);
 });
 
 describe('materializeFolder', () => {
@@ -83,6 +117,30 @@ describe('materializeFolder', () => {
     expect(s?.dateFormat).toBe('%d/%b/%Y');
     // A genuine text column is not misclassified.
     expect(m.suggestions.find((c) => c.name === 'tenantId')?.suggestedType).toBe('string');
+  });
+
+  it('imports an Excel file (read as text) and promotes a wholly-numeric column back to number', async () => {
+    const m = await materializeFolder(XLSX);
+    expect(m.ok).toBe(true);
+    if (!m.ok) return;
+    expect(m.rowCount).toBe(3);
+    expect(m.tenantColumn).toBe('tenantId');
+    // Every Excel column is sniffed as text (all_varchar avoids read_xlsx's crash-prone
+    // per-cell type inference)…
+    expect(m.columnsJson.every((c) => c.type === 'string')).toBe(true);
+    // …but detection recommends number for the wholly-numeric column, text for the rest.
+    expect(m.suggestions.find((c) => c.name === 'amount')?.suggestedType).toBe('number');
+    expect(m.suggestions.find((c) => c.name === 'region')?.suggestedType).toBe('string');
+    expect(m.suggestions.find((c) => c.name === 'tenantId')?.suggestedType).toBe('string');
+  });
+
+  it('keeps a mostly-numeric column with a stray text value as text (no data loss)', async () => {
+    const m = await materializeFolder(MIXED);
+    expect(m.ok).toBe(true);
+    if (!m.ok) return;
+    // The free-text value means the whole column is not convertible, so it stays text
+    // rather than being cast to a number (which would NULL the text row).
+    expect(m.suggestions.find((c) => c.name === 'note')?.suggestedType).toBe('string');
   });
 
   it('fails closed when the tenant column is absent', async () => {
