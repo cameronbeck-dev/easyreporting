@@ -15,6 +15,7 @@ import {
 import type { ImportAnalysisResult } from '@/lib/admin/repo';
 import type { ColumnTypeChoice } from '@/lib/data/duck/detectColumnTypes';
 import type { ColumnType } from '@/lib/data/types';
+import { EXCEL_SERIAL_FORMAT } from '@/lib/data/types';
 import { inputClass, labelClass, SubmitButton, ConfirmSubmitButton, FormError } from './ui';
 import { buttonClass } from '../ui/forms';
 
@@ -30,6 +31,8 @@ const COMMON_DATE_FORMATS = [
   '%d %b %Y',
   '%Y-%m-%d %H:%M:%S',
   '%d/%m/%Y %H:%M',
+  // Not a strptime format: the sentinel for Excel dates stored as serial numbers (e.g. 45707).
+  EXCEL_SERIAL_FORMAT,
 ];
 
 interface FileDataset {
@@ -319,7 +322,9 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
                   <p className="mb-1 text-xs font-semibold uppercase text-foreground-muted">Column types</p>
                   <p className="mb-3 text-xs text-foreground-muted">
                     Detected automatically. Columns marked <strong>date</strong> become groupable by
-                    day/week/month. Override any column below before publishing.
+                    day/week/month. Override any column below before publishing. For Excel dates
+                    stored as serial numbers (e.g. <code>45707</code>), set the type to date and use the{' '}
+                    <code>{EXCEL_SERIAL_FORMAT}</code> format.
                   </p>
                   <datalist id="date-format-presets">
                     {COMMON_DATE_FORMATS.map((f) => (

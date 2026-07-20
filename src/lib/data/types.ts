@@ -1,5 +1,14 @@
 export type ColumnType = 'string' | 'number' | 'date' | 'boolean';
 
+/**
+ * Sentinel `dateFormat` value marking an Excel serial-date column — a day-count since Excel's
+ * 1900-system epoch (1899-12-30), NOT a strptime format string. Excel stores dates as these
+ * serial numbers, and reading .xlsx as all-VARCHAR surfaces them as numeric text like "45707"
+ * that no strptime format can parse. Shared here (a client-safe module) so both the importer's
+ * cast (server) and the Import wizard (client) reference the same literal. See buildCastSelect.
+ */
+export const EXCEL_SERIAL_FORMAT = 'excel-serial';
+
 export interface JoinStep {
   tableName: string;
   joinType: 'inner' | 'left';
