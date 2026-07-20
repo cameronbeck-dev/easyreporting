@@ -4,11 +4,12 @@ import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import DataTable from '@/components/DataTable';
 import DataFilterBar from '@/components/DataFilterBar';
-import type { RowsResult, Filter } from '@/lib/data/types';
-import { postJson, downloadPost } from '@/lib/api/client';
+import type { Filter } from '@/lib/data/types';
+import { downloadPost } from '@/lib/api/client';
 import { useActiveDataset } from '@/components/ActiveDatasetProvider';
 import { useActiveDatasetId } from '@/components/useActiveDatasetId';
 import { useSchema } from '@/components/useSchema';
+import { useInfiniteRows } from '@/components/useInfiniteRows';
 import { buildGlobalFilters, resolveDateColumn } from '@/components/dashboardUtils';
 import {
   emptyExplorerState,
@@ -18,8 +19,6 @@ import {
   type DataExplorerState,
 } from '@/components/dataExplorer';
 
-const PAGE_SIZE = 20;
-
 function DataPageInner() {
   const { datasetId } = useActiveDataset();
   const router = useRouter();
@@ -28,12 +27,9 @@ function DataPageInner() {
 
   const [state, setState] = useState<DataExplorerState>(emptyExplorerState);
   const [hydrated, setHydrated] = useState(false);
-  const [result, setResult] = useState<RowsResult | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [page, setPage] = useState(1);
   const [exporting, setExporting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   // Load this dataset's saved explorer state. A legacy `?filterCol=&filterVal=` deep-link (the
   // old chart drill-down format) is honoured once, seeded into the store, then stripped.
@@ -51,7 +47,6 @@ function DataPageInner() {
     } else {
       setState(loadExplorerState(datasetId));
     }
-    setPage(1);
     setHydrated(true);
     // Reload only when the active dataset changes; router/searchParams are read once per load.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -65,7 +60,6 @@ function DataPageInner() {
       saveExplorerState(datasetId, next);
       return next;
     });
-    setPage(1);
   };
 
   const clearAll = () => update(emptyExplorerState());
@@ -74,58 +68,40 @@ function DataPageInner() {
   const activeFilters: Filter[] = buildGlobalFilters(state, dateColumn);
   const filtersKey = JSON.stringify(activeFilters);
 
-  useEffect(() => {
-    if (!hydrated || !datasetId) return;
-    setLoading(true);
-    setError(null);
-
-    let cancelled = false;
-    postJson<RowsResult>('/api/rows', {
-      datasetId,
-      query: { filters: activeFilters, page, pageSize: PAGE_SIZE },
-    })
-      .then((data) => {
-        if (!cancelled) {
-          setResult(data);
-          setLoading(false);
-        }
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Unknown error');
-          setLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [datasetId, filtersKey, page, hydrated]);
+  const {
+    columns: resultColumns,
+    rows,
+    total,
+    loading,
+    loadingMore,
+    error,
+    hasMore,
+    loadMore,
+  } = useInfiniteRows(datasetId, activeFilters, filtersKey, hydrated);
 
   const handleExport = async () => {
     setExporting(true);
-    setError(null);
+    setExportError(null);
     setNotice(null);
     try {
-      const { truncated, total } = await downloadPost(
+      const { truncated, total: exportTotal } = await downloadPost(
         '/api/export/rows',
         { datasetId, filters: activeFilters },
         `${datasetId}.csv`,
       );
       if (truncated) {
         setNotice(
-          `Export capped at the first 50,000 of ${total.toLocaleString()} rows. Add a filter to narrow it down.`,
+          `Export capped at the first 50,000 of ${exportTotal.toLocaleString()} rows. Add a filter to narrow it down.`,
         );
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Export failed');
+      setExportError(err instanceof Error ? err.message : 'Export failed');
     } finally {
       setExporting(false);
     }
   };
 
-  const canExport = !loading && !error && result !== null && result.total > 0;
+  const canExport = !loading && !error && total > 0;
   const hasFilters = !isEmptyExplorerState(state);
 
   return (
@@ -162,8 +138,8 @@ function DataPageInner() {
 
       <div className="mb-4 flex items-center justify-between gap-3">
         <span className="text-sm text-foreground-muted">
-          {result ? `${result.total.toLocaleString()} ${result.total === 1 ? 'row' : 'rows'}` : ''}
-          {hasFilters && result ? ' match your filters' : ''}
+          {!loading ? `${total.toLocaleString()} ${total === 1 ? 'row' : 'rows'}` : ''}
+          {hasFilters && !loading ? ' match your filters' : ''}
         </span>
         {hasFilters && (
           <button
@@ -181,6 +157,12 @@ function DataPageInner() {
         </div>
       )}
 
+      {exportError && (
+        <div className="mb-4 rounded-control border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">
+          {exportError}
+        </div>
+      )}
+
       {loading && <div className="py-8 text-center text-sm text-foreground-muted">Loading...</div>}
 
       {error && (
@@ -189,7 +171,16 @@ function DataPageInner() {
         </div>
       )}
 
-      {!loading && !error && result && <DataTable result={result} onPageChange={setPage} />}
+      {!loading && !error && (
+        <DataTable
+          columns={resultColumns}
+          rows={rows}
+          total={total}
+          hasMore={hasMore}
+          loadingMore={loadingMore}
+          onLoadMore={loadMore}
+        />
+      )}
     </main>
   );
 }
