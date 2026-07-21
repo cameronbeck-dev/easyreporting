@@ -9,8 +9,9 @@ interface DataProvider {
   listDatasets(): Promise<Dataset[]>;
   getSchema(datasetId: string): Promise<DatasetSchema>;
   queryAggregated(datasetId: string, q: AggregatedQuery): Promise<AggregatedResult>;
-  querySummary(datasetId: string, q: SummaryQuery): Promise<SummaryResult>;
   queryRows(datasetId: string, q: RowsQuery): Promise<RowsResult>;
+  querySummary(datasetId: string, q: SummaryQuery): Promise<SummaryResult>;
+  queryTable(datasetId: string, q: TableQuery): Promise<TableResult>;
 }
 ```
 
@@ -19,8 +20,11 @@ interface DataProvider {
 - `listDatasets` — return the list of available datasets (id + name).
 - `getSchema` — return the column list with inferred or declared types for a dataset.
 - `queryAggregated` — group rows by `q.x`, aggregate `q.y` using `q.aggregation`, apply `q.filters`. When `q.dateBucket` is set and `q.x` is a date column, bucket dates into that grain. Return x-axis values and one or more series.
-- `querySummary` — compute each headline metric in `q.metrics` (`Count` ignores its column) over rows matching `q.filters`. Return one value per metric.
 - `queryRows` — apply `q.filters`, paginate (1-based `q.page`, `q.pageSize`), return typed rows with total count.
+- `querySummary` — compute each headline metric in `q.metrics` (`Count` ignores its column) over rows matching `q.filters`. Return one value per metric.
+- `queryTable` — a grouped/pivot query: `GROUP BY` one or two `q.dimensions`, emit one aggregated column per measure in `q.measures` (aliased `m0..mN`), apply `q.filters`, `q.orderBy`, and an optional top-N `q.limit`/`q.rankBy`. Backs the dashboard's **Table** card. Emit a single grouped query, never client-side fan-out.
+
+All six methods must be honored (`AccessControlledProvider` delegates to each), and every aggregation in the `Aggregation` enum — including `CountUnique` (`COUNT(DISTINCT col)`) — must be supported by `queryAggregated`, `querySummary`, and `queryTable`.
 
 ### The one rule every provider must follow: honor injected filters
 
@@ -73,9 +77,10 @@ The flow is:
 
 ```
 Route handler
-  -> getProvider(ctx)          // src/lib/data/getProvider.ts
+  -> getProvider(ctx, datasetId)   // src/lib/data/getProvider.ts re-exports
+       |                           // getProviderForDataset from resolveDataset.ts
        -> AccessControlledProvider(new SqlProvider(), ctx)
-            -> SqlProvider      // your code — no security needed
+            -> SqlProvider         // your code — no security needed
 ```
 
 `AccessControlledProvider` will:

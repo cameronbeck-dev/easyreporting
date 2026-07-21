@@ -115,13 +115,14 @@ npm run db:invite -- someone@example.com
 All pages require sign-in. `/login` and `/invite/<token>` are the only public routes.
 
 - `/` — Dashboard:
-  - **Snapshot tiles** — auto-derived headline totals, user-editable (hover → edit → pick aggregation/column), with optional compare-to-previous-period deltas.
+  - **Snapshot tiles** — auto-derived headline totals, user-editable (hover → edit → pick aggregation/column), with optional compare-to-previous-period deltas. Aggregations are Total (sum), Average, Number of (count), **Unique** (`COUNT(DISTINCT)`), Lowest (min), and Highest (max).
   - **Charts** — add/edit/remove line/area/bar/scatter/pie/donut visualizations, plus **combo** (dual-axis: a bar measure and a line measure on independent left/right y-axes) and **breakdown** (one measure split into a series per category value, top-N) for the cartesian chart types; per-chart date granularity (day/week/month/quarter, not applicable to pie/donut) and per-chart top-N; click a point to drill into the Data page filtered; **Export** downloads the numbers behind the chart as CSV (X dimension + one column per series). Combo and breakdown are composed client-side from the single-measure query endpoint (no server changes).
+  - **Tables** (`TableCard`) — a grouped/pivot card: one or two dimensions down the rows and N aggregated measures across the columns, with header-click sort, an optional top-N cut, a totals row, and per-category drill-through to the Data Explorer. Backed by a single grouped query via `POST /api/table` (`queryTable`), pushed down to the database like the charts — no client-side fan-out. **Export CSV** downloads the pivoted grid.
   - **Global controls** (collapsible) — a **timeline** (pick any date column, relative presets or an explicit range, day/week/month/quarter granularity, and compare-to-previous) plus **additive filters** (searchable multi-select include/exclude for dimensions, numeric ranges), all applied to every tile + chart at once.
   - **Resizable grid** — drag the gutter between cards to set column width; cards auto-wrap. Charts keep a 1:2 aspect ratio.
   - **Saved per user, per dataset** — charts, tiles, and filters persist server-side for each user and dataset; until you customise it you see sensible defaults, and **Reset to default** restores them. Grid width / panel state stay device-local.
 - **Dataset switcher** (header) — when more than the built-in demo dataset exists, pick the active dataset; the Dashboard and Data Explorer follow it via `?datasetId=`.
-- `/data` — Data Explorer: paginated table of raw rows. Accepts `?datasetId=`, `?filterCol=`, `?filterVal=` query params. **Export CSV** downloads the currently-filtered view (up to 50,000 rows; larger sets are flagged as truncated). The export runs through the same `AccessControlledProvider` choke point as the on-screen table, so tenant isolation, row scopes, and the fail-closed column allow-list apply identically — a company never exports a column or row it cannot see.
+- `/data` — Data Explorer: an **infinite-scroll** table of raw rows (pages fetched on demand via `useInfiniteRows`) with an **editable filter bar** (`DataFilterBar`) — add/remove filters and adjust their values in place. The filter/date state is persisted **per dataset in the browser** (`dataExplorer.ts` load/save), so returning to a dataset restores your view. Drill-through from a chart or table lands here filtered. `?datasetId=` selects the active dataset; the old `?filterCol=`/`?filterVal=` deep-link is still honoured once (seeded into the store, then stripped) for backward compatibility. **Export CSV** downloads the currently-filtered view (up to 50,000 rows; larger sets are flagged as truncated). The export runs through the same `AccessControlledProvider` choke point as the on-screen table, so tenant isolation, row scopes, and the fail-closed column allow-list apply identically — a company never exports a column or row it cannot see.
 - `/admin` — Admin (admins only): manage users and row profiles, scoped to the admin's company; owner admins also set each company's visible columns. Non-admins are redirected away server-side.
 - Light/dark mode toggle and per-company white-label branding (colors, logo, font) resolved server-side.
 
@@ -157,6 +158,8 @@ Suites:
 - `tests/components/chartData.test.ts` — client-side chart data composition (`fetchChartData`: single measure, combo, breakdown top-N)
 - `tests/components/chartTypes.test.ts` — saved-layout migration (`migrateGlobals` upgrades old dashboards to the timeline + filters model)
 - `tests/components/dashboardUtils.test.ts` — date-column detection helpers and dashboard utilities
+- `tests/components/gridLayout.test.ts` — dashboard grid packing (`packRanks`: reading-order wrap, non-dense gaps, tall/wide-card routing, clamping) and drag positioning (`resolveDragCell`)
+- `tests/components/dataExplorer.test.ts` — Data Explorer date-range helper (`bucketRange`: day/week/month/quarter → explicit start/end, incl. leap-year and month-length edges)
 
 ## File-backed datasets (drop a folder of CSV/Excel)
 
@@ -166,8 +169,11 @@ Load large CSV/Excel files as datasets without a database. Two ways in:
   upload files, **Analyze** (previews the schema, per-company row counts, unknown-tenant and
   schema-drift warnings, and flags text columns that parse as dates), optionally **override
   each column's type** (e.g. promote a `"02/Jan/2025"` text column to a real DATE), then
-  **Publish** — chosen types are applied as casts on materialize. Uploads stream to disk (no
-  size cap). Re-import replaces the data (type choices are remembered in the sidecar); Delete
+  **Publish** — chosen types are applied as casts on materialize. Excel columns are read as
+  text to avoid type-inference crashes, and **Excel serial-date** columns (numeric day-counts
+  like `45707`) are detected and offered for conversion to real dates via the
+  `EXCEL_SERIAL_FORMAT` sentinel (`src/lib/data/types.ts`). Uploads stream to disk (no size
+  cap). Re-import replaces the data (type choices are remembered in the sidecar); Delete
   removes the dataset, its Parquet, source files, and dashboards.
 - **CLI:** drop a folder of files under `data/datasets/<id>/` and run `npm run db:sync-files`
   (auto-applies value-based type detection).
