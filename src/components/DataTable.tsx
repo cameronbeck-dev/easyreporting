@@ -18,9 +18,10 @@ export default function DataTable({ columns, rows, total, hasMore, loadingMore, 
   const isNumeric = (type: string) => type === 'number';
 
   // Infinite scroll: an off-screen sentinel row at the end of the body triggers the next page as it
-  // nears the viewport. A 600px rootMargin prefetches before the user reaches the bottom, so new
-  // rows are usually on screen by the time they scroll to them. Latest props are read through refs
-  // so the observer is created once and never torn down/re-attached mid-scroll.
+  // nears the bottom of the scrollable pane. A 600px rootMargin prefetches before the user reaches
+  // the bottom, so new rows are usually on screen by the time they scroll to them. Latest props are
+  // read through refs so the observer is created once and never torn down/re-attached mid-scroll.
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const sentinelRef = useRef<HTMLTableRowElement | null>(null);
   const onLoadMoreRef = useRef(onLoadMore);
   onLoadMoreRef.current = onLoadMore;
@@ -34,7 +35,7 @@ export default function DataTable({ columns, rows, total, hasMore, loadingMore, 
       (entries) => {
         if (entries[0].isIntersecting && hasMoreRef.current) onLoadMoreRef.current();
       },
-      { rootMargin: '600px 0px' },
+      { root: scrollRef.current, rootMargin: '600px 0px' },
     );
     observer.observe(el);
     return () => observer.disconnect();
@@ -42,14 +43,16 @@ export default function DataTable({ columns, rows, total, hasMore, loadingMore, 
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="overflow-x-auto rounded-card border border-border bg-surface">
+      {/* Bounded height keeps this pane's own scrollbars within the viewport, so the horizontal
+          scrollbar stays reachable no matter how many rows infinite scroll has appended below. */}
+      <div ref={scrollRef} className="max-h-[70vh] overflow-auto rounded-card border border-border bg-surface">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-border bg-surface-muted">
+          <thead className="bg-surface-muted">
             <tr>
               {columns.map((col) => (
                 <th
                   key={col.name}
-                  className={`whitespace-nowrap px-4 py-3 font-medium text-foreground ${isNumeric(col.type) ? 'text-right' : ''}`}
+                  className={`sticky top-0 z-10 whitespace-nowrap border-b border-border bg-surface-muted px-4 py-3 font-medium text-foreground ${isNumeric(col.type) ? 'text-right' : ''}`}
                 >
                   {prettify(col.name)}
                   <span className="ml-1 text-xs font-normal text-foreground-muted">({col.type})</span>
