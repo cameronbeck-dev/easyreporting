@@ -91,6 +91,27 @@ export async function setTenantColumnsAction(_prev: ActionState, formData: FormD
   });
 }
 
+// --- Column formats (owner admins; repo enforces + sanitizes) ------------
+
+export async function setColumnFormatAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  return run(['/admin/formats'], async () => {
+    const admin = await requireAdminAction();
+    const datasetId = String(formData.get('datasetId') ?? '');
+    const columnName = String(formData.get('columnName') ?? '');
+    // The format is sent as a JSON blob (nested object). Empty/"null" clears the column's format.
+    const raw = String(formData.get('format') ?? '');
+    let parsed: unknown = null;
+    if (raw && raw !== 'null') {
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return { error: 'Invalid format payload.' };
+      }
+    }
+    await repo.setColumnFormat(admin, datasetId, columnName, parsed as Parameters<typeof repo.setColumnFormat>[3]);
+  });
+}
+
 // --- Connections (owner admins) ------------------------------------------
 
 export async function createConnectionAction(_prev: ActionState, formData: FormData): Promise<ActionState> {

@@ -11,6 +11,7 @@ export default function AdminNav({ isOwner }: { isOwner: boolean }) {
     ...(isOwner
       ? [
           { href: '/admin/columns', label: 'Company columns' },
+          { href: '/admin/formats', label: 'Formats' },
           { href: '/admin/connections', label: 'Connections' },
           { href: '/admin/datasets', label: 'Datasets' },
           { href: '/admin/import', label: 'Import' },

@@ -143,6 +143,7 @@ export class AccessControlledProvider implements DataProvider {
       name: f.name,
       type: 'number',
       isComputed: true,
+      format: f.format,
     }));
     return {
       ...schema,
@@ -315,6 +316,7 @@ export class AccessControlledProvider implements DataProvider {
       name: f.name,
       type: 'number',
       isComputed: true,
+      format: f.format,
     }));
 
     return {

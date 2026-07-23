@@ -49,7 +49,7 @@ vi.mock('@/lib/db/client', async () => {
 });
 
 // Import admin functions AFTER all mocks are in place.
-const { createDataset } = await import('@/lib/admin/repo');
+const { createDataset, setColumnFormat, getDatasetColumnsForAdmin } = await import('@/lib/admin/repo');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -328,5 +328,115 @@ describe('createDataset — validation', () => {
         ],
       }),
     ).rejects.toThrow(/bad_col/);
+  });
+});
+
+// ── per-column display formats ────────────────────────────────────────────────
+
+const COMPANY_ADMIN = {
+  ...PLATFORM_ADMIN,
+  userId: 'cadmin',
+  email: 'admin@acme.com',
+  tenantId: 'acme',
+  isPlatformAdmin: false,
+};
+
+async function insertFileDataset(db: TestDb) {
+  await db.insert(datasets).values({
+    id: 'sales',
+    name: 'Sales',
+    connectionId: null,
+    tableName: null,
+    parquetPath: 'data/warehouse/sales.parquet',
+    tenantColumn: 'tenant_id',
+    columnsJson: [
+      { name: 'revenue', type: 'number' },
+      { name: 'created', type: 'date' },
+      { name: 'city', type: 'string' },
+    ],
+    computedFieldsJson: [
+      { name: 'margin', type: 'number', expression: '[revenue] - [cost]', dependencies: ['revenue', 'cost'] },
+    ],
+  });
+}
+
+describe('setColumnFormat / getDatasetColumnsForAdmin', () => {
+  beforeEach(async () => {
+    await insertFileDataset(testDb);
+  });
+
+  it('sets a numeric column format (sanitized) and reads it back', async () => {
+    await setColumnFormat(PLATFORM_ADMIN, 'sales', 'revenue', {
+      style: 'currency',
+      currencyCode: 'aud', // lower-case → sanitized to AUD
+      decimals: 2,
+      thousands: true,
+    });
+
+    const cols = await getDatasetColumnsForAdmin(PLATFORM_ADMIN, 'sales');
+    const revenue = cols.find((c) => c.name === 'revenue');
+    expect(revenue?.format).toEqual({
+      style: 'currency',
+      currencyCode: 'AUD',
+      decimals: 2,
+      thousands: true,
+    });
+  });
+
+  it('sets a date column format and drops numeric-only fields', async () => {
+    await setColumnFormat(PLATFORM_ADMIN, 'sales', 'created', {
+      datePreset: 'dmy',
+      style: 'currency', // not valid on a date column → dropped
+    } as never);
+
+    const cols = await getDatasetColumnsForAdmin(PLATFORM_ADMIN, 'sales');
+    expect(cols.find((c) => c.name === 'created')?.format).toEqual({ datePreset: 'dmy' });
+  });
+
+  it('lists computed fields as formattable and formats one (persisted to computedFieldsJson)', async () => {
+    const before = await getDatasetColumnsForAdmin(PLATFORM_ADMIN, 'sales');
+    const margin = before.find((c) => c.name === 'margin');
+    expect(margin).toMatchObject({ type: 'number', isComputed: true });
+
+    await setColumnFormat(PLATFORM_ADMIN, 'sales', 'margin', { style: 'currency', currencyCode: 'AUD' });
+
+    // The format lands on the computed field store, not columnsJson.
+    const [row] = await testDb.select().from(datasets).where(eq(datasets.id, 'sales'));
+    const computed = row.computedFieldsJson as { name: string; format?: unknown }[];
+    expect(computed.find((f) => f.name === 'margin')?.format).toEqual({ style: 'currency', currencyCode: 'AUD' });
+
+    // And it reads back through the admin list.
+    const after = await getDatasetColumnsForAdmin(PLATFORM_ADMIN, 'sales');
+    expect(after.find((c) => c.name === 'margin')?.format).toEqual({ style: 'currency', currencyCode: 'AUD' });
+  });
+
+  it('clears a computed field format when passed null (keeps the field intact)', async () => {
+    await setColumnFormat(PLATFORM_ADMIN, 'sales', 'margin', { decimals: 1 });
+    await setColumnFormat(PLATFORM_ADMIN, 'sales', 'margin', null);
+    const [row] = await testDb.select().from(datasets).where(eq(datasets.id, 'sales'));
+    const computed = row.computedFieldsJson as { name: string; expression: string; format?: unknown }[];
+    const margin = computed.find((f) => f.name === 'margin');
+    expect(margin?.format).toBeUndefined();
+    expect(margin?.expression).toBe('[revenue] - [cost]'); // field itself untouched
+  });
+
+  it('clears a format when passed null', async () => {
+    await setColumnFormat(PLATFORM_ADMIN, 'sales', 'revenue', { decimals: 0 });
+    await setColumnFormat(PLATFORM_ADMIN, 'sales', 'revenue', null);
+    const cols = await getDatasetColumnsForAdmin(PLATFORM_ADMIN, 'sales');
+    expect(cols.find((c) => c.name === 'revenue')?.format).toBeUndefined();
+  });
+
+  it('rejects a non-owner admin', async () => {
+    await expect(
+      setColumnFormat(COMPANY_ADMIN, 'sales', 'revenue', { decimals: 0 }),
+    ).rejects.toThrow();
+    await expect(getDatasetColumnsForAdmin(COMPANY_ADMIN, 'sales')).rejects.toThrow();
+  });
+
+  it('rejects an unknown column', async () => {
+    await expect(
+      setColumnFormat(PLATFORM_ADMIN, 'sales', 'nope', { decimals: 0 }),
+    ).rejects.toThrow();
   });
 });

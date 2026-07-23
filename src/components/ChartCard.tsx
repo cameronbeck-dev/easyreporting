@@ -7,7 +7,9 @@ import type { AggregatedResult, Filter, DateBucket } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import { useChartTheme } from './echartsTheme';
 import { fieldColor } from './fieldColors';
-import { buildChartOption } from './buildChartOption';
+import { buildChartOption, type ChartValueFormats } from './buildChartOption';
+import { measureFormatColumn } from './columnFormat';
+import { useSchema } from './useSchema';
 import { fetchChartData, type AggregatedFetcher } from './chartData';
 import { aggregatedToCsv } from '@/lib/data/export/toCsv';
 import { postJson, downloadText } from '@/lib/api/client';
@@ -38,6 +40,7 @@ export default function ChartCard({
   onDragStart,
 }: Props) {
   const theme = useChartTheme();
+  const schema = useSchema(config.datasetId);
   const [result, setResult] = useState<AggregatedResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -97,9 +100,24 @@ export default function ChartCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dataKey, filtersKey, effectiveBucket]);
 
+  // Resolve the measure column format(s) so axes/tooltips render currency/percent/decimals and a
+  // consistent compaction unit. Combo charts resolve left- and right-axis measures separately.
+  const chartFormats = ((): ChartValueFormats => {
+    if (config.type === 'combo') {
+      const ms = config.measures ?? [];
+      const left = ms.find((m) => m.axis === 'left') ?? ms[0];
+      const right = ms.find((m) => m.axis === 'right');
+      return {
+        left: left && measureFormatColumn(schema.columns, left.y, left.aggregation).format,
+        right: right && measureFormatColumn(schema.columns, right.y, right.aggregation).format,
+      };
+    }
+    return { left: measureFormatColumn(schema.columns, config.y, config.aggregation).format };
+  })();
+
   const getEChartsOption = () => {
     if (!result || !theme) return {};
-    return buildChartOption(config, result, theme);
+    return buildChartOption(config, result, theme, chartFormats);
   };
 
   const onChartClick = (params: { name: string }) => {

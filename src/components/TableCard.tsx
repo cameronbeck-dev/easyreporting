@@ -3,10 +3,12 @@
 import { useEffect, useState } from 'react';
 import type { TableConfig, TableSort } from './chartTypes';
 import { tableColumnLabels } from './chartTypes';
-import type { Filter, TableResult, SummaryResult, SummaryMetric } from '@/lib/data/types';
+import type { Filter, TableResult, SummaryResult, SummaryMetric, ColumnSchema } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import { fieldColor } from './fieldColors';
-import { formatMetric } from './formatNumber';
+import { formatValue } from './formatNumber';
+import { measureFormatColumn, dimensionFormatColumn } from './columnFormat';
+import { useSchema } from './useSchema';
 import { fetchTableData, type TableFetcher } from './tableData';
 import { tableToCsv } from '@/lib/data/export/toCsv';
 import { postJson, downloadText } from '@/lib/api/client';
@@ -46,6 +48,7 @@ export default function TableCard({
   const [totals, setTotals] = useState<number[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const schema = useSchema(config.datasetId);
 
   const accent = fieldColor(
     config.columns[0]?.aggregation === Aggregation.Count ? 'records' : config.columns[0]?.y ?? 'records',
@@ -107,6 +110,23 @@ export default function TableCard({
   const dimCount = config.dimensions.length;
   const labels = tableColumnLabels(config);
 
+  // Per-output-column format metadata. Measure columns resolve their source column's format
+  // (currency stays currency); compaction is per value (see formatValue), so no column-wide
+  // scale is precomputed and cells/footer each render at their own magnitude.
+  type MeasureMeta = { kind: 'measure'; fmtCol: Pick<ColumnSchema, 'type' | 'format'> };
+  type DimMeta = { kind: 'dim'; fmtCol: Pick<ColumnSchema, 'type' | 'format'> };
+  const colMeta: (MeasureMeta | DimMeta)[] = (result?.columns ?? []).map((col, cIdx) => {
+    if (cIdx < dimCount) {
+      return { kind: 'dim', fmtCol: dimensionFormatColumn(schema.columns, col.key, col.type) };
+    }
+    const measure = config.columns[cIdx - dimCount];
+    // `result` can briefly lag `config` (e.g. just after a measure is removed), leaving a result
+    // column with no matching config measure — render it plainly rather than crashing.
+    if (!measure) return { kind: 'measure', fmtCol: { type: 'number' } };
+    const fmtCol = measureFormatColumn(schema.columns, measure.y, measure.aggregation);
+    return { kind: 'measure', fmtCol };
+  });
+
   // Effective sort (defaults resolved the same way tableData/buildTable resolve them).
   const effWithin: TableSort = config.sort ?? { key: 'm0', dir: 'desc' };
   const effPrimary: TableSort | undefined =
@@ -137,8 +157,14 @@ export default function TableCard({
     downloadText(`${name}.csv`, csv);
   };
 
-  const dimCell = (v: string | number | null): string => {
+  const dimCell = (v: string | number | null, cIdx: number): string => {
     if (v === null || v === undefined || v === '') return '(none)';
+    const meta = colMeta[cIdx];
+    // Date dimensions with a format render per their preset; unparseable bucket labels (e.g.
+    // "2024-Q1") and all other dimensions pass through unchanged.
+    if (meta?.fmtCol.type === 'date' && meta.fmtCol.format) {
+      return formatValue(v, meta.fmtCol, { fallback: 'plain' });
+    }
     return String(v);
   };
 
@@ -248,9 +274,12 @@ export default function TableCard({
                     {row.map((v, cIdx) => {
                       const isMeasure = cIdx >= dimCount;
                       if (isMeasure) {
+                        const meta = colMeta[cIdx];
                         return (
                           <td key={cIdx} className="tnum whitespace-nowrap px-3 py-1.5 text-right text-foreground">
-                            {v === null || v === undefined ? '—' : formatMetric(Number(v))}
+                            {v === null || v === undefined
+                              ? '—'
+                              : formatValue(v, meta?.fmtCol ?? { type: 'number' }, { fallback: 'metric' })}
                           </td>
                         );
                       }
@@ -278,10 +307,10 @@ export default function TableCard({
                               className="rounded-control text-left underline-offset-2 transition-colors hover:text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                               title="Go to the data for this category"
                             >
-                              {dimCell(v)}
+                              {dimCell(v, cIdx)}
                             </button>
                           ) : (
-                            dimCell(v)
+                            dimCell(v, cIdx)
                           )}
                         </td>
                       );
@@ -298,9 +327,12 @@ export default function TableCard({
                       'sticky bottom-0 z-10 whitespace-nowrap border-t-2 border-border bg-surface px-3 py-2 text-foreground';
                     if (i >= dimCount) {
                       const val = totals[i - dimCount];
+                      const meta = colMeta[i];
                       return (
                         <td key={col.key} className={`tnum text-right ${base}`}>
-                          {val === undefined ? '' : formatMetric(val)}
+                          {val === undefined
+                            ? ''
+                            : formatValue(val, meta?.fmtCol ?? { type: 'number' }, { fallback: 'metric' })}
                         </td>
                       );
                     }

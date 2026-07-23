@@ -5,7 +5,7 @@
 // AccessControlledProvider so the choke point always applies.
 import type { UserContext } from '../auth/types';
 import type { DataProvider } from './DataProvider';
-import type { JoinStep, ColumnType } from './types';
+import type { JoinStep, ColumnType, ColumnFormat } from './types';
 import { AccessControlledProvider } from './AccessControlledProvider';
 import { SqlProvider } from './SqlProvider';
 import { DuckDbProvider } from './DuckDbProvider';
@@ -58,7 +58,7 @@ export async function getProviderForDataset(
         id: row.id,
         name: row.name,
         tableName: row.tableName!,
-        columnsJson: row.columnsJson as { name: string; type: ColumnType; table?: string }[],
+        columnsJson: row.columnsJson as { name: string; type: ColumnType; table?: string; format?: ColumnFormat }[],
         joins: (row.joinsJson ?? []) as JoinStep[],
       },
       connection: toDecryptedConnection(connRow),
@@ -70,7 +70,7 @@ export async function getProviderForDataset(
         id: row.id,
         name: row.name,
         parquetPath: row.parquetPath,
-        columnsJson: row.columnsJson as { name: string; type: ColumnType }[],
+        columnsJson: row.columnsJson as { name: string; type: ColumnType; format?: ColumnFormat }[],
       },
     });
   } else {

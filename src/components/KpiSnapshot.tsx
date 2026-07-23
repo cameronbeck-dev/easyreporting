@@ -6,7 +6,8 @@ import { Aggregation } from '@/lib/data/types';
 import type { TileConfig } from './chartTypes';
 import { metricLabel, prettify, aggregationOptionLabel } from './chartTypes';
 import { fieldColor } from './fieldColors';
-import { formatMetric } from './formatNumber';
+import { formatValue } from './formatNumber';
+import { measureFormatColumn } from './columnFormat';
 import { postJson } from '@/lib/api/client';
 
 interface Props {
@@ -213,7 +214,12 @@ export default function KpiSnapshot({
                 </div>
                 <div className="flex items-baseline gap-2">
                   <span className="tnum text-3xl font-extrabold leading-none text-foreground">
-                    {values === null ? '—' : formatMetric(values[i])}
+                    {/* Single value → per-value auto compaction (no shared scale). */}
+                    {values === null
+                      ? '—'
+                      : formatValue(values[i], measureFormatColumn(columns, t.column, t.aggregation), {
+                          fallback: 'metric',
+                        })}
                   </span>
                   {renderDelta(i)}
                 </div>

@@ -9,6 +9,44 @@ export type ColumnType = 'string' | 'number' | 'date' | 'boolean';
  */
 export const EXCEL_SERIAL_FORMAT = 'excel-serial';
 
+/**
+ * How a column's values are presented across the app (grid, tiles, tables, charts). Optional —
+ * absent means "no explicit format" and every surface keeps its prior default (raw String for
+ * grid cells, compact `formatMetric` for measures). Stored per column on `datasets.columnsJson`
+ * and edited by owner admins on the Formats admin page. Numeric fields apply to `number`
+ * columns; `datePreset` applies to `date` columns. See `formatValue`/`pickScale`.
+ */
+export interface ColumnFormat {
+  // --- numeric columns ---
+  /** Number style. Default 'plain'. */
+  style?: 'plain' | 'currency' | 'percent';
+  /** Fixed fraction digits (0–10). Omit for automatic (up to 2). */
+  decimals?: number;
+  /** Show a grouping (thousands) separator. */
+  thousands?: boolean;
+  /**
+   * Compaction (1.2K / 3.4M). 'off' = always full, 'always' = always compact, 'auto' (default)
+   * = full below `compactThreshold`, compact at/above. Applied per value (each value picks its
+   * own unit, see pickScale); the raw grid is always full.
+   */
+  compact?: 'off' | 'auto' | 'always';
+  /** Magnitude at/above which 'auto' compacts. Default 10_000. */
+  compactThreshold?: number;
+  /** ISO 4217 code (e.g. 'AUD'), used when style === 'currency'. */
+  currencyCode?: string;
+  /** Free text prepended to the formatted value. */
+  prefix?: string;
+  /** Free text appended to the formatted value. */
+  suffix?: string;
+  // --- date columns ---
+  /**
+   * Date display preset:
+   *   iso=2024-01-15  dmy=15/01/2024  mdy=01/15/2024
+   *   dMonY=15 Jan 2024  monY=Jan 2024  MonYYYY=January 2024
+   */
+  datePreset?: 'iso' | 'dmy' | 'mdy' | 'dMonY' | 'monY' | 'MonYYYY';
+}
+
 export interface JoinStep {
   tableName: string;
   joinType: 'inner' | 'left';
@@ -27,6 +65,8 @@ export interface ColumnSchema {
   name: string;
   type: ColumnType;
   isComputed?: boolean;
+  /** Owner-configured display format, if any. See ColumnFormat. */
+  format?: ColumnFormat;
 }
 
 export interface Dataset {

@@ -1,10 +1,13 @@
 import { Aggregation } from '../types';
+import type { ColumnFormat } from '../types';
 
 export interface ComputedField {
   name: string;
   type: 'number';
   expression: string;
   dependencies: string[];
+  /** Owner-configured display format, if any (computed fields are always numeric). */
+  format?: ColumnFormat;
 }
 
 /** Aggregate functions usable inside a computed-field formula. */

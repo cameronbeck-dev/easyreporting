@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react';
 import type { ColumnSchema } from '@/lib/data/types';
 import { prettify } from './chartTypes';
+import { formatValue } from './formatNumber';
 
 interface Props {
   columns: ColumnSchema[];
@@ -64,9 +65,9 @@ export default function DataTable({ columns, rows, total, hasMore, loadingMore, 
                     key={col.name}
                     className={`whitespace-nowrap px-4 py-2 text-foreground-muted ${isNumeric(col.type) ? 'text-right tnum' : ''}`}
                   >
-                    {row[col.name] === null || row[col.name] === undefined
-                      ? ''
-                      : String(row[col.name])}
+                    {/* Raw grid always shows full precision — force scale 'none' so a column's
+                        compact setting never abbreviates exact values here. */}
+                    {formatValue(row[col.name], col, { fallback: 'plain', scale: 'none' })}
                   </td>
                 ))}
               </tr>

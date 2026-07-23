@@ -14,6 +14,7 @@ import type {
   DatasetSchema,
   ColumnSchema,
   ColumnType,
+  ColumnFormat,
   AggregatedQuery,
   AggregatedResult,
   RowsQuery,
@@ -33,7 +34,7 @@ interface FileDataset {
   id: string;
   name: string;
   parquetPath: string;
-  columnsJson: { name: string; type: ColumnType }[];
+  columnsJson: { name: string; type: ColumnType; format?: ColumnFormat }[];
 }
 
 export class DuckDbProvider implements DataProvider {
@@ -50,7 +51,7 @@ export class DuckDbProvider implements DataProvider {
   }
 
   private getColumns(): ColumnSchema[] {
-    return this.dataset.columnsJson.map((c) => ({ name: c.name, type: c.type }));
+    return this.dataset.columnsJson.map((c) => ({ name: c.name, type: c.type, format: c.format }));
   }
 
   async listDatasets(): Promise<Dataset[]> {

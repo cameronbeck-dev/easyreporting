@@ -39,7 +39,8 @@ import { getProviderForDataset } from '../data/resolveDataset';
 import { Aggregation } from '../data/types';
 import { encryptSecret } from '../crypto/secrets';
 import { testConnection as introspectTestConnection, listTablesAndViews, listColumns, mapSqlType } from '../data/sql/introspect';
-import type { ColumnType, JoinStep } from '../data/types';
+import type { ColumnType, ColumnFormat, JoinStep } from '../data/types';
+import { sanitizeColumnFormat } from '../data/formatSpec';
 import { type DecryptedConnection, type SslMode, toDecryptedConnection } from '../data/sql/pool';
 import type { RowScope } from '../auth/types';
 import type { ComputedField } from '../data/computed/types';
@@ -297,6 +298,92 @@ export async function setTenantColumns(admin: AdminContext, tenantId: string, da
 export async function listAllDatasetsForAdmin(admin: AdminContext): Promise<{ id: string; name: string }[]> {
   assertOwner(admin);
   return db.select({ id: datasets.id, name: datasets.name }).from(datasets);
+}
+
+// ---------------------------------------------------------------------------
+// Per-column display formats (owner admins). Stored on datasets.columnsJson so every
+// query path (schema, rows, aggregates) reads the format from one place.
+// ---------------------------------------------------------------------------
+
+type StoredColumn = { name: string; type: ColumnType; table?: string; format?: ColumnFormat };
+
+/**
+ * A dataset's columns (source + computed) with their current display format — powers the Formats
+ * admin page. Computed fields are flagged so the UI can label them; they are always numeric.
+ */
+export async function getDatasetColumnsForAdmin(
+  admin: AdminContext,
+  datasetId: string,
+): Promise<{ name: string; type: ColumnType; format?: ColumnFormat; isComputed?: boolean }[]> {
+  assertOwner(admin);
+  const [row] = await db
+    .select({ columnsJson: datasets.columnsJson, computedFieldsJson: datasets.computedFieldsJson })
+    .from(datasets)
+    .where(eq(datasets.id, datasetId))
+    .limit(1);
+  if (!row) throw new ForbiddenError('Dataset not found.');
+
+  const source = (row.columnsJson as StoredColumn[]).map((c) => ({ name: c.name, type: c.type, format: c.format }));
+  const computed = ((row.computedFieldsJson ?? []) as ComputedField[]).map((f) => ({
+    name: f.name,
+    type: 'number' as ColumnType,
+    format: f.format,
+    isComputed: true,
+  }));
+  return [...source, ...computed];
+}
+
+/**
+ * Set (or clear, when `format` is null) one column's display format. The target may be a source
+ * column (stored on columnsJson) or a computed field (stored on computedFieldsJson); the format is
+ * sanitized against the column's real type, so only fields that type supports are persisted.
+ */
+export async function setColumnFormat(
+  admin: AdminContext,
+  datasetId: string,
+  columnName: string,
+  format: ColumnFormat | null,
+): Promise<void> {
+  assertOwner(admin);
+  const [row] = await db.select().from(datasets).where(eq(datasets.id, datasetId)).limit(1);
+  if (!row) throw new ForbiddenError('Dataset not found.');
+
+  const cols = row.columnsJson as StoredColumn[];
+  const sourceTarget = cols.find((c) => c.name === columnName);
+
+  if (sourceTarget) {
+    const cleaned = format ? sanitizeColumnFormat(format, sourceTarget.type) : undefined;
+    const next = cols.map((c) => {
+      if (c.name !== columnName) return c;
+      // Rebuild the entry without any prior format, re-attaching only when a cleaned one remains.
+      const rebuilt: StoredColumn = { name: c.name, type: c.type };
+      if (c.table !== undefined) rebuilt.table = c.table;
+      if (cleaned) rebuilt.format = cleaned;
+      return rebuilt;
+    });
+    await db.update(datasets).set({ columnsJson: next }).where(eq(datasets.id, datasetId));
+    return;
+  }
+
+  // Fall back to computed fields, which live on their own JSON column and are always numeric.
+  const computed = (row.computedFieldsJson ?? []) as ComputedField[];
+  const computedTarget = computed.find((f) => f.name === columnName);
+  if (!computedTarget) throw new ForbiddenError('Unknown column.');
+
+  const cleaned = format ? sanitizeColumnFormat(format, 'number') : undefined;
+  const nextComputed: ComputedField[] = computed.map((f) => {
+    if (f.name !== columnName) return f;
+    // Rebuild without any prior format, re-attaching only a cleaned one.
+    const rebuilt: ComputedField = {
+      name: f.name,
+      type: f.type,
+      expression: f.expression,
+      dependencies: f.dependencies,
+    };
+    if (cleaned) rebuilt.format = cleaned;
+    return rebuilt;
+  });
+  await db.update(datasets).set({ computedFieldsJson: nextComputed }).where(eq(datasets.id, datasetId));
 }
 
 // ---------------------------------------------------------------------------

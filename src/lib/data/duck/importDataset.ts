@@ -11,6 +11,7 @@
 // This module is server-only (it imports the metadata DB and the DuckDB connection).
 import fs from 'fs';
 import path from 'path';
+import { eq } from 'drizzle-orm';
 import { db } from '../../db/client';
 import { datasets } from '../../db/schema';
 import { getDuckConnection, parquetLiteral } from './connection';
@@ -23,7 +24,7 @@ import {
 } from './detectColumnTypes';
 import { quoteIdent } from '../sql/identifiers';
 import { DEFAULT_TENANT_COLUMN } from '../constants';
-import type { ColumnType } from '../types';
+import type { ColumnType, ColumnFormat } from '../types';
 
 export const DATASETS_DIR = path.join(process.cwd(), 'data', 'datasets');
 export const WAREHOUSE_DIR = path.join(process.cwd(), 'data', 'warehouse');
@@ -298,6 +299,26 @@ async function upsertRow(args: {
   columnsJson: DatasetColumn[];
 }): Promise<void> {
   const parquetRel = finalRel(args.id);
+
+  // Preserve owner-configured per-column display formats across re-import: columnsJson is rebuilt
+  // from the file's schema each time, so carry a saved format over when the column still exists
+  // with the same type (a type change invalidates a type-specific format).
+  const [existing] = await db
+    .select({ columnsJson: datasets.columnsJson })
+    .from(datasets)
+    .where(eq(datasets.id, args.id))
+    .limit(1);
+  const priorFormats = new Map<string, { type: ColumnType; format: ColumnFormat }>();
+  if (existing) {
+    for (const c of existing.columnsJson as { name: string; type: ColumnType; format?: ColumnFormat }[]) {
+      if (c.format) priorFormats.set(c.name, { type: c.type, format: c.format });
+    }
+  }
+  const columnsJson = args.columnsJson.map((c) => {
+    const prior = priorFormats.get(c.name);
+    return prior && prior.type === c.type ? { ...c, format: prior.format } : c;
+  });
+
   await db
     .insert(datasets)
     .values({
@@ -307,16 +328,16 @@ async function upsertRow(args: {
       tableName: null,
       parquetPath: parquetRel,
       tenantColumn: args.tenantColumn,
-      columnsJson: args.columnsJson,
+      columnsJson,
     })
     .onConflictDoUpdate({
       target: datasets.id,
-      // Refresh only what ingest owns; leave admin-configured computed fields intact.
+      // Refresh only what ingest owns; leave admin-configured computed fields + formats intact.
       set: {
         name: args.displayName,
         parquetPath: parquetRel,
         tenantColumn: args.tenantColumn,
-        columnsJson: args.columnsJson,
+        columnsJson,
       },
     });
 }

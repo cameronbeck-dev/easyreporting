@@ -13,6 +13,7 @@ import type {
   TableResult,
   TableColumnMeta,
   ColumnType,
+  ColumnFormat,
   JoinStep,
 } from './types';
 import { Aggregation } from './types';
@@ -26,7 +27,7 @@ interface DatasetRow {
   id: string;
   name: string;
   tableName: string;
-  columnsJson: { name: string; type: import('./types').ColumnType; table?: string }[];
+  columnsJson: { name: string; type: import('./types').ColumnType; table?: string; format?: ColumnFormat }[];
   joins: JoinStep[];
 }
 
@@ -56,7 +57,7 @@ export class SqlProvider implements DataProvider {
   }
 
   private getColumns(): ColumnSchema[] {
-    return this.dataset.columnsJson.map((c) => ({ name: c.name, type: c.type }));
+    return this.dataset.columnsJson.map((c) => ({ name: c.name, type: c.type, format: c.format }));
   }
 
   private isMultiTable(): boolean {
