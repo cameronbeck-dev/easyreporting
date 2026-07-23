@@ -144,6 +144,7 @@ export function buildWhere(
 
 function aggExpr(col: string, aggregation: Aggregation): string {
   if (aggregation === Aggregation.Count) return 'COUNT(*)';
+  if (aggregation === Aggregation.CountUnique) return `COUNT(DISTINCT ${quoteIdent(col)})`;
   return `${aggregation.toUpperCase()}(${quoteIdent(col)})`;
 }
 
@@ -231,9 +232,9 @@ export function buildSummary(
  *
  * TOP-N semantics:
  *   • one dimension  → keep the top-N rows by the ranking measure, then re-sort for display;
- *   • two dimensions → keep the top-N PRIMARY dimension values (ranked by the ranking
- *     measure's group total when re-summable — Sum/Count — else by child-row count), then
- *     return ALL their child rows so no group is chopped mid-way.
+ *   • two dimensions → keep the top-N PRIMARY dimension values (ranked by the ranking measure
+ *     computed at the primary-dimension level straight from the base rows), then return ALL
+ *     their child rows so no group is chopped mid-way.
  * The ranking measure is q.rankBy when set (biggest-first); otherwise the first measure
  * display-sorted on (if any is), else the first measure descending — so "sort revenue
  * smallest" yields the N smallest, while a dimension A–Z sort still ranks the surviving rows
@@ -315,16 +316,23 @@ export function buildTable(
   }
 
   // Two dimensions: rank the primary dimension, keep the top-N, then all their child rows.
+  // Rank d0 by the ranking measure recomputed at the d0 level straight from the base rows — NOT
+  // by re-aggregating the per-(d0,d1) grouped values. Re-summing children only reconstructs
+  // additive measures; a distinct count (COUNT DISTINCT ≠ sum of per-group distinct counts) or
+  // an average over child groups would rank by the wrong number. The WHERE params are shared by
+  // both CTEs (reused `$n` placeholders), so `values` is unchanged.
   const rankMeasure = q.measures[rankIdx];
-  const reSummable =
-    rankMeasure.aggregation === Aggregation.Sum || rankMeasure.aggregation === Aggregation.Count;
-  const rankAgg = reSummable ? `SUM(m${rankIdx})` : 'COUNT(*)';
+  const rankExpr = measureExpr(rankMeasure.measure, rankMeasure.y, rankMeasure.aggregation, allowedCols);
+  const dim0 = dimExprs[0];
   const text = [
     `WITH grouped AS (SELECT ${selectList}`,
     buildFrom(src),
     clause,
     `${groupBy})`,
-    `, ranked AS (SELECT d0 AS rk FROM grouped GROUP BY d0 ORDER BY ${rankAgg} ${rankDir} LIMIT ${topN})`,
+    `, ranked AS (SELECT ${dim0} AS rk`,
+    buildFrom(src),
+    clause,
+    `GROUP BY ${dim0} ORDER BY ${rankExpr} ${rankDir} LIMIT ${topN})`,
     `SELECT g.* FROM grouped g JOIN ranked r ON g.d0 IS NOT DISTINCT FROM r.rk`,
     displayOrderBy,
   ]

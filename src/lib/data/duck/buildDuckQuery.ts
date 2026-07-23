@@ -120,6 +120,7 @@ export function buildDuckWhere(
 
 function aggExpr(col: string, aggregation: Aggregation): string {
   if (aggregation === Aggregation.Count) return 'COUNT(*)';
+  if (aggregation === Aggregation.CountUnique) return `COUNT(DISTINCT ${quoteIdent(col)})`;
   return `${aggregation.toUpperCase()}(${quoteIdent(col)})`;
 }
 
@@ -289,16 +290,22 @@ export function buildDuckTable(
     return { text: `SELECT * FROM (${inner}) t ${displayOrderBy}`, values };
   }
 
+  // Rank d0 by the ranking measure recomputed at the d0 level from the base rows — not by
+  // re-aggregating the grouped per-(d0,d1) values, which only reconstructs additive measures.
+  // A distinct count (COUNT DISTINCT ≠ sum of per-group distinct counts) or an average would
+  // otherwise rank by the wrong number. The WHERE params are shared by both CTEs (reused `$n`).
   const rankMeasure = q.measures[rankIdx];
-  const reSummable =
-    rankMeasure.aggregation === Aggregation.Sum || rankMeasure.aggregation === Aggregation.Count;
-  const rankAgg = reSummable ? `SUM(m${rankIdx})` : 'COUNT(*)';
+  const rankExpr = measureExpr(rankMeasure.measure, rankMeasure.y, rankMeasure.aggregation, allowedCols);
+  const dim0 = dimExprs[0];
   const text = [
     `WITH grouped AS (SELECT ${selectList}`,
     from,
     clause,
     `${groupBy})`,
-    `, ranked AS (SELECT d0 AS rk FROM grouped GROUP BY d0 ORDER BY ${rankAgg} ${rankDir} LIMIT ${topN})`,
+    `, ranked AS (SELECT ${dim0} AS rk`,
+    from,
+    clause,
+    `GROUP BY ${dim0} ORDER BY ${rankExpr} ${rankDir} LIMIT ${topN})`,
     `SELECT g.* FROM grouped g JOIN ranked r ON g.d0 IS NOT DISTINCT FROM r.rk`,
     displayOrderBy,
   ]

@@ -131,6 +131,16 @@ describe('buildDuckAggregated', () => {
     expect(text).toContain('COUNT(*) AS y');
   });
 
+  it('CountUnique aggregation emits COUNT(DISTINCT col)', () => {
+    const { text } = buildDuckAggregated(
+      P,
+      { x: 'region', y: 'amount', aggregation: Aggregation.CountUnique, filters: [] },
+      allCols,
+      columns,
+    );
+    expect(text).toContain('COUNT(DISTINCT "amount") AS y');
+  });
+
   it('date x with a bucket uses date_trunc + strftime and flags bucketed', () => {
     const { text, bucketed } = buildDuckAggregated(
       P,
@@ -313,7 +323,7 @@ describe('buildDuckTable', () => {
       tableCols,
       tableSchema,
     );
-    expect(text).toContain('ORDER BY SUM(m1) DESC LIMIT 3');
+    expect(text).toContain('ORDER BY SUM("cost") DESC LIMIT 3');
   });
 
   it('an out-of-range rankBy falls back to the default ranking', () => {
@@ -329,5 +339,24 @@ describe('buildDuckTable', () => {
       tableSchema,
     );
     expect(text).toContain('ORDER BY m0 DESC LIMIT 5');
+  });
+
+  it('two-dimension top-N ranked by a distinct-count measure ranks by COUNT(DISTINCT ...) from base', () => {
+    const { text } = buildDuckTable(
+      P,
+      {
+        dimensions: ['region', 'category'],
+        measures: [{ y: 'revenue', aggregation: Aggregation.CountUnique }],
+        limit: 3,
+      },
+      tableCols,
+      tableSchema,
+    );
+    // Recomputed over each region's base rows, not the sum of per-category distinct counts and
+    // not a raw row-count fallback.
+    expect(text).toContain(
+      `ranked AS (SELECT "region" AS rk FROM read_parquet(${P}) GROUP BY "region" ORDER BY COUNT(DISTINCT "revenue") DESC LIMIT 3)`,
+    );
+    expect(text).not.toContain('ORDER BY COUNT(*)');
   });
 });

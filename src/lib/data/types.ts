@@ -54,6 +54,9 @@ export enum Aggregation {
   Sum = 'sum',
   Avg = 'avg',
   Count = 'count',
+  /** COUNT(DISTINCT col) — how many distinct values the column holds. Needs a real column
+   * (unlike Count, which ignores it), and works on any column type, not just numbers. */
+  CountUnique = 'countUnique',
   Min = 'min',
   Max = 'max',
 }
@@ -133,8 +136,8 @@ export interface TableQuery {
   /** ORDER BY terms, applied in order. Referenced keys are dimensions or `m{i}` aliases. */
   orderBy?: OrderSpec[];
   /**
-   * Keep only the top-N values of the PRIMARY dimension (ranked by the `rankBy` measure when
-   * re-summable, else row count). Clamped by the query builder. Omit for no limit.
+   * Keep only the top-N values of the PRIMARY dimension, ranked by the `rankBy` measure
+   * recomputed at the primary-dimension level. Clamped by the query builder. Omit for no limit.
    */
   limit?: number;
   /**

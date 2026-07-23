@@ -87,11 +87,14 @@ const AGGREGATION_LABEL: Record<Aggregation, string> = {
   [Aggregation.Sum]: 'Total',
   [Aggregation.Avg]: 'Average',
   [Aggregation.Count]: 'Number of',
+  [Aggregation.CountUnique]: 'Unique',
   [Aggregation.Min]: 'Lowest',
   [Aggregation.Max]: 'Highest',
 };
 
-/** Readable name for a single measure, e.g. "Total revenue" or "Number of records". */
+/** Readable name for a single measure, e.g. "Total revenue", "Number of records", or
+ * "Unique customer". Count ignores its column (counts rows); every other aggregation —
+ * CountUnique included — names the column it measures. */
 export function metricLabel(aggregation: Aggregation, column: string): string {
   const measure = aggregation === Aggregation.Count ? 'records' : column;
   return `${AGGREGATION_LABEL[aggregation]} ${measure}`;
@@ -102,6 +105,7 @@ const AGGREGATION_OPTION_LABEL: Record<Aggregation, string> = {
   [Aggregation.Sum]: 'Total',
   [Aggregation.Avg]: 'Average',
   [Aggregation.Count]: 'Count',
+  [Aggregation.CountUnique]: 'Count unique',
   [Aggregation.Min]: 'Lowest',
   [Aggregation.Max]: 'Highest',
 };

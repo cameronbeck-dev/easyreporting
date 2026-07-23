@@ -269,6 +269,15 @@ describe('buildAggregated — single-table regression', () => {
     expect(text).toContain('MAX("revenue")');
   });
 
+  it('CountUnique uses COUNT(DISTINCT col)', () => {
+    const { text } = buildAggregated(singleSrc, {
+      x: 'region',
+      y: 'revenue',
+      aggregation: Aggregation.CountUnique,
+    }, allCols, dateColumns);
+    expect(text).toContain('COUNT(DISTINCT "revenue")');
+  });
+
   it('date bucket uses DATE_TRUNC', () => {
     const { text } = buildAggregated(singleSrc, {
       x: 'date',
@@ -579,7 +588,9 @@ describe('buildTable', () => {
       tableCols,
     );
     expect(text).toContain('WITH grouped AS');
-    expect(text).toContain('ranked AS (SELECT d0 AS rk FROM grouped GROUP BY d0 ORDER BY SUM(m0) DESC LIMIT 3)');
+    expect(text).toContain(
+      'ranked AS (SELECT "region" AS rk FROM "public"."sales" GROUP BY "region" ORDER BY SUM("revenue") DESC LIMIT 3)',
+    );
     expect(text).toContain('JOIN ranked r ON g.d0 IS NOT DISTINCT FROM r.rk');
     expect(text).toContain('ORDER BY d0 ASC, m0 DESC');
   });
@@ -642,7 +653,7 @@ describe('buildTable', () => {
       allCols,
       tableCols,
     );
-    expect(text).toContain('ORDER BY SUM(m1) DESC LIMIT 3');
+    expect(text).toContain('ORDER BY SUM("cost") DESC LIMIT 3');
   });
 
   it('an out-of-range rankBy falls back to the default ranking', () => {
@@ -660,7 +671,7 @@ describe('buildTable', () => {
     expect(text).toContain('ORDER BY m0 DESC LIMIT 5');
   });
 
-  it('two dimensions with a non-re-summable rank measure falls back to COUNT(*)', () => {
+  it('two dimensions ranks the primary cut by the true measure recomputed from base rows', () => {
     const { text } = buildTable(
       singleSrc,
       {
@@ -672,7 +683,31 @@ describe('buildTable', () => {
       allCols,
       tableCols,
     );
-    expect(text).toContain('ORDER BY COUNT(*) DESC LIMIT 3');
+    // An average is not re-summable from child groups, so it is recomputed at the region level
+    // rather than approximated by a raw row count.
+    expect(text).toContain(
+      'ranked AS (SELECT "region" AS rk FROM "public"."sales" GROUP BY "region" ORDER BY AVG("revenue") DESC LIMIT 3)',
+    );
+    expect(text).not.toContain('ORDER BY COUNT(*)');
+  });
+
+  it('two-dimension top-N ranked by a distinct-count measure ranks by COUNT(DISTINCT ...) from base', () => {
+    const { text } = buildTable(
+      singleSrc,
+      {
+        dimensions: ['region', 'category'],
+        measures: [{ y: 'revenue', aggregation: Aggregation.CountUnique }],
+        limit: 3,
+      },
+      allCols,
+      tableCols,
+    );
+    // The distinct count is computed over each region's base rows — NOT the sum of per-category
+    // distinct counts, and NOT a raw row-count ranking.
+    expect(text).toContain(
+      'ranked AS (SELECT "region" AS rk FROM "public"."sales" GROUP BY "region" ORDER BY COUNT(DISTINCT "revenue") DESC LIMIT 3)',
+    );
+    expect(text).not.toContain('ORDER BY COUNT(*)');
   });
 
   it('a computed measure pushes the formula down instead of aggregation(column)', () => {
