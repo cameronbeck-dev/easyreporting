@@ -7,6 +7,7 @@ import './globals.css';
 import Nav from '@/components/Nav';
 import DatasetSwitcher from '@/components/DatasetSwitcher';
 import ActiveDatasetProvider from '@/components/ActiveDatasetProvider';
+import FilterProvider from '@/components/FilterProvider';
 import ThemeToggle from '@/components/ThemeToggle';
 import { getUserContext } from '@/lib/auth/getUserContext';
 import { listAllDatasets } from '@/lib/data/getProvider';
@@ -65,6 +66,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       </head>
       <body className="min-h-full flex flex-col bg-background font-sans text-foreground">
         <ActiveDatasetProvider datasets={datasets}>
+         <FilterProvider>
           {ctx && (
             <header className="sticky top-0 z-40 flex items-center gap-6 bg-primary px-6 py-3 text-primary-foreground shadow-card">
               <div className="flex items-center gap-2">
@@ -100,6 +102,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             </header>
           )}
           {children}
+         </FilterProvider>
         </ActiveDatasetProvider>
       </body>
     </html>

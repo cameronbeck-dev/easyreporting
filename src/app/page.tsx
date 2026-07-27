@@ -11,7 +11,7 @@ import GlobalControls from '@/components/GlobalControls';
 import { useSchema } from '@/components/useSchema';
 import { useActiveDataset } from '@/components/ActiveDatasetProvider';
 import { buildGlobalFilters, resolveDateColumn, previousPeriod } from '@/components/dashboardUtils';
-import { buildExplorerState, saveExplorerState, type DrillClick } from '@/components/dataExplorer';
+import { useFilters } from '@/components/FilterProvider';
 import type { ChartConfig, GlobalControls as Globals, TileConfig, TableConfig, DashboardLayout } from '@/components/chartTypes';
 import { DEFAULT_GLOBALS, migrateGlobals, migrateTables, migrateOrder } from '@/components/chartTypes';
 import type { ColumnSchema, Filter, DateBucket } from '@/lib/data/types';
@@ -63,6 +63,16 @@ function defaultLayout(columns: ColumnSchema[]): DashboardLayout {
   return { charts: [], tables: [], tiles: tiles.slice(0, 4), globals: DEFAULT_GLOBALS, order: [] };
 }
 
+// The dashboard-only view options (everything in GlobalControls that isn't a shared row filter).
+type ViewOpts = { granularity: Globals['granularity']; compare: boolean };
+const DEFAULT_VIEW_OPTS: ViewOpts = { granularity: DEFAULT_GLOBALS.granularity, compare: DEFAULT_GLOBALS.compare };
+
+// The `globals` blob persisted in the saved layout now carries only the view options; the shared
+// filters/date range live in their own store (FilterProvider). Keeping the field default-shaped
+// here means an old layout's filters stop being re-persisted, and loading vs saving round-trips
+// identically (so a freshly-loaded dashboard isn't seen as "changed" and re-saved).
+const layoutGlobals = (v: ViewOpts): Globals => ({ ...DEFAULT_GLOBALS, granularity: v.granularity, compare: v.compare });
+
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 // useLayoutEffect warns during SSR prerender; the FLIP measurement below is client-only anyway.
@@ -77,7 +87,13 @@ function DashboardInner() {
   const [charts, setCharts] = useState<ChartConfig[]>([]);
   const [tables, setTables] = useState<TableConfig[]>([]);
   const [order, setOrder] = useState<string[]>([]);
-  const [globals, setGlobals] = useState<Globals>(DEFAULT_GLOBALS);
+  // The row-affecting filters (date range + additive filters) are shared with the Data Explorer,
+  // so they live in FilterProvider, not here. The dashboard only owns the aggregation-shaping view
+  // options — granularity + compare — which are meaningless for raw rows; those persist as part of
+  // the saved layout below.
+  const { state: filterState, setState: setFilterState, applyDrills, clear: clearFilters } = useFilters();
+  const [viewOpts, setViewOpts] = useState<ViewOpts>(DEFAULT_VIEW_OPTS);
+  const globals: Globals = { ...filterState, granularity: viewOpts.granularity, compare: viewOpts.compare };
   const [tiles, setTiles] = useState<TileConfig[]>([]);
   const [ready, setReady] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -117,17 +133,19 @@ function DashboardInner() {
     // Normalise the persisted blob (upgrades pre-additive-filter globals; supplies an empty
     // tables list for dashboards saved before tables existed).
     const tables = migrateTables(layout.tables);
+    const migratedGlobals = migrateGlobals(layout.globals);
+    const opts: ViewOpts = { granularity: migratedGlobals.granularity, compare: migratedGlobals.compare };
     const migrated = {
       charts: layout.charts,
       tables,
       tiles: layout.tiles,
-      globals: migrateGlobals(layout.globals),
+      globals: layoutGlobals(opts),
       order: migrateOrder(layout.order, layout.charts, tables),
     };
     setCharts(migrated.charts);
     setTables(migrated.tables);
     setTiles(migrated.tiles);
-    setGlobals(migrated.globals);
+    setViewOpts(opts);
     setOrder(migrated.order);
     baselineRef.current = JSON.stringify(migrated);
     setReady(true);
@@ -181,27 +199,29 @@ function DashboardInner() {
   // Persist real changes (debounced). Skips the initial load and the untouched defaults.
   useEffect(() => {
     if (!ready) return;
-    const current = JSON.stringify({ charts, tables, tiles, globals, order });
+    const savedGlobals = layoutGlobals(viewOpts);
+    const current = JSON.stringify({ charts, tables, tiles, globals: savedGlobals, order });
     if (current === baselineRef.current) return;
     const t = setTimeout(() => {
       baselineRef.current = current;
-      putJson(`/api/dashboard`, { datasetId, layout: { charts, tables, tiles, globals, order } }).catch(() => {});
+      putJson(`/api/dashboard`, { datasetId, layout: { charts, tables, tiles, globals: savedGlobals, order } }).catch(() => {});
     }, SAVE_DEBOUNCE_MS);
     return () => clearTimeout(t);
-  }, [ready, charts, tables, tiles, globals, order, datasetId]);
+  }, [ready, charts, tables, tiles, viewOpts, order, datasetId]);
 
   const resetToDefault = () => {
     const layout = defaultLayout(columns);
     setCharts(layout.charts);
     setTables(layout.tables);
     setTiles(layout.tiles);
-    setGlobals(layout.globals);
+    setViewOpts(DEFAULT_VIEW_OPTS);
     setOrder(layout.order ?? []);
+    clearFilters();
     baselineRef.current = JSON.stringify({
       charts: layout.charts,
       tables: layout.tables,
       tiles: layout.tiles,
-      globals: layout.globals,
+      globals: layoutGlobals(DEFAULT_VIEW_OPTS),
       order: layout.order ?? [],
     });
     delJson(`/api/dashboard?datasetId=${encodeURIComponent(datasetId)}`).catch(() => {});
@@ -218,27 +238,26 @@ function DashboardInner() {
     }
   }
 
-  // "Go to data": snapshot the dashboard's current filter context into the Data Explorer store
-  // (replacing it), plus any click-drills, then open the data tab.
-  const openData = (drills: DrillClick[]) => {
-    saveExplorerState(datasetId, buildExplorerState(globals, dateColumn, drills));
-    router.push('/data');
-  };
-
-  // Chart: the header button carries no drill (whole filtered dataset); a point-click narrows to
-  // the clicked value — a date x becomes that bucket's range, any other x an exact `in` filter.
-  // Date-ness is resolved here from the schema (the card doesn't carry column types).
+  // "Go to data": the filters are shared, so this is just a shortcut to the Data Explorer showing
+  // the same filtered rows. A point/cell click first narrows the SHARED filters by the clicked
+  // value (which is why every other chart/table — and the dashboard on return — reflects it), then
+  // opens the data tab. The header button carries no drill and simply navigates.
   const goToData = (drill?: { column: string; value: string; bucket: DateBucket }) => {
-    if (!drill) return openData([]);
-    const isDate = columns.find((c) => c.name === drill.column)?.type === 'date';
-    openData([{ column: drill.column, value: drill.value, isDate, bucket: drill.bucket }]);
+    if (drill) {
+      const isDate = columns.find((c) => c.name === drill.column)?.type === 'date';
+      applyDrills([{ column: drill.column, value: drill.value, isDate, bucket: drill.bucket }]);
+    }
+    router.push('/data');
   };
 
   // Table: category (dimension) cells drill by exact value — dimensions are unbucketed, so even a
   // date dimension filters by equality. A two-dimension cell passes its group path (primary [+
   // secondary]) so it lands on exactly the rows behind that cell.
   const goToDataCells = (drills?: { column: string; value: string | number }[]) => {
-    openData((drills ?? []).map((d) => ({ column: d.column, value: d.value, isDate: false })));
+    if (drills && drills.length > 0) {
+      applyDrills(drills.map((d) => ({ column: d.column, value: d.value, isDate: false })));
+    }
+    router.push('/data');
   };
 
   const submitChart = (config: ChartConfig) => {
@@ -506,8 +525,22 @@ function DashboardInner() {
         datasetId={datasetId}
         columns={columns}
         globals={globals}
-        onChange={(patch) => setGlobals((g) => ({ ...g, ...patch }))}
-        onReset={() => setGlobals(DEFAULT_GLOBALS)}
+        onChange={(patch) => {
+          // GlobalControls edits both the shared row filters and the dashboard-only view options in
+          // one patch; route each key to its owner.
+          const { granularity, compare, ...filterPatch } = patch;
+          if (granularity !== undefined || compare !== undefined) {
+            setViewOpts((v) => ({
+              granularity: granularity ?? v.granularity,
+              compare: compare ?? v.compare,
+            }));
+          }
+          if (Object.keys(filterPatch).length > 0) setFilterState(filterPatch);
+        }}
+        onReset={() => {
+          setViewOpts(DEFAULT_VIEW_OPTS);
+          clearFilters();
+        }}
         open={controlsOpen}
         onToggle={() => setControlsOpen((o) => !o)}
       />

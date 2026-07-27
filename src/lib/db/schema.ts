@@ -5,6 +5,7 @@ import { sqliteTable, text, integer, primaryKey } from 'drizzle-orm/sqlite-core'
 import type { ColumnType, ColumnFormat, JoinStep } from '../data/types';
 import type { ComputedField } from '../data/computed/types';
 import type { DashboardLayout } from '../../components/chartTypes';
+import type { DataExplorerState } from '../../components/dataExplorer';
 
 // A person who can sign in. tenantId scopes them to one company's data;
 // profileId points at their bundle of access rules; isAdmin grants the admin UI.
@@ -133,6 +134,26 @@ export const dashboards = sqliteTable(
       .references(() => users.id, { onDelete: 'cascade' }),
     datasetId: text('dataset_id').notNull(),
     layoutJson: text('layout_json', { mode: 'json' }).notNull().$type<DashboardLayout>(),
+    updatedAt: integer('updated_at', { mode: 'timestamp' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.datasetId] })],
+);
+
+// A user's shared filter context for one dataset: the row-affecting controls (date range +
+// additive filters) that the Dashboard and Data Explorer keep in sync at all times. Kept in its
+// OWN row (not inside the dashboard layout) so the two pages can each read/write it live without
+// touching charts/tiles, and so "no dashboard row → compute defaults" logic stays independent.
+// No row = no active filters. Cascades when the user is removed.
+export const datasetFilters = sqliteTable(
+  'dataset_filters',
+  {
+    userId: text('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    datasetId: text('dataset_id').notNull(),
+    stateJson: text('state_json', { mode: 'json' }).notNull().$type<DataExplorerState>(),
     updatedAt: integer('updated_at', { mode: 'timestamp' })
       .notNull()
       .$defaultFn(() => new Date()),

@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import DataTable from '@/components/DataTable';
 import DataFilterBar from '@/components/DataFilterBar';
@@ -11,13 +11,8 @@ import { useActiveDatasetId } from '@/components/useActiveDatasetId';
 import { useSchema } from '@/components/useSchema';
 import { useInfiniteRows } from '@/components/useInfiniteRows';
 import { buildGlobalFilters, resolveDateColumn } from '@/components/dashboardUtils';
-import {
-  emptyExplorerState,
-  isEmptyExplorerState,
-  loadExplorerState,
-  saveExplorerState,
-  type DataExplorerState,
-} from '@/components/dataExplorer';
+import { isEmptyExplorerState } from '@/components/dataExplorer';
+import { useFilters } from '@/components/FilterProvider';
 
 function DataPageInner() {
   const { datasetId } = useActiveDataset();
@@ -25,44 +20,27 @@ function DataPageInner() {
   const searchParams = useSearchParams();
   const { columns } = useSchema(datasetId);
 
-  const [state, setState] = useState<DataExplorerState>(emptyExplorerState);
-  const [hydrated, setHydrated] = useState(false);
+  // The filters are the shared state (synced with the dashboard, persisted server-side); this page
+  // reads and writes the same live copy rather than owning one.
+  const { state, hydrated, setState, clear } = useFilters();
   const [exporting, setExporting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
 
-  // Load this dataset's saved explorer state. A legacy `?filterCol=&filterVal=` deep-link (the
-  // old chart drill-down format) is honoured once, seeded into the store, then stripped.
+  // A legacy `?filterCol=&filterVal=` deep-link (the old chart drill-down format) is honoured once
+  // the shared filters have loaded — seeded as a filter, then stripped. Modern drill-downs write
+  // the shared store directly, so no query param is involved.
+  const legacyApplied = useRef(false);
   useEffect(() => {
+    if (!hydrated || legacyApplied.current) return;
     const legacyCol = searchParams.get('filterCol');
     const legacyVal = searchParams.get('filterVal');
     if (legacyCol && legacyVal) {
-      const seeded: DataExplorerState = {
-        ...emptyExplorerState(),
-        filters: [{ id: `legacy-${legacyCol}`, column: legacyCol, op: 'in', values: [legacyVal] }],
-      };
-      setState(seeded);
-      saveExplorerState(datasetId, seeded);
+      legacyApplied.current = true;
+      setState({ filters: [{ id: `legacy-${legacyCol}`, column: legacyCol, op: 'in', values: [legacyVal] }] });
       router.replace('/data');
-    } else {
-      setState(loadExplorerState(datasetId));
     }
-    setHydrated(true);
-    // Reload only when the active dataset changes; router/searchParams are read once per load.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [datasetId]);
-
-  // Write-through persistence: save exactly on edit, keyed to the current dataset (an effect keyed
-  // on datasetId would race a dataset switch and save the old state under the new key).
-  const update = (patch: Partial<DataExplorerState>) => {
-    setState((prev) => {
-      const next = { ...prev, ...patch };
-      saveExplorerState(datasetId, next);
-      return next;
-    });
-  };
-
-  const clearAll = () => update(emptyExplorerState());
+  }, [hydrated, searchParams, setState, router]);
 
   const dateColumn = resolveDateColumn(state, columns);
   const activeFilters: Filter[] = buildGlobalFilters(state, dateColumn);
@@ -134,7 +112,7 @@ function DataPageInner() {
         </button>
       </div>
 
-      <DataFilterBar datasetId={datasetId} columns={columns} state={state} onChange={update} />
+      <DataFilterBar datasetId={datasetId} columns={columns} state={state} onChange={setState} />
 
       <div className="mb-4 flex items-center justify-between gap-3">
         <span className="text-sm text-foreground-muted">
@@ -143,7 +121,7 @@ function DataPageInner() {
         </span>
         {hasFilters && (
           <button
-            onClick={clearAll}
+            onClick={clear}
             className="rounded-full border border-border px-3 py-1.5 text-xs font-medium text-foreground-muted transition-colors hover:bg-surface-muted hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             Clear all filters

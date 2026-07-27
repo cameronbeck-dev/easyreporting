@@ -1,15 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { bucketRange, buildExplorerState, type DataExplorerState } from '@/components/dataExplorer';
-import type { GlobalControls } from '@/components/chartTypes';
+import { applyDrills, bucketRange, type DataExplorerState } from '@/components/dataExplorer';
 
-// A representative set of dashboard globals to build from.
-const globals: Pick<GlobalControls, 'dateColumn' | 'datePreset' | 'dateFrom' | 'dateTo' | 'filters'> = {
+// A representative starting shared-filter state to narrow from.
+const base = (): DataExplorerState => ({
   dateColumn: 'order_date',
   datePreset: 'last30',
   dateFrom: '2026-06-01',
   dateTo: '2026-06-30',
   filters: [{ id: 'f1', column: 'region', op: 'in', values: ['NSW'] }],
-};
+});
 
 describe('bucketRange', () => {
   it('day → the single day', () => {
@@ -42,9 +41,9 @@ describe('bucketRange', () => {
   });
 });
 
-describe('buildExplorerState', () => {
-  it('with no drill, copies the dashboard date range + filters', () => {
-    const s = buildExplorerState(globals, 'order_date');
+describe('applyDrills', () => {
+  it('with no drills, returns the state unchanged', () => {
+    const s = applyDrills(base(), []);
     expect(s).toEqual<DataExplorerState>({
       dateColumn: 'order_date',
       datePreset: 'last30',
@@ -54,14 +53,15 @@ describe('buildExplorerState', () => {
     });
   });
 
-  it('clones filters (mutating the result does not touch the source globals)', () => {
-    const s = buildExplorerState(globals, 'order_date');
+  it('clones filters (mutating the result does not touch the source state)', () => {
+    const source = base();
+    const s = applyDrills(source, []);
     s.filters[0].values = ['VIC'];
-    expect(globals.filters[0].values).toEqual(['NSW']);
+    expect(source.filters[0].values).toEqual(['NSW']);
   });
 
   it('a date-bucket drill sets the range to that bucket and switches to custom', () => {
-    const s = buildExplorerState(globals, 'order_date', [
+    const s = applyDrills(base(), [
       { column: 'ship_date', value: '2026-03', isDate: true, bucket: 'month' },
     ]);
     expect(s.dateColumn).toBe('ship_date');
@@ -73,30 +73,26 @@ describe('buildExplorerState', () => {
   });
 
   it('a non-date drill adds an in-filter on the clicked value', () => {
-    const s = buildExplorerState(globals, 'order_date', [
-      { column: 'category', value: 'Freight', isDate: false },
-    ]);
+    const s = applyDrills(base(), [{ column: 'category', value: 'Freight', isDate: false }]);
     expect(s.filters).toContainEqual({
       id: 'drill-category',
       column: 'category',
       op: 'in',
       values: ['Freight'],
     });
-    // The date range from the dashboard is untouched.
+    // The existing date range is untouched.
     expect(s.dateFrom).toBe('2026-06-01');
   });
 
   it('a non-date drill replaces an existing filter on the same column (no duplicates)', () => {
-    const withCategory = {
-      ...globals,
+    const withCategory: DataExplorerState = {
+      ...base(),
       filters: [
-        { id: 'f1', column: 'region', op: 'in' as const, values: ['NSW'] },
-        { id: 'f2', column: 'category', op: 'in' as const, values: ['Old'] },
+        { id: 'f1', column: 'region', op: 'in', values: ['NSW'] },
+        { id: 'f2', column: 'category', op: 'in', values: ['Old'] },
       ],
     };
-    const s = buildExplorerState(withCategory, 'order_date', [
-      { column: 'category', value: 'Freight', isDate: false },
-    ]);
+    const s = applyDrills(withCategory, [{ column: 'category', value: 'Freight', isDate: false }]);
     const categoryFilters = s.filters.filter((f) => f.column === 'category');
     expect(categoryFilters).toEqual([
       { id: 'drill-category', column: 'category', op: 'in', values: ['Freight'] },
@@ -106,7 +102,7 @@ describe('buildExplorerState', () => {
   });
 
   it('combines multiple drills (a two-dimension table cell: primary + secondary)', () => {
-    const s = buildExplorerState({ ...globals, filters: [] }, 'order_date', [
+    const s = applyDrills({ ...base(), filters: [] }, [
       { column: 'region', value: 'NSW', isDate: false },
       { column: 'category', value: 'Freight', isDate: false },
     ]);
@@ -117,17 +113,17 @@ describe('buildExplorerState', () => {
   });
 
   it('keeps a numeric drill value as a number', () => {
-    const s = buildExplorerState({ ...globals, filters: [] }, 'order_date', [
+    const s = applyDrills({ ...base(), filters: [] }, [
       { column: 'store_id', value: 42, isDate: false },
     ]);
     expect(s.filters).toEqual([{ id: 'drill-store_id', column: 'store_id', op: 'in', values: [42] }]);
   });
 
   it('ignores a date drill whose value cannot be parsed', () => {
-    const s = buildExplorerState(globals, 'order_date', [
+    const s = applyDrills(base(), [
       { column: 'ship_date', value: 'garbage', isDate: true, bucket: 'month' },
     ]);
-    // Falls back to the dashboard range unchanged.
+    // Falls back to the existing range unchanged.
     expect(s.dateFrom).toBe('2026-06-01');
     expect(s.dateTo).toBe('2026-06-30');
   });
