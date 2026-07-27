@@ -4,7 +4,7 @@
 // (preview schema + per-company row counts + drift) → Publish. Uploads stream to a route
 // handler (raw body, no size cap); the small steps are Server Actions like the rest of
 // the admin area.
-import { useActionState, useEffect, useState } from 'react';
+import { useActionState, useEffect, useRef, useState } from 'react';
 import {
   createImportAction,
   analyzeImportAction,
@@ -39,6 +39,7 @@ interface FileDataset {
   id: string;
   name: string;
   tenantColumn: string;
+  uniqueKey: string[];
 }
 
 type UploadStatus = { name: string; status: 'pending' | 'done' | 'error'; bytes?: number; error?: string };
@@ -49,10 +50,13 @@ const H2 = 'mb-4 text-lg font-semibold text-foreground';
 export default function ImportManager({ datasets }: { datasets: FileDataset[] }) {
   const [name, setName] = useState('');
   const [tenantColumn, setTenantColumn] = useState('tenantId');
+  const [append, setAppend] = useState(false);
   const [slug, setSlug] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [uploads, setUploads] = useState<UploadStatus[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [createState, createAction] = useActionState<ActionState, FormData>(createImportAction, {});
   const [analyzeState, analyzeAction] = useActionState<ActionState, FormData>(analyzeImportAction, {});
@@ -61,6 +65,10 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
 
   // Per-column type overrides, prefilled from detection each time an analysis arrives.
   const [colTypes, setColTypes] = useState<Record<string, ColumnTypeChoice>>({});
+
+  // The dedup key selection. `null` = not chosen yet this session; it gets seeded from the
+  // saved key the first time an analysis arrives, so a re-import doesn't silently drop it.
+  const [keyColumns, setKeyColumns] = useState<string[] | null>(null);
 
   // After "Start", capture the slug the server prepared and move to the upload step.
   useEffect(() => {
@@ -73,14 +81,17 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
     if (publishState.ok && publishState.message && !publishState.error) {
       setName('');
       setTenantColumn('tenantId');
+      setAppend(false);
       setSlug(null);
       setFiles([]);
       setUploads([]);
       setColTypes({});
+      setKeyColumns(null);
     }
   }, [publishState]);
 
-  // Prefill the type overrides from detection whenever a fresh analysis arrives.
+  // Prefill the type overrides from detection whenever a fresh analysis arrives, and seed the
+  // dedup key selection from the saved key the first time (so it survives a re-import).
   useEffect(() => {
     const a = analyzeState.data as ImportAnalysisResult | undefined;
     if (!a || !a.ok) return;
@@ -89,7 +100,32 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
       next[s.name] = { type: s.suggestedType, dateFormat: s.dateFormat };
     }
     setColTypes(next);
+    setKeyColumns((prev) => (prev === null ? a.uniqueKey : prev));
   }, [analyzeState]);
+
+  const ACCEPTED = /\.(csv|xlsx)$/i;
+
+  // Merge newly picked/dropped files into the selection, keeping only CSV/Excel and
+  // de-duplicating by name (a later pick of the same name wins, e.g. a corrected file).
+  function addFiles(incoming: File[]) {
+    const accepted = incoming.filter((f) => ACCEPTED.test(f.name));
+    if (accepted.length === 0) return;
+    setFiles((prev) => {
+      const byName = new Map(prev.map((f) => [f.name, f]));
+      for (const f of accepted) byName.set(f.name, f);
+      return Array.from(byName.values());
+    });
+  }
+
+  function removeFile(fileName: string) {
+    setFiles((prev) => prev.filter((f) => f.name !== fileName));
+  }
+
+  function onDrop(e: React.DragEvent<HTMLDivElement>) {
+    e.preventDefault();
+    setDragActive(false);
+    addFiles(Array.from(e.dataTransfer.files ?? []));
+  }
 
   async function uploadAll() {
     if (!slug) return;
@@ -101,8 +137,23 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
           `/api/admin/import/upload?datasetId=${encodeURIComponent(slug)}&filename=${encodeURIComponent(file.name)}`,
           { method: 'POST', body: file },
         );
-        const json = (await res.json()) as { error?: string; bytes?: number };
-        if (!res.ok) throw new Error(json.error || 'Upload failed');
+        // Parse defensively: a non-JSON response (dev-server error page, proxy timeout on a
+        // very large upload, truncated body) must surface as a clear message rather than an
+        // opaque "Unexpected end of JSON input".
+        const raw = await res.text();
+        let json: { error?: string; bytes?: number } = {};
+        if (raw) {
+          try {
+            json = JSON.parse(raw) as { error?: string; bytes?: number };
+          } catch {
+            throw new Error(
+              res.ok
+                ? 'Upload succeeded but the response was unreadable — re-analyze to confirm.'
+                : `Upload failed (HTTP ${res.status}). ${raw.slice(0, 200)}`,
+            );
+          }
+        }
+        if (!res.ok) throw new Error(json.error || `Upload failed (HTTP ${res.status}).`);
         setUploads((u) =>
           u.map((x) => (x.name === file.name ? { name: file.name, status: 'done', bytes: json.bytes } : x)),
         );
@@ -143,13 +194,32 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
     return out;
   }
 
-  function reImport(d: FileDataset) {
+  function reImport(d: FileDataset, appendMode: boolean) {
     setName(d.name);
     setTenantColumn(d.tenantColumn);
+    setAppend(appendMode);
     setSlug(null);
     setFiles([]);
     setUploads([]);
+    setKeyColumns(null);
   }
+
+  function toggleKeyColumn(colName: string) {
+    setKeyColumns((prev) => {
+      const cur = prev ?? [];
+      return cur.includes(colName) ? cur.filter((c) => c !== colName) : [...cur, colName];
+    });
+  }
+
+  // Serialised key selection for the analyze form. `null` (untouched) → "" so the server keeps
+  // the saved key; an explicit selection (including []) is sent as JSON.
+  const uniqueKeyJson = keyColumns === null ? '' : JSON.stringify(keyColumns);
+  // The key applied by the latest analysis, and whether the current selection diverges from it
+  // (so we can nudge the owner to re-analyze before publishing a stale, non-deduped preview).
+  const appliedKey = analysis && analysis.ok ? analysis.uniqueKey : [];
+  const keyDirty =
+    keyColumns !== null &&
+    (keyColumns.length !== appliedKey.length || keyColumns.some((k) => !appliedKey.includes(k)));
 
   return (
     <div className="flex flex-col gap-6">
@@ -158,7 +228,9 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
         <h2 className={H2}>Import a dataset</h2>
         <p className="mb-4 text-sm text-foreground-muted">
           Upload one or more CSV/Excel files. Each row&apos;s company comes from a column in the
-          files (the <strong>tenant column</strong>). Uploading replaces the dataset&apos;s data.
+          files (the <strong>tenant column</strong>). By default uploading{' '}
+          <strong>replaces</strong> the dataset&apos;s data; tick <em>Append</em> to add the new
+          files to what&apos;s already there (e.g. a weekly load) instead.
         </p>
 
         {/* Step 1 — create/reset the dataset folder */}
@@ -184,24 +256,110 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
               placeholder="tenantId"
             />
           </label>
+          {/* Controlled checkbox; a checked box submits "on", which the action reads via bool(). */}
+          <label className="mb-1 flex items-center gap-2 self-end text-sm text-foreground">
+            <input
+              type="checkbox"
+              name="append"
+              checked={append}
+              onChange={(e) => setAppend(e.target.checked)}
+              className="h-4 w-4 rounded border-border text-primary focus:ring-ring"
+            />
+            Append to existing data
+          </label>
           <SubmitButton pendingLabel="Preparing…">{slug ? 'Restart' : 'Start'}</SubmitButton>
         </form>
         <FormError error={createState.error} />
+        {append && (
+          <p className="mt-2 text-xs text-warning">
+            Append mode: new files are added alongside the existing data. Upload only rows not
+            already loaded — overlapping rows are not de-duplicated.
+          </p>
+        )}
 
         {/* Step 2 — upload files */}
         {slug && (
           <div className="mt-5 border-t border-border pt-5">
             <p className="mb-2 text-sm text-foreground">
               Dataset id: <code className="text-foreground-muted">{slug}</code>
+              {append && <span className="ml-2 text-xs font-medium text-warning">append mode</span>}
             </p>
-            <div className="flex flex-wrap items-center gap-3">
+
+            {/* Drag-and-drop zone (also click-to-browse via the hidden input). */}
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragActive(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                setDragActive(false);
+              }}
+              onDrop={onDrop}
+              onClick={() => fileInputRef.current?.click()}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  fileInputRef.current?.click();
+                }
+              }}
+              className={`flex cursor-pointer flex-col items-center justify-center gap-2 rounded-control border-2 border-dashed px-4 py-8 text-center transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                dragActive ? 'border-primary bg-primary/5' : 'border-border bg-background hover:bg-surface-muted'
+              }`}
+            >
+              <svg
+                aria-hidden="true"
+                viewBox="0 0 20 20"
+                className="h-6 w-6 text-foreground-muted"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M10 13V4m0 0L6.5 7.5M10 4l3.5 3.5M4 14.5v1A1.5 1.5 0 0 0 5.5 17h9a1.5 1.5 0 0 0 1.5-1.5v-1" />
+              </svg>
+              <p className="text-sm text-foreground">
+                <span className="font-medium text-primary">Choose files</span> or drag &amp; drop
+              </p>
+              <p className="text-xs text-foreground-muted">CSV or Excel (.csv, .xlsx)</p>
               <input
+                ref={fileInputRef}
                 type="file"
                 multiple
                 accept=".csv,.xlsx"
-                onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
-                className={inputClass}
+                onChange={(e) => {
+                  addFiles(Array.from(e.target.files ?? []));
+                  e.target.value = ''; // allow re-picking the same file after a remove
+                }}
+                className="hidden"
               />
+            </div>
+
+            {/* Selected-but-not-yet-uploaded files, with per-file remove. */}
+            {files.length > 0 && (
+              <ul className="mt-3 flex flex-col gap-1 text-sm">
+                {files.map((f) => (
+                  <li key={f.name} className="flex items-center gap-2">
+                    <span className="text-foreground">{f.name}</span>
+                    <span className="text-xs text-foreground-muted">{(f.size / 1_000_000).toFixed(1)} MB</span>
+                    <button
+                      type="button"
+                      onClick={() => removeFile(f.name)}
+                      disabled={uploading}
+                      className="ml-1 text-xs text-foreground-muted underline hover:text-danger disabled:no-underline disabled:opacity-40"
+                      aria-label={`Remove ${f.name}`}
+                    >
+                      remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <div className="mt-3">
               <button
                 type="button"
                 onClick={uploadAll}
@@ -246,6 +404,7 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
           <div className="mt-5 border-t border-border pt-5">
             <form action={analyzeAction}>
               <input type="hidden" name="datasetId" value={slug} />
+              <input type="hidden" name="uniqueKeyJson" value={uniqueKeyJson} />
               <SubmitButton variant="ghost" pendingLabel="Analyzing…">
                 Analyze upload
               </SubmitButton>
@@ -264,6 +423,66 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
                   <strong>{analysis.rowCount.toLocaleString()}</strong> rows ·{' '}
                   <strong>{analysis.columns.length}</strong> columns · tenant column{' '}
                   <code className="text-foreground-muted">{analysis.tenantColumn}</code>
+                  {analysis.removedDuplicates > 0 && (
+                    <span className="ml-1 text-foreground-muted">
+                      · {analysis.removedDuplicates.toLocaleString()} duplicate row(s) removed
+                    </span>
+                  )}
+                </div>
+
+                {/* Unique key (deduplication) */}
+                <div className="rounded-control border border-border bg-background p-3">
+                  <p className="mb-1 text-xs font-semibold uppercase text-foreground-muted">
+                    Unique key (deduplication)
+                  </p>
+                  <p className="mb-3 text-xs text-foreground-muted">
+                    Pick the column(s) that make a row unique (e.g. an order id). On re-upload or a
+                    weekly append, rows sharing a key are collapsed to one — the copy from the{' '}
+                    <strong>most recently uploaded file</strong> wins. Leave all unticked for no
+                    deduplication. Rows where a key column is blank are treated as sharing a key.
+                  </p>
+                  <div className="max-h-44 overflow-y-auto">
+                    <div className="grid grid-cols-2 gap-x-6 gap-y-1 sm:grid-cols-3">
+                      {analysis.columns.map((c) => {
+                        const checked = (keyColumns ?? []).includes(c.name);
+                        return (
+                          <label key={c.name} className="flex items-center gap-2 text-sm text-foreground">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleKeyColumn(c.name)}
+                              className="h-4 w-4 rounded border-border text-primary focus:ring-ring"
+                            />
+                            <span className="truncate" title={c.name}>
+                              {c.name}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <form action={analyzeAction}>
+                      <input type="hidden" name="datasetId" value={slug} />
+                      <input type="hidden" name="uniqueKeyJson" value={uniqueKeyJson} />
+                      <SubmitButton variant="ghost" pendingLabel="Applying…">
+                        Apply key &amp; re-analyze
+                      </SubmitButton>
+                    </form>
+                    {appliedKey.length > 0 ? (
+                      <span className="text-xs text-foreground-muted">
+                        Active key: <code>{appliedKey.join(' + ')}</code>
+                      </span>
+                    ) : (
+                      <span className="text-xs text-foreground-muted">No key — duplicates are kept.</span>
+                    )}
+                  </div>
+                  {keyDirty && (
+                    <p className="mt-2 text-xs text-warning">
+                      ⚠ Key selection changed — click <em>Apply key &amp; re-analyze</em> to apply it
+                      before publishing.
+                    </p>
+                  )}
                 </div>
 
                 {/* Per-company integrity check */}
@@ -397,8 +616,15 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
                     name="columnTypesJson"
                     value={JSON.stringify(submittedColumnTypes())}
                   />
-                  <SubmitButton pendingLabel="Publishing…">Publish dataset</SubmitButton>
+                  <SubmitButton pendingLabel="Publishing…" disabled={keyDirty}>
+                    Publish dataset
+                  </SubmitButton>
                 </form>
+                {keyDirty && (
+                  <p className="text-xs text-warning">
+                    Re-analyze with the current key before publishing.
+                  </p>
+                )}
                 <FormError error={publishState.error} />
               </div>
             )}
@@ -428,9 +654,15 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
                   <span className="font-medium text-foreground">{d.name}</span>{' '}
                   <code className="text-xs text-foreground-muted">({d.id})</code>
                   <span className="ml-2 text-xs text-foreground-muted">tenant: {d.tenantColumn}</span>
+                  {d.uniqueKey.length > 0 && (
+                    <span className="ml-2 text-xs text-foreground-muted">key: {d.uniqueKey.join(' + ')}</span>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
-                  <button type="button" onClick={() => reImport(d)} className={buttonClass('ghost')}>
+                  <button type="button" onClick={() => reImport(d, true)} className={buttonClass('ghost')}>
+                    Add data
+                  </button>
+                  <button type="button" onClick={() => reImport(d, false)} className={buttonClass('ghost')}>
                     Re-import
                   </button>
                   <form action={deleteAction}>

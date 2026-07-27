@@ -30,12 +30,18 @@ data/datasets/
 ```json
 {
   "name": "Customer Orders",
-  "tenantColumn": "company_id"
+  "tenantColumn": "company_id",
+  "uniqueKey": ["orderId"]
 }
 ```
 
 - `name` — display name (defaults to the folder name).
 - `tenantColumn` — the column that identifies the company (defaults to `tenantId`).
+- `uniqueKey` — optional column(s) that make a row unique. When set, sync keeps one row per
+  key across all files in the folder (deduplication), preferring the row from the
+  **most-recently-modified file**. Ideal for weekly appends: drop `week-30.csv` next to the
+  year file and re-sync, and re-stated rows replace the old ones instead of duplicating.
+  Rows whose key column is blank are treated as sharing a key.
 
 ## After syncing
 

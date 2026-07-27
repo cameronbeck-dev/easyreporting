@@ -30,6 +30,7 @@ import {
   analyzeTenants,
   commitStaged,
   discardStaging,
+  writeSidecarUniqueKey,
   type DatasetColumn,
 } from '../data/duck/importDataset';
 import type { ColumnTypeSuggestion, ColumnTypeChoice } from '../data/duck/detectColumnTypes';
@@ -1002,11 +1003,17 @@ export async function listKnownTenantIds(admin: AdminContext): Promise<string[]>
 export interface CreateFileImportInput {
   name: string;
   tenantColumn: string;
+  /**
+   * Append semantics: keep the folder's existing source files so the new uploads are
+   * unioned in alongside them (weekly incremental loads). Defaults to false (replace),
+   * which clears prior files before the upload.
+   */
+  append?: boolean;
 }
 
 /**
  * Prepare a file-dataset folder for upload: create data/datasets/<id>/, write the
- * dataset.json sidecar, and (replace semantics) clear any previous source files. Returns
+ * dataset.json sidecar, and — unless appending — clear any previous source files. Returns
  * the slugified id the client uploads against. Does not touch the DB or Parquet yet.
  */
 export async function createFileImport(
@@ -1028,24 +1035,43 @@ export async function createFileImport(
 
   const folderAbs = path.join(DATASETS_DIR, id);
   fs.mkdirSync(folderAbs, { recursive: true });
-  // Preserve any remembered column types from a prior import of this dataset so a
-  // re-import defaults to the owner's earlier choices instead of re-guessing.
+  // Preserve any remembered column types + dedup key from a prior import of this dataset so a
+  // re-import (or append) defaults to the owner's earlier choices instead of re-guessing.
   let columnTypes: Record<string, unknown> | undefined;
+  let uniqueKey: string[] | undefined;
   const sidecarPath = path.join(folderAbs, 'dataset.json');
   if (fs.existsSync(sidecarPath)) {
     try {
-      columnTypes = (JSON.parse(fs.readFileSync(sidecarPath, 'utf-8')) as { columnTypes?: Record<string, unknown> })
-        .columnTypes;
+      const parsed = JSON.parse(fs.readFileSync(sidecarPath, 'utf-8')) as {
+        columnTypes?: Record<string, unknown>;
+        uniqueKey?: string[];
+      };
+      columnTypes = parsed.columnTypes;
+      uniqueKey = parsed.uniqueKey;
     } catch {
       columnTypes = undefined;
+      uniqueKey = undefined;
     }
   }
-  for (const f of fs.readdirSync(folderAbs)) {
-    if (f !== 'dataset.json') fs.rmSync(path.join(folderAbs, f), { force: true, recursive: true });
+  // Replace semantics clear prior source files; append keeps them so this upload is
+  // unioned in alongside the existing weeks at materialize time.
+  if (!input.append) {
+    for (const f of fs.readdirSync(folderAbs)) {
+      if (f !== 'dataset.json') fs.rmSync(path.join(folderAbs, f), { force: true, recursive: true });
+    }
   }
   fs.writeFileSync(
     sidecarPath,
-    JSON.stringify({ name, tenantColumn, ...(columnTypes ? { columnTypes } : {}) }, null, 2) + '\n',
+    JSON.stringify(
+      {
+        name,
+        tenantColumn,
+        ...(columnTypes ? { columnTypes } : {}),
+        ...(uniqueKey && uniqueKey.length > 0 ? { uniqueKey } : {}),
+      },
+      null,
+      2,
+    ) + '\n',
   );
   discardStaging(id);
   return { id };
@@ -1072,6 +1098,10 @@ export interface ImportAnalysis {
   unknownTenants: string[];
   /** null for a brand-new dataset (no prior schema to compare). */
   drift: ImportDrift | null;
+  /** The dedup key currently applied (from the sidecar); empty = no deduplication. */
+  uniqueKey: string[];
+  /** Rows collapsed by the current key during this analysis (0 when no key). */
+  removedDuplicates: number;
 }
 
 export type ImportAnalysisResult = ImportAnalysis | { ok: false; reason: string };
@@ -1084,8 +1114,13 @@ export type ImportAnalysisResult = ImportAnalysis | { ok: false; reason: string 
 export async function analyzeFileImport(
   admin: AdminContext,
   datasetId: string,
+  uniqueKey?: string[],
 ): Promise<ImportAnalysisResult> {
   assertOwner(admin);
+  // When the wizard sends an explicit key selection (including an empty list to turn dedup
+  // off), persist it before materializing so this analysis previews the deduped result and
+  // future appends / CLI syncs reuse it. `undefined` = "not provided" → keep the saved key.
+  if (uniqueKey !== undefined) writeSidecarUniqueKey(datasetId, uniqueKey);
   const m = await materializeFolder(datasetId);
   if (!m.ok) return { ok: false, reason: m.reason };
 
@@ -1131,6 +1166,8 @@ export async function analyzeFileImport(
     perTenant,
     unknownTenants,
     drift,
+    uniqueKey: m.uniqueKey,
+    removedDuplicates: m.removedDuplicates,
   };
 }
 

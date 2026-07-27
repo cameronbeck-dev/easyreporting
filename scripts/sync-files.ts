@@ -32,8 +32,12 @@ async function syncFolder(folderName: string): Promise<'ok' | 'skipped'> {
   const detectedDates = m.suggestions.filter((s) => s.suggestedType === 'date' && s.sniffedType !== 'date');
   const dateNote =
     detectedDates.length > 0 ? `, ${detectedDates.length} date col(s) auto-detected` : '';
+  const dedupNote =
+    m.uniqueKey.length > 0
+      ? `, deduped on ${m.uniqueKey.join('+')} (${m.removedDuplicates.toLocaleString()} removed)`
+      : '';
   console.log(
-    `  ✓ ${m.id}  (${m.rowCount.toLocaleString()} rows, ${m.columnsJson.length} cols, tenant="${m.tenantColumn}"${dateNote})`,
+    `  ✓ ${m.id}  (${m.rowCount.toLocaleString()} rows, ${m.columnsJson.length} cols, tenant="${m.tenantColumn}"${dateNote}${dedupNote})`,
   );
   return 'ok';
 }

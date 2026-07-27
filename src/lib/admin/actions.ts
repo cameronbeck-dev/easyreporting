@@ -229,6 +229,7 @@ export async function createImportAction(_prev: ActionState, formData: FormData)
     const { id } = await repo.createFileImport(admin, {
       name: String(formData.get('name') ?? ''),
       tenantColumn: String(formData.get('tenantColumn') ?? ''),
+      append: bool(formData.get('append')),
     });
     return { data: { id } };
   });
@@ -238,7 +239,19 @@ export async function createImportAction(_prev: ActionState, formData: FormData)
 export async function analyzeImportAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   return run([], async () => {
     const admin = await requireAdminAction();
-    const analysis = await repo.analyzeFileImport(admin, String(formData.get('datasetId') ?? ''));
+    // The wizard sends the dedup key selection as a JSON array. An empty string means "not
+    // provided" (keep the saved key); "[]" means the owner explicitly cleared it.
+    const raw = formData.get('uniqueKeyJson');
+    let uniqueKey: string[] | undefined;
+    if (raw != null && String(raw) !== '') {
+      try {
+        const parsed = JSON.parse(String(raw));
+        if (Array.isArray(parsed)) uniqueKey = parsed.map((x) => String(x));
+      } catch {
+        uniqueKey = undefined;
+      }
+    }
+    const analysis = await repo.analyzeFileImport(admin, String(formData.get('datasetId') ?? ''), uniqueKey);
     return { data: analysis };
   });
 }

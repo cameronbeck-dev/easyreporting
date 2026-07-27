@@ -45,6 +45,10 @@ export interface Materialized {
   /** Per-column type recommendations (sidecar-remembered choices win over fresh detection). */
   suggestions: ColumnTypeSuggestion[];
   rowCount: number;
+  /** The dedup key applied to this materialization (from the sidecar); empty if none. */
+  uniqueKey: string[];
+  /** Rows collapsed by key deduplication (pre-dedup minus post-dedup); 0 when no key. */
+  removedDuplicates: number;
   stagingPath: string;
   finalPath: string;
 }
@@ -56,6 +60,12 @@ interface Sidecar {
   tenantColumn?: string;
   /** Owner-confirmed column types from a previous import, so re-imports remember them. */
   columnTypes?: Record<string, ColumnTypeChoice>;
+  /**
+   * Column(s) that uniquely identify a row. When set, materialize keeps one row per key
+   * (deduplication), preferring the row from the most-recently-uploaded file. Remembered
+   * across re-imports and weekly appends. Empty/absent = no dedup.
+   */
+  uniqueKey?: string[];
 }
 
 export function slugify(name: string): string {
@@ -148,6 +158,54 @@ function buildSourceSelect(folderAbs: string, csv: boolean, xlsxFiles: string[])
   return parts.join(' UNION ALL BY NAME ');
 }
 
+/**
+ * Source CSV/Excel files in a folder, ordered oldest→newest by mtime (ties broken by name).
+ * Upload writes each file fresh, so mtime tracks upload order — the later file's rows win
+ * during key deduplication ("last file loaded wins").
+ */
+function orderedSourceFiles(folderAbs: string): { path: string; kind: 'csv' | 'xlsx' }[] {
+  const files = fs
+    .readdirSync(folderAbs)
+    .filter((f) => /\.(csv|xlsx)$/i.test(f))
+    .map((f) => {
+      const p = path.join(folderAbs, f);
+      return {
+        path: p,
+        kind: (/\.xlsx$/i.test(f) ? 'xlsx' : 'csv') as 'csv' | 'xlsx',
+        mtime: fs.statSync(p).mtimeMs,
+        name: f,
+      };
+    });
+  files.sort((a, b) => a.mtime - b.mtime || a.name.localeCompare(b.name));
+  return files.map(({ path: p, kind }) => ({ path: p, kind }));
+}
+
+/**
+ * Build a SELECT that unions the (upload-ordered) source files and keeps exactly one row per
+ * unique key, preferring the row from the most-recently-uploaded file. Each file is read
+ * individually (rather than via the CSV glob) so it can be tagged with a load-order rank;
+ * UNION ALL BY NAME reconciles columns across files exactly as the glob path does.
+ */
+function buildDedupSelect(
+  ordered: { path: string; kind: 'csv' | 'xlsx' }[],
+  keys: string[],
+): string {
+  const parts = ordered.map((f, i) => {
+    const src =
+      f.kind === 'csv'
+        ? `read_csv(${parquetLiteral(f.path)}, union_by_name=true, sample_size=-1)`
+        : `read_xlsx(${parquetLiteral(f.path)}, header=true, all_varchar=true)`;
+    // __er_load_ord ranks the files by upload order; a higher rank means a later upload.
+    return `SELECT *, ${i} AS __er_load_ord FROM ${src}`;
+  });
+  const union = parts.join(' UNION ALL BY NAME ');
+  const partition = keys.map(quoteIdent).join(', ');
+  return (
+    `SELECT * EXCLUDE (__er_load_ord) FROM (${union}) ` +
+    `QUALIFY ROW_NUMBER() OVER (PARTITION BY ${partition} ORDER BY __er_load_ord DESC) = 1`
+  );
+}
+
 async function describeColumns(parquetPath: string): Promise<DatasetColumn[]> {
   const conn = await getDuckConnection();
   const described = (
@@ -189,9 +247,44 @@ export async function materializeFolder(folderName: string): Promise<Materialize
 
   fs.mkdirSync(WAREHOUSE_DIR, { recursive: true });
   const staging = stagingAbs(id);
-  const select = buildSourceSelect(folderAbs, hasCsv, xlsxFiles);
+  const baseSelect = buildSourceSelect(folderAbs, hasCsv, xlsxFiles);
+
+  // Deduplication: if the sidecar names a unique key, keep one row per key and record how
+  // many rows that collapsed (for the preview). Otherwise materialize the plain union.
+  const uniqueKey = (sidecar.uniqueKey ?? []).map((k) => k.trim()).filter(Boolean);
+  let copySelect = baseSelect;
+  let rawRowCount: number | null = null;
+  if (uniqueKey.length > 0) {
+    // Validate the key columns exist first — a cheap metadata-only DESCRIBE (no file scan) —
+    // so a renamed/missing key gives a clear reason instead of an opaque COPY error.
+    let sourceCols: Set<string>;
+    try {
+      const described = (
+        await conn.runAndReadAll(`DESCRIBE SELECT * FROM (${baseSelect})`)
+      ).getRowObjects();
+      sourceCols = new Set(described.map((r) => String(r['column_name'])));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, reason: `couldn't read the files — ${msg.split('\n').slice(0, 3).join(' ')}` };
+    }
+    const missing = uniqueKey.filter((k) => !sourceCols.has(k));
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        reason:
+          `unique key column(s) not found: ${missing.join(', ')} ` +
+          `(columns: ${[...sourceCols].join(', ')}). Re-pick the key or fix the file.`,
+      };
+    }
+    const rawCountRows = (
+      await conn.runAndReadAll(`SELECT COUNT(*) AS n FROM (${baseSelect})`)
+    ).getRowObjects();
+    rawRowCount = Number(rawCountRows[0]?.['n'] ?? 0);
+    copySelect = buildDedupSelect(orderedSourceFiles(folderAbs), uniqueKey);
+  }
+
   try {
-    await conn.run(`COPY (${select}) TO ${parquetLiteral(staging)} (FORMAT parquet)`);
+    await conn.run(`COPY (${copySelect}) TO ${parquetLiteral(staging)} (FORMAT parquet)`);
   } catch (err) {
     // A malformed/ragged source file (or a bad Excel sheet) surfaces here. Return it as a
     // user-facing reason (first lines only) rather than crashing the request with a 500.
@@ -217,6 +310,7 @@ export async function materializeFolder(folderName: string): Promise<Materialize
     await conn.runAndReadAll(`SELECT COUNT(*) AS n FROM read_parquet(${parquetLiteral(staging)})`)
   ).getRowObjects();
   const rowCount = Number(countRows[0]?.['n'] ?? 0);
+  const removedDuplicates = rawRowCount === null ? 0 : Math.max(0, rawRowCount - rowCount);
 
   const detected = await detectColumnTypes(staging, columnsJson);
   const suggestions = mergeSavedTypes(detected, sidecar.columnTypes);
@@ -230,6 +324,8 @@ export async function materializeFolder(folderName: string): Promise<Materialize
     columnsJson,
     suggestions,
     rowCount,
+    uniqueKey,
+    removedDuplicates,
     stagingPath: staging,
     finalPath: finalAbs(id),
   };
@@ -364,6 +460,25 @@ async function applyTypeOverrides(
       `TO ${parquetLiteral(finalPath)} (FORMAT parquet)`,
   );
   fs.rmSync(stagingPath, { force: true });
+}
+
+/** The dedup key remembered for a dataset folder (empty if none). */
+export function readSidecarUniqueKey(folderName: string): string[] {
+  const folderAbs = path.join(DATASETS_DIR, folderName);
+  return (readSidecar(folderAbs).uniqueKey ?? []).map((k) => k.trim()).filter(Boolean);
+}
+
+/**
+ * Persist the dedup key into the sidecar so both re-imports and the CLI (`db:sync-files`)
+ * apply it. An empty list clears the key (dedup off). No-op if the folder is gone.
+ */
+export function writeSidecarUniqueKey(folderName: string, keys: string[]): void {
+  const folderAbs = path.join(DATASETS_DIR, folderName);
+  if (!fs.existsSync(folderAbs)) return;
+  const sidecar = readSidecar(folderAbs);
+  const cleaned = keys.map((k) => k.trim()).filter(Boolean);
+  sidecar.uniqueKey = cleaned.length > 0 ? cleaned : undefined;
+  fs.writeFileSync(path.join(folderAbs, 'dataset.json'), JSON.stringify(sidecar, null, 2) + '\n');
 }
 
 /** Persist the owner's confirmed column types into the sidecar so re-imports remember them. */

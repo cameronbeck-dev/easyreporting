@@ -71,6 +71,18 @@ describe('createFileImport', () => {
     expect(fs.existsSync(path.join(folder, 'dataset.json'))).toBe(true);
   });
 
+  it('keeps existing source files when appending', async () => {
+    await createFileImport(ADMIN, { name: CREATED, tenantColumn: 'tenantId' });
+    const folder = path.join(DATASETS_DIR, CREATED);
+
+    // A previously-loaded week's file already sits in the folder.
+    fs.writeFileSync(path.join(folder, 'week-01.csv'), 'x\n');
+    // Preparing an append upload must NOT clear it (unlike the replace path above).
+    await createFileImport(ADMIN, { name: CREATED, tenantColumn: 'tenantId', append: true });
+    expect(fs.existsSync(path.join(folder, 'week-01.csv'))).toBe(true);
+    expect(fs.existsSync(path.join(folder, 'dataset.json'))).toBe(true);
+  });
+
   it('refuses to clobber an existing SQL dataset with the same id', async () => {
     await db.insert(connections).values({
       id: 'conn-1',

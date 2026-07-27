@@ -22,6 +22,12 @@ const NO_TENANT = `__importtest_notenant_${process.pid}`;
 const DATES = `__importtest_dates_${process.pid}`;
 const MIXED = `__importtest_mixed_${process.pid}`;
 const XLSX = `__importtest_xlsx_${process.pid}`;
+const DEDUP = `__importtest_dedup_${process.pid}`;
+const BADKEY = `__importtest_badkey_${process.pid}`;
+
+function writeSidecar(name: string, sidecar: Record<string, unknown>) {
+  fs.writeFileSync(path.join(DATASETS_DIR, name, 'dataset.json'), JSON.stringify(sidecar));
+}
 
 function writeFolder(name: string, file: string, contents: string) {
   const dir = path.join(DATASETS_DIR, name);
@@ -80,6 +86,21 @@ beforeAll(async () => {
     'orders.xlsx',
     `SELECT * FROM (VALUES (100,'NSW','globex'),(50,'VIC','globex'),(200,'QLD','initech')) t(amount, region, tenantId)`,
   );
+
+  // Two "weekly" files sharing key orderId: week2 re-states order 2 (status change) and adds
+  // order 3. Dedup on orderId should keep 3 rows, with order 2 taking week2's (newer) values.
+  writeFolder(DEDUP, 'week1.csv', 'orderId,status,amount,tenantId\n1,NEW,100,globex\n2,NEW,50,globex\n');
+  writeFolder(DEDUP, 'week2.csv', 'orderId,status,amount,tenantId\n2,SHIPPED,50,globex\n3,NEW,200,initech\n');
+  writeSidecar(DEDUP, { name: 'Dedup', tenantColumn: 'tenantId', uniqueKey: ['orderId'] });
+  // Force week2 to be the newer file so its rows win the key clash, independent of the
+  // filesystem's timestamp resolution.
+  const older = new Date('2025-01-01T00:00:00Z');
+  const newer = new Date('2025-06-01T00:00:00Z');
+  fs.utimesSync(path.join(DATASETS_DIR, DEDUP, 'week1.csv'), older, older);
+  fs.utimesSync(path.join(DATASETS_DIR, DEDUP, 'week2.csv'), newer, newer);
+
+  writeFolder(BADKEY, 'orders.csv', 'orderId,tenantId\n1,globex\n');
+  writeSidecar(BADKEY, { tenantColumn: 'tenantId', uniqueKey: ['nope'] });
 });
 
 afterAll(() => {
@@ -88,6 +109,8 @@ afterAll(() => {
   cleanup(DATES);
   cleanup(MIXED);
   cleanup(XLSX);
+  cleanup(DEDUP);
+  cleanup(BADKEY);
 });
 
 describe('materializeFolder', () => {
@@ -97,6 +120,9 @@ describe('materializeFolder', () => {
     if (!m.ok) return;
     expect(m.rowCount).toBe(4);
     expect(m.tenantColumn).toBe('tenantId');
+    // No sidecar key → no deduplication.
+    expect(m.uniqueKey).toEqual([]);
+    expect(m.removedDuplicates).toBe(0);
     expect(m.columnsJson.find((c) => c.name === 'region')?.type).toBe('string');
     expect(m.columnsJson.find((c) => c.name === 'amount')?.type).toBe('number');
     expect(fs.existsSync(m.stagingPath)).toBe(true);
@@ -141,6 +167,33 @@ describe('materializeFolder', () => {
     // The free-text value means the whole column is not convertible, so it stays text
     // rather than being cast to a number (which would NULL the text row).
     expect(m.suggestions.find((c) => c.name === 'note')?.suggestedType).toBe('string');
+  });
+
+  it('deduplicates on the sidecar unique key, keeping the most recently uploaded file’s row', async () => {
+    const m = await materializeFolder(DEDUP);
+    expect(m.ok).toBe(true);
+    if (!m.ok) return;
+    expect(m.uniqueKey).toEqual(['orderId']);
+    expect(m.rowCount).toBe(3); // orders 1, 2, 3
+    expect(m.removedDuplicates).toBe(1); // order 2 appeared in both files
+
+    // Order 2's surviving row must carry week2's (newer) values.
+    const conn = await getDuckConnection();
+    const rows = (
+      await conn.runAndReadAll(
+        `SELECT status FROM read_parquet(${parquetLiteral(m.stagingPath)}) WHERE orderId = 2`,
+      )
+    ).getRowObjects();
+    expect(rows).toHaveLength(1);
+    expect(String(rows[0]['status'])).toBe('SHIPPED');
+  });
+
+  it('fails closed when a unique key column is missing', async () => {
+    const m = await materializeFolder(BADKEY);
+    expect(m.ok).toBe(false);
+    if (m.ok) return;
+    expect(m.reason).toContain('unique key column(s) not found');
+    expect(fs.existsSync(path.join(WAREHOUSE_DIR, `${BADKEY}.staging.parquet`))).toBe(false);
   });
 
   it('fails closed when the tenant column is absent', async () => {
