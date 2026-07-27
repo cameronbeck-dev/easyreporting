@@ -1,12 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { ColumnSchema, DatasetSchema } from '@/lib/data/types';
+import type { ColumnSchema, DatasetSchema, SummaryMetric, SummaryResult } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import type { TableConfig, TableMeasureConfig, TableSort } from './chartTypes';
 import { defaultTableTitle, prettify, aggregationOptionLabel, metricLabel } from './chartTypes';
 import { inputClass } from './ui/forms';
-import { getJson } from '@/lib/api/client';
+import { getJson, postJson } from '@/lib/api/client';
 
 interface Props {
   datasetId: string;
@@ -21,12 +21,25 @@ type MeasureRow = { y: string; aggregation: Aggregation };
 
 const MAX_MEASURES = 6;
 
+// A table with no "Show top" limit renders every group into the DOM (and ships them all as one
+// JSON response). Past this many rows that bogs the whole page down — a breakdown by a
+// high-cardinality column (e.g. a reference or consignment number with hundreds of thousands of
+// distinct values) is the usual cause — so we require a Top N instead. Matches the server's own
+// top-N clamp, which caps a set limit at 1000 (see clampTopN).
+const MAX_UNLIMITED_ROWS = 1000;
+
 export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }: Props) {
   const editing = Boolean(initial);
 
   const [columns, setColumns] = useState<ColumnSchema[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // How many rows this breakdown will produce (the distinct-value count of the chosen
+  // dimension(s)), used to force a Top N before a high-cardinality breakdown is created.
+  // null = not yet known (still probing, or the probe failed and we let creation proceed).
+  const [groupCount, setGroupCount] = useState<number | null>(null);
+  const [probing, setProbing] = useState(false);
 
   const [title, setTitle] = useState(initial?.title ?? '');
   const [dim1, setDim1] = useState(initial?.dimensions[0] ?? '');
@@ -66,6 +79,34 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
       });
   }, [datasetId, initial]);
 
+  // Estimate how many rows the current breakdown will produce, so we can force a Top N before a
+  // high-cardinality dimension creates a table that renders hundreds of thousands of rows and
+  // lags the page. COUNT(DISTINCT) per chosen dimension (unfiltered — the worst case a user could
+  // hit) via the summary endpoint; the largest wins. For one dimension that count is exact; for
+  // two it's a safe lower bound that still catches any single high-cardinality column.
+  useEffect(() => {
+    if (loading || !dim1) return;
+    const dims = [dim1, ...(dim2 && dim2 !== dim1 ? [dim2] : [])];
+    const metrics: SummaryMetric[] = dims.map((d) => ({ column: d, aggregation: Aggregation.CountUnique }));
+    let cancelled = false;
+    setProbing(true);
+    postJson<SummaryResult>('/api/summary', { datasetId, query: { metrics } })
+      .then((res) => {
+        if (cancelled) return;
+        setGroupCount(res.metrics.reduce((max, m) => Math.max(max, m.value), 0));
+        setProbing(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Can't size the breakdown — don't block table creation on a probe failure.
+        setGroupCount(null);
+        setProbing(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [datasetId, dim1, dim2, loading]);
+
   const updateMeasure = (i: number, patch: Partial<MeasureRow>) => {
     setMeasures((prev) => prev.map((m, idx) => (idx === i ? { ...m, ...patch } : m)));
   };
@@ -80,6 +121,9 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    // Enforce the same gate as the submit button, so an over-large breakdown can't slip through
+    // another submit path (e.g. Enter in a field).
+    if (!canSubmit) return;
 
     const dimensions = [dim1, ...(dim2 && dim2 !== dim1 ? [dim2] : [])];
     const cols: TableMeasureConfig[] = measures.map((m) => ({ y: m.y, aggregation: m.aggregation }));
@@ -109,9 +153,15 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
   };
 
   const fieldClass = `${inputClass} w-full`;
-  const canSubmit = dim1 !== '' && measures.length > 0;
 
   const hasLimit = typeof limit === 'number' && limit > 0;
+  // A breakdown with more distinct values than we're willing to render must set a Top N first.
+  // While the probe is in flight (or after a change, before it resolves) we hold submit closed so
+  // a user can't race past the guard on a high-cardinality dimension.
+  const tooManyRows = groupCount !== null && groupCount > MAX_UNLIMITED_ROWS;
+  const needsLimit = tooManyRows && !hasLimit;
+  const canSubmit = dim1 !== '' && measures.length > 0 && !needsLimit && !probing;
+
   // Clamp the ranking measure to the current list so a removed measure can't leave the
   // dropdown (or the help text) pointing past the end.
   const effectiveRank = rankBy < measures.length ? rankBy : 0;
@@ -233,15 +283,27 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
             </div>
 
             <div>
-              <label className="mb-1 block text-sm font-medium text-foreground">Show top (optional)</label>
+              <label className="mb-1 block text-sm font-medium text-foreground">
+                Show top{' '}
+                {needsLimit ? <span className="text-danger">(required)</span> : '(optional)'}
+              </label>
               <input
                 type="number"
                 min={1}
                 value={limit}
                 onChange={(e) => setLimit(e.target.value === '' ? '' : Number(e.target.value))}
                 placeholder={dim2 ? 'All groups' : 'All rows'}
-                className={`${fieldClass} placeholder:text-foreground-muted`}
+                className={`${fieldClass} placeholder:text-foreground-muted ${
+                  needsLimit ? 'border-danger' : ''
+                }`}
               />
+              {needsLimit && (
+                <p className="mt-2 rounded-control border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
+                  This breakdown produces about {groupCount!.toLocaleString()} rows — too many to
+                  show at once, and rendering them all would slow the whole page down. Enter a limit
+                  to keep just the top rows.
+                </p>
+              )}
               {hasLimit && measures.length > 1 && (
                 <div className="mt-2 flex items-center gap-2">
                   <span className="text-xs font-medium text-foreground-muted">Ranked by</span>
@@ -283,6 +345,11 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
               <button
                 type="submit"
                 disabled={!canSubmit}
+                title={
+                  needsLimit
+                    ? 'Set a "Show top" limit — this breakdown has too many rows to display'
+                    : undefined
+                }
                 className="rounded-full bg-primary px-5 py-2 text-sm font-semibold text-primary-foreground transition-colors hover:bg-primary-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {editing ? 'Save changes' : 'Add Table'}
