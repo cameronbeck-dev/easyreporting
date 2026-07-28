@@ -169,7 +169,7 @@ export default function TableCard({
   };
 
   return (
-    <div className="group/card relative flex h-full flex-col gap-3 overflow-hidden rounded-card border border-border bg-surface p-4 shadow-card">
+    <div className="group/card @container relative flex h-full flex-col gap-3 overflow-hidden rounded-card border border-border bg-surface p-4 shadow-card">
       <span className="absolute inset-x-0 top-0 h-1" style={{ backgroundColor: accent }} aria-hidden />
 
       <div className="flex items-start justify-between gap-2">
@@ -296,6 +296,11 @@ export default function TableCard({
                               d.value !== null && d.value !== undefined && d.value !== '',
                             ),
                         );
+                      const label = hide ? '' : dimCell(v, cIdx);
+                      // Category width scales with the card (a @container on the card root): full
+                      // names up to 300px on wide cards, shrinking with the card but never below a
+                      // legible ~180px floor. Below that the card scrolls rather than truncating the
+                      // category into an unreadable/ambiguous stub. Numeric columns are unaffected.
                       return (
                         <td key={cIdx} className="whitespace-nowrap px-3 py-1.5 text-left text-foreground">
                           {hide ? (
@@ -304,13 +309,15 @@ export default function TableCard({
                             <button
                               type="button"
                               onClick={drillHere}
-                              className="rounded-control text-left underline-offset-2 transition-colors hover:text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                              title="Go to the data for this category"
+                              className="block max-w-[clamp(180px,45cqw,300px)] truncate rounded-control text-left underline-offset-2 transition-colors hover:text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              title={label}
                             >
-                              {dimCell(v, cIdx)}
+                              {label}
                             </button>
                           ) : (
-                            dimCell(v, cIdx)
+                            <span className="block max-w-[clamp(180px,45cqw,300px)] truncate" title={label}>
+                              {label}
+                            </span>
                           )}
                         </td>
                       );

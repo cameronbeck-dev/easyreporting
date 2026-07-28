@@ -52,7 +52,7 @@ export default function DataTable({ columns, rows, total, hasMore, loadingMore, 
               {columns.map((col) => (
                 <th
                   key={col.name}
-                  className={`sticky top-0 z-10 whitespace-nowrap border-b border-border bg-surface-muted px-4 py-3 font-medium text-foreground ${isNumeric(col.type) ? 'text-right' : ''}`}
+                  className={`sticky top-0 z-10 whitespace-nowrap border-b border-border bg-surface-muted px-3 py-2 font-medium text-foreground ${isNumeric(col.type) ? 'text-right' : ''}`}
                 >
                   {prettify(col.name)}
                   <span className="ml-1 text-xs font-normal text-foreground-muted">({col.type})</span>
@@ -63,16 +63,28 @@ export default function DataTable({ columns, rows, total, hasMore, loadingMore, 
           <tbody className="divide-y divide-border">
             {rows.map((row, i) => (
               <tr key={i} className="transition-colors hover:bg-surface-muted">
-                {columns.map((col) => (
-                  <td
-                    key={col.name}
-                    className={`whitespace-nowrap px-4 py-2 text-foreground-muted ${isNumeric(col.type) ? 'text-right tnum' : ''}`}
-                  >
-                    {/* Raw grid always shows full precision — force scale 'none' so a column's
-                        compact setting never abbreviates exact values here. */}
-                    {formatValue(row[col.name], col, { fallback: 'plain', scale: 'none' })}
-                  </td>
-                ))}
+                {columns.map((col) => {
+                  const numeric = isNumeric(col.type);
+                  // Raw grid always shows full precision — force scale 'none' so a column's
+                  // compact setting never abbreviates exact values here.
+                  const cell = formatValue(row[col.name], col, { fallback: 'plain', scale: 'none' });
+                  return (
+                    <td
+                      key={col.name}
+                      className={`px-3 py-2 text-foreground-muted ${numeric ? 'whitespace-nowrap text-right tnum' : ''}`}
+                    >
+                      {numeric ? (
+                        cell
+                      ) : (
+                        // Cap text columns (e.g. long company names) so one wide column can't
+                        // dominate the table; the full value stays available on hover.
+                        <span className="block max-w-[240px] truncate" title={cell == null ? undefined : String(cell)}>
+                          {cell}
+                        </span>
+                      )}
+                    </td>
+                  );
+                })}
               </tr>
             ))}
             {rows.length === 0 && (
