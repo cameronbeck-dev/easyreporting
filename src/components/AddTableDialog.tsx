@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import type { ColumnSchema, DatasetSchema, SummaryMetric, SummaryResult } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import type { TableConfig, TableMeasureConfig, TableSort } from './chartTypes';
-import { defaultTableTitle, prettify, aggregationOptionLabel, metricLabel } from './chartTypes';
+import { defaultTableTitle, prettify, aggregationOptionLabel, aggregationsForColumnType, reconcileAggregation, metricLabel } from './chartTypes';
 import { inputClass } from './ui/forms';
 import { getJson, postJson } from '@/lib/api/client';
 
@@ -59,6 +59,8 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
   // self-aggregating computed fields.
   const dimColumns = columns.filter((c) => !c.isComputed);
   const dim2Columns = dimColumns.filter((c) => c.name !== dim1);
+  // Every column is a valid measure; the per-row aggregation select adapts to the chosen column's
+  // type (see aggregationsForColumnType), so no column filtering is needed here.
   const measureColumns = columns;
 
   useEffect(() => {
@@ -235,7 +237,7 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
                           disabled={computed}
                           className={`${fieldClass} disabled:bg-surface-muted disabled:text-foreground-muted`}
                         >
-                          {Object.values(Aggregation).map((a) => (
+                          {aggregationsForColumnType(columns.find((c) => c.name === m.y)?.type).map((a) => (
                             <option key={a} value={a}>{aggregationOptionLabel(a)}</option>
                           ))}
                         </select>
@@ -244,7 +246,12 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
                         <label className="mb-1 block text-xs font-medium text-foreground-muted">Metric</label>
                         <select
                           value={m.y}
-                          onChange={(e) => updateMeasure(i, { y: e.target.value })}
+                          onChange={(e) => {
+                            const y = e.target.value;
+                            // Keep the aggregation valid for the new column type (e.g. text → Count-unique).
+                            const aggregation = reconcileAggregation(m.aggregation, columns.find((c) => c.name === y)?.type);
+                            updateMeasure(i, { y, aggregation });
+                          }}
                           disabled={isCount}
                           className={`${fieldClass} disabled:bg-surface-muted disabled:text-foreground-muted`}
                         >

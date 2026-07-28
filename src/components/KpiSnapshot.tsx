@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import type { ColumnSchema, Filter, SummaryResult, SummaryMetric } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import type { TileConfig } from './chartTypes';
-import { metricLabel, prettify, aggregationOptionLabel } from './chartTypes';
+import { metricLabel, prettify, aggregationOptionLabel, aggregationsForColumnType, reconcileAggregation } from './chartTypes';
 import { fieldColor } from './fieldColors';
 import { formatValue } from './formatNumber';
 import { measureFormatColumn } from './columnFormat';
@@ -106,7 +106,7 @@ export default function KpiSnapshot({
   };
 
   const addTile = () => {
-    const first = numericCols[0]?.name ?? COUNT_COLUMN;
+    const first = numericCols[0]?.name ?? columns[0]?.name ?? COUNT_COLUMN;
     const tile: TileConfig = {
       id: `tile-${Date.now()}`,
       column: first,
@@ -150,6 +150,7 @@ export default function KpiSnapshot({
         const color = fieldColor(tileColorKey(t));
         const editing = editingId === t.id;
         const tileComputed = columns.find((c) => c.name === t.column)?.isComputed ?? false;
+        const tileColType = columns.find((c) => c.name === t.column)?.type;
         return (
           <div
             key={t.id}
@@ -159,23 +160,31 @@ export default function KpiSnapshot({
 
             {editing ? (
               <div className="flex flex-col gap-2 pt-1">
+                {/* Aggregation options adapt to the chosen column: numbers get every aggregation,
+                    text/date only Count and Count-unique. Computed fields self-aggregate (disabled). */}
                 <select
                   value={t.aggregation}
                   onChange={(e) => updateTile(t.id, { aggregation: e.target.value as Aggregation })}
                   disabled={tileComputed}
                   className="rounded-control border border-border bg-surface px-2 py-1 text-sm text-foreground disabled:bg-surface-muted disabled:text-foreground-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  {Object.values(Aggregation).map((a) => (
+                  {aggregationsForColumnType(tileColType).map((a) => (
                     <option key={a} value={a}>{aggregationOptionLabel(a)}</option>
                   ))}
                 </select>
+                {/* Every column is selectable; switching to a text/date column reconciles the
+                    aggregation so an invalid pairing (e.g. Total of a text column) can't occur. */}
                 <select
                   value={t.column}
-                  onChange={(e) => updateTile(t.id, { column: e.target.value })}
+                  onChange={(e) => {
+                    const column = e.target.value;
+                    const type = columns.find((c) => c.name === column)?.type;
+                    updateTile(t.id, { column, aggregation: reconcileAggregation(t.aggregation, type) });
+                  }}
                   disabled={t.aggregation === Aggregation.Count && !tileComputed}
                   className="rounded-control border border-border bg-surface px-2 py-1 text-sm text-foreground disabled:bg-surface-muted disabled:text-foreground-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
-                  {numericCols.map((c) => (
+                  {columns.map((c) => (
                     <option key={c.name} value={c.name}>{prettify(c.name)}</option>
                   ))}
                 </select>

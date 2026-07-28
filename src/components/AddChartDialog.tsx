@@ -9,6 +9,8 @@ import {
   defaultComboTitle,
   prettify,
   aggregationOptionLabel,
+  aggregationsForColumnType,
+  reconcileAggregation,
   supportsBreakdown,
   DEFAULT_BREAKDOWN_LIMIT,
 } from './chartTypes';
@@ -67,7 +69,10 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
   const isCombo = chartType === 'combo';
   const canBreakdown = supportsBreakdown(chartType);
   const xColumns = columns.filter((c) => !c.isComputed);
+  // Every column is a valid metric; the aggregation select adapts to the chosen column's type
+  // (see aggregationsForColumnType), so no column filtering is needed here.
   const yColumns = columns;
+  const yType = columns.find((c) => c.name === yCol)?.type;
   const yIsComputed = isComputedCol(yCol);
   // Count is only a valid outer aggregation for plain columns; computed fields self-aggregate.
   const isCount = aggregation === Aggregation.Count && !yIsComputed;
@@ -162,7 +167,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
               disabled={computed}
               className={`${fieldClass} disabled:bg-surface-muted disabled:text-foreground-muted`}
             >
-              {Object.values(Aggregation).map((a) => (
+              {aggregationsForColumnType(columns.find((c) => c.name === y)?.type).map((a) => (
                 <option key={a} value={a}>{aggregationOptionLabel(a)}</option>
               ))}
             </select>
@@ -171,7 +176,12 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
             <label className="mb-1 block text-xs font-medium text-foreground-muted">Metric</label>
             <select
               value={y}
-              onChange={(e) => setY(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setY(v);
+                // Keep the aggregation valid for the new column type (e.g. text → Count-unique).
+                setAgg(reconcileAggregation(agg, columns.find((c) => c.name === v)?.type));
+              }}
               disabled={isCount}
               className={`${fieldClass} disabled:bg-surface-muted disabled:text-foreground-muted`}
             >
@@ -310,7 +320,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
                     disabled={yIsComputed}
                     className={`${fieldClass} disabled:bg-surface-muted disabled:text-foreground-muted`}
                   >
-                    {Object.values(Aggregation).map((a) => (
+                    {aggregationsForColumnType(yType).map((a) => (
                       <option key={a} value={a}>{aggregationOptionLabel(a)}</option>
                     ))}
                   </select>
@@ -329,7 +339,12 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
                   </label>
                   <select
                     value={yCol}
-                    onChange={(e) => setYCol(e.target.value)}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setYCol(v);
+                      // Keep the aggregation valid for the new column type (e.g. text → Count-unique).
+                      setAggregation(reconcileAggregation(aggregation, columns.find((c) => c.name === v)?.type));
+                    }}
                     disabled={isCount}
                     className={`${fieldClass} disabled:bg-surface-muted disabled:text-foreground-muted`}
                   >

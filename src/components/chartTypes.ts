@@ -1,5 +1,5 @@
 import { Aggregation } from '@/lib/data/types';
-import type { DateBucket } from '@/lib/data/types';
+import type { DateBucket, ColumnType } from '@/lib/data/types';
 
 /** Every chart type the dashboard can render. `combo` overlays two measures (bar + line). */
 export type ChartType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'donut' | 'combo';
@@ -112,6 +112,26 @@ const AGGREGATION_OPTION_LABEL: Record<Aggregation, string> = {
 
 export function aggregationOptionLabel(aggregation: Aggregation): string {
   return AGGREGATION_OPTION_LABEL[aggregation];
+}
+
+/**
+ * Which aggregations are valid for a column of the given type. Numeric columns support every
+ * aggregation; text/date columns support only Count and CountUnique (Sum/Average/Lowest/Highest
+ * need numbers). Callers disable the control entirely for self-aggregating computed fields.
+ */
+export function aggregationsForColumnType(type: ColumnType | undefined): Aggregation[] {
+  return type === 'number'
+    ? Object.values(Aggregation)
+    : [Aggregation.Count, Aggregation.CountUnique];
+}
+
+/**
+ * Keep an aggregation valid when the measure column changes. Returns the current aggregation if
+ * it still applies to the new column's type, otherwise CountUnique — the meaningful default for a
+ * text/date column the user just picked (Count ignores the column; Sum/etc. need numbers).
+ */
+export function reconcileAggregation(aggregation: Aggregation, type: ColumnType | undefined): Aggregation {
+  return aggregationsForColumnType(type).includes(aggregation) ? aggregation : Aggregation.CountUnique;
 }
 
 /** Builds a readable default chart title, e.g. "Total revenue by month". */
