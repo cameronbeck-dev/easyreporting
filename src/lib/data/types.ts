@@ -48,11 +48,23 @@ export interface ColumnFormat {
 }
 
 export interface JoinStep {
+  /**
+   * SQL datasets: the joined table's name in the same schema.
+   * File datasets: the ALIAS/prefix used for this joined table in the dataset's qualified
+   * column names (e.g. "companies" → columns stored as "companies.parent").
+   */
   tableName: string;
   joinType: 'inner' | 'left';
   leftTable: string;
   leftColumn: string;
   rightColumn: string;
+  /**
+   * File datasets only: the id of the (file-backed) dataset whose Parquet supplies the right
+   * side of this join. `tableName` is that Parquet's alias. Unused for SQL datasets, where the
+   * join target is a table in the same connection/schema. Joins run at query time — the source
+   * datasets stay independently refreshable.
+   */
+  rightDatasetId?: string;
 }
 
 export interface TableSource {

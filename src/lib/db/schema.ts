@@ -96,6 +96,10 @@ export const datasets = sqliteTable('datasets', {
   // served from. NULL for SQL datasets and the CSV demo.
   parquetPath: text('parquet_path'),
   tenantColumn: text('tenant_column').notNull(),
+  // 'fact' (default) = a normal, tenant-scoped, directly-queryable dataset.
+  // 'reference' = a dimension/lookup dataset with no tenant column; it is NOT directly
+  // queryable and exists only as a join target (see resolveDataset.ts / buildDuckFrom).
+  role: text('role').notNull().default('fact'),
   columnsJson: text('columns_json', { mode: 'json' })
     .notNull()
     .$type<{ name: string; type: ColumnType; table?: string; format?: ColumnFormat }[]>(),

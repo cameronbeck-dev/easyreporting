@@ -6,8 +6,9 @@
 // read_parquet(...) call, `in` expands to an IN (...) list rather than Postgres's
 // = ANY($1), and date buckets are produced with date_trunc + strftime.
 //
-// File datasets are always single-table (a folder of files becomes one Parquet), so
-// there is no JOIN handling here.
+// A file dataset may be single-table (one Parquet) or, when joins are configured, a base
+// Parquet joined to other datasets' Parquets — see buildDuckFrom. Joins run at query time
+// (DuckDB reads each Parquet directly); nothing is re-materialized.
 import type {
   Filter,
   AggregatedQuery,
@@ -33,13 +34,16 @@ function measureExpr(
   column: string,
   aggregation: Aggregation,
   allowedCols: Set<string>,
+  src?: DuckSource,
 ): string {
   if (measure) {
     const { ast, dependencies } = parseComputedExpression(measure.expression, measure.dependencies);
     for (const dep of dependencies) assertKnown(dep, allowedCols);
-    return computedMeasureToSql(ast);
+    // A computed field's dependencies are the base dataset's columns; qualify them with the
+    // base alias for multi-table sources so they don't collide with a joined Parquet's columns.
+    return computedMeasureToSql(ast, (n) => baseQualify(n, src));
   }
-  return aggExpr(column, aggregation);
+  return aggExpr(column, aggregation, src);
 }
 
 export interface BuiltQuery {
@@ -51,10 +55,85 @@ export interface BuiltQuery {
 // must be validated against this fixed allow-list — never trusted from the request body.
 const ALLOWED_DATE_BUCKETS = new Set(['day', 'week', 'month', 'quarter']);
 
+// Fixed allow-list for JOIN types (mirrors sql/buildQuery.ts). The stored joinType string is
+// NEVER interpolated directly — it is mapped through this table at query-build time.
+const DUCK_JOIN_SQL: Record<string, string> = {
+  inner: 'INNER JOIN',
+  left: 'LEFT JOIN',
+};
+
+/** One join step for a file-backed multi-Parquet source (DuckDB dialect). */
+export interface DuckJoinStep {
+  joinType: 'inner' | 'left';
+  /** Alias of a table already in the FROM (the base or an earlier join). */
+  leftTable: string;
+  leftColumn: string;
+  /** Alias assigned to THIS joined Parquet. Must match the prefix of its stored column names. */
+  rightTable: string;
+  /** parquetLiteral(...) for the joined dataset's Parquet file. */
+  rightParquet: string;
+  rightColumn: string;
+}
+
+/**
+ * The DuckDB FROM source: a base Parquet plus zero or more joined Parquets. Mirrors
+ * sql/buildQuery.ts's TableSource, but each "table" is a read_parquet(...) call aliased so
+ * qualified column names ("alias.column", quoted by the shared quoteIdent) resolve. A
+ * single-table source (joins=[]) emits the exact legacy shape — `FROM read_parquet(<lit>)`,
+ * no alias — so existing datasets are byte-identical.
+ */
+export interface DuckSource {
+  baseParquet: string;
+  baseTable: string;
+  joins: DuckJoinStep[];
+}
+
+/**
+ * Build the FROM clause (and optional JOINs) for a DuckSource.
+ *   • single-table → `FROM read_parquet(<lit>)`
+ *   • multi-table  → base aliased, one JOIN line per step, joinType mapped through the
+ *     allow-list, every identifier quoted.
+ */
+export function buildDuckFrom(src: DuckSource): string {
+  const base = `FROM read_parquet(${src.baseParquet})`;
+  if (src.joins.length === 0) return base;
+
+  const aliasedBase = `${base} AS ${quoteIdent(src.baseTable)}`;
+  const joinLines = src.joins.map((j) => {
+    const kw = DUCK_JOIN_SQL[j.joinType];
+    if (!kw) throw new Error(`Invalid joinType: "${j.joinType}"`);
+    return (
+      `${kw} read_parquet(${j.rightParquet}) AS ${quoteIdent(j.rightTable)}` +
+      ` ON ${quoteIdent(j.rightTable)}.${quoteIdent(j.rightColumn)}` +
+      ` = ${quoteIdent(j.leftTable)}.${quoteIdent(j.leftColumn)}`
+    );
+  });
+  return [aliasedBase, ...joinLines].join(' ');
+}
+
+/**
+ * The raw (unquoted) identifier for a stored column reference under this source. Joined columns
+ * are already qualified ("alias.col"). A BARE name in a multi-table query is a base column and
+ * gets the base alias prefixed, so it can't collide (case-insensitively) with a joined Parquet's
+ * column (e.g. the shared join key). Single-table (or no src) → the name unchanged, so stored
+ * base columns and computed-field formulas keep using plain names everywhere else.
+ */
+function baseQualify(name: string, src?: DuckSource): string {
+  if (!src || src.joins.length === 0) return name;
+  if (name.includes('.')) return name;
+  return `${src.baseTable}.${name}`;
+}
+
+/** baseQualify + quoteIdent: the emitted, quoted column reference for the current source. */
+function colRef(name: string, src?: DuckSource): string {
+  return quoteIdent(baseQualify(name, src));
+}
+
 export function buildDuckWhere(
   filters: Filter[],
   allowedCols: Set<string>,
   startIndex: number,
+  src?: DuckSource,
 ): { clause: string; values: unknown[] } {
   if (filters.length === 0) return { clause: '', values: [] };
 
@@ -64,7 +143,7 @@ export function buildDuckWhere(
 
   for (const f of filters) {
     assertKnown(f.column, allowedCols);
-    const col = quoteIdent(f.column);
+    const col = colRef(f.column, src);
 
     if (f.operator === 'eq') {
       parts.push(`${col} = $${idx}`);
@@ -118,10 +197,10 @@ export function buildDuckWhere(
   return { clause: `WHERE ${parts.join(' AND ')}`, values };
 }
 
-function aggExpr(col: string, aggregation: Aggregation): string {
+function aggExpr(col: string, aggregation: Aggregation, src?: DuckSource): string {
   if (aggregation === Aggregation.Count) return 'COUNT(*)';
-  if (aggregation === Aggregation.CountUnique) return `COUNT(DISTINCT ${quoteIdent(col)})`;
-  return `${aggregation.toUpperCase()}(${quoteIdent(col)})`;
+  if (aggregation === Aggregation.CountUnique) return `COUNT(DISTINCT ${colRef(col, src)})`;
+  return `${aggregation.toUpperCase()}(${colRef(col, src)})`;
 }
 
 /**
@@ -131,9 +210,13 @@ function aggExpr(col: string, aggregation: Aggregation): string {
  *   • plain date    → the date as 'YYYY-MM-DD';
  *   • anything else → the raw column.
  */
-function xExpr(q: AggregatedQuery, columns: ColumnSchema[]): { expr: string; bucketed: boolean } {
+function xExpr(
+  q: AggregatedQuery,
+  columns: ColumnSchema[],
+  src?: DuckSource,
+): { expr: string; bucketed: boolean } {
   const xType = columns.find((c) => c.name === q.x)?.type;
-  const col = quoteIdent(q.x);
+  const col = colRef(q.x, src);
   if (q.dateBucket && xType === 'date') {
     if (!ALLOWED_DATE_BUCKETS.has(q.dateBucket)) {
       throw new Error(`Invalid dateBucket: "${q.dateBucket}"`);
@@ -147,7 +230,7 @@ function xExpr(q: AggregatedQuery, columns: ColumnSchema[]): { expr: string; buc
 }
 
 export function buildDuckAggregated(
-  parquetLiteral: string,
+  src: DuckSource,
   q: AggregatedQuery,
   allowedCols: Set<string>,
   columns: ColumnSchema[],
@@ -158,10 +241,10 @@ export function buildDuckAggregated(
   if (!q.measure) assertKnown(q.y, allowedCols);
 
   const filters = q.filters ?? [];
-  const { clause, values } = buildDuckWhere(filters, allowedCols, 1);
+  const { clause, values } = buildDuckWhere(filters, allowedCols, 1, src);
 
-  const { expr, bucketed } = xExpr(q, columns);
-  const yExpr = measureExpr(q.measure, q.y, q.aggregation, allowedCols);
+  const { expr, bucketed } = xExpr(q, columns, src);
+  const yExpr = measureExpr(q.measure, q.y, q.aggregation, allowedCols, src);
 
   // Top-N only applies to non-date axes; date axes stay chronological.
   const xType = columns.find((c) => c.name === q.x)?.type;
@@ -171,7 +254,7 @@ export function buildDuckAggregated(
 
   const text = [
     `SELECT ${expr} AS x, ${yExpr} AS y`,
-    `FROM read_parquet(${parquetLiteral})`,
+    buildDuckFrom(src),
     clause,
     `GROUP BY x`,
     orderBy,
@@ -184,7 +267,7 @@ export function buildDuckAggregated(
 }
 
 export function buildDuckSummary(
-  parquetLiteral: string,
+  src: DuckSource,
   q: SummaryQuery,
   allowedCols: Set<string>,
 ): BuiltQuery {
@@ -196,15 +279,15 @@ export function buildDuckSummary(
   }
 
   const filters = q.filters ?? [];
-  const { clause, values } = buildDuckWhere(filters, allowedCols, 1);
+  const { clause, values } = buildDuckWhere(filters, allowedCols, 1, src);
 
   const exprs = q.metrics.map(
-    (m, i) => `${measureExpr(m.measure, m.column, m.aggregation, allowedCols)} AS m${i}`,
+    (m, i) => `${measureExpr(m.measure, m.column, m.aggregation, allowedCols, src)} AS m${i}`,
   );
 
   const text = [
     `SELECT ${exprs.join(', ')}`,
-    `FROM read_parquet(${parquetLiteral})`,
+    buildDuckFrom(src),
     clause,
   ]
     .filter(Boolean)
@@ -216,11 +299,11 @@ export function buildDuckSummary(
 /**
  * DuckDB analog of sql/buildQuery.ts's buildTable — same grouped-table semantics, same
  * dimension/measure aliasing and top-N rules (see that function's doc), speaking DuckDB's
- * dialect (read_parquet source, IN (...) lists via buildDuckWhere). File datasets are always
- * single-table, so there is no JOIN handling.
+ * dialect (read_parquet source, IN (...) lists via buildDuckWhere). Joins are handled by
+ * buildDuckFrom; dimension/measure column names may be qualified ("alias.column").
  */
 export function buildDuckTable(
-  parquetLiteral: string,
+  src: DuckSource,
   q: TableQuery,
   allowedCols: Set<string>,
   columns: ColumnSchema[],
@@ -236,16 +319,16 @@ export function buildDuckTable(
   void columns; // reserved for future date-bucketed dimensions; dimensions are plain today.
 
   const filters = q.filters ?? [];
-  const { clause, values } = buildDuckWhere(filters, allowedCols, 1);
+  const { clause, values } = buildDuckWhere(filters, allowedCols, 1, src);
 
-  const dimExprs = q.dimensions.map((d) => quoteIdent(d));
+  const dimExprs = q.dimensions.map((d) => colRef(d, src));
   const dimSelects = dimExprs.map((e, i) => `${e} AS d${i}`);
   const measureSelects = q.measures.map(
-    (m, i) => `${measureExpr(m.measure, m.y, m.aggregation, allowedCols)} AS m${i}`,
+    (m, i) => `${measureExpr(m.measure, m.y, m.aggregation, allowedCols, src)} AS m${i}`,
   );
   const selectList = [...dimSelects, ...measureSelects].join(', ');
   const groupBy = `GROUP BY ${dimExprs.join(', ')}`;
-  const from = `FROM read_parquet(${parquetLiteral})`;
+  const from = buildDuckFrom(src);
 
   const dimIndex = new Map(q.dimensions.map((d, i) => [d, i] as const));
   const orderTerm = (o: OrderSpec): string => {
@@ -295,7 +378,7 @@ export function buildDuckTable(
   // A distinct count (COUNT DISTINCT ≠ sum of per-group distinct counts) or an average would
   // otherwise rank by the wrong number. The WHERE params are shared by both CTEs (reused `$n`).
   const rankMeasure = q.measures[rankIdx];
-  const rankExpr = measureExpr(rankMeasure.measure, rankMeasure.y, rankMeasure.aggregation, allowedCols);
+  const rankExpr = measureExpr(rankMeasure.measure, rankMeasure.y, rankMeasure.aggregation, allowedCols, src);
   const dim0 = dimExprs[0];
   const text = [
     `WITH grouped AS (SELECT ${selectList}`,
@@ -315,18 +398,45 @@ export function buildDuckTable(
 }
 
 export function buildDuckRows(
-  parquetLiteral: string,
+  src: DuckSource,
   q: RowsQuery,
   allowedCols: Set<string>,
+  storedColumns?: { name: string; table?: string }[],
+  tenantColumn?: string,
 ): { dataQuery: BuiltQuery; countQuery: BuiltQuery } {
   const filters = q.filters ?? [];
-  const { clause, values } = buildDuckWhere(filters, allowedCols, 1);
+  const { clause, values } = buildDuckWhere(filters, allowedCols, 1, src);
 
   const offset = (q.page - 1) * q.pageSize;
-  const from = `FROM read_parquet(${parquetLiteral})`;
+  const from = buildDuckFrom(src);
+
+  let selectClause: string;
+  if (src.joins.length > 0 && storedColumns) {
+    // Multi-table: emit an explicit projection so result-row keys equal the stored qualified
+    // names (alias.column). Mirrors sql/buildQuery.ts's buildRows. The tenant column is
+    // omitted (AccessControlledProvider strips it post-query anyway; excluding it keeps rows
+    // clean).
+    const projections = storedColumns
+      .filter((c) => c.name !== tenantColumn)
+      .map((c) => {
+        if (c.table) {
+          const dot = c.name.indexOf('.');
+          const tbl = c.name.slice(0, dot);
+          const col = c.name.slice(dot + 1);
+          const aliasLiteral = `"${c.name.replace(/"/g, '""')}"`;
+          return `${quoteIdent(tbl)}.${quoteIdent(col)} AS ${aliasLiteral}`;
+        }
+        // Base column (bare): qualify the ref with the base alias to avoid ambiguity, but keep
+        // the output key bare so result rows match the stored (unqualified) column name.
+        return `${colRef(c.name, src)} AS ${quoteIdent(c.name)}`;
+      });
+    selectClause = projections.length > 0 ? `SELECT ${projections.join(', ')}` : 'SELECT *';
+  } else {
+    selectClause = 'SELECT *';
+  }
 
   const dataText = [
-    'SELECT *',
+    selectClause,
     from,
     clause,
     `LIMIT $${values.length + 1} OFFSET $${values.length + 2}`,

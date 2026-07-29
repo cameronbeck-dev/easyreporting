@@ -281,7 +281,7 @@ export async function publishImportAction(_prev: ActionState, formData: FormData
 
 export async function addComputedFieldAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const datasetId = String(formData.get('datasetId') ?? '');
-  return run(['/admin/datasets'], async () => {
+  return run(['/admin/datasets', `/admin/datasets/${datasetId}/schema`], async () => {
     const admin = await requireAdminAction();
     await repo.addComputedField(admin, datasetId, {
       name: String(formData.get('name') ?? ''),
@@ -292,9 +292,33 @@ export async function addComputedFieldAction(_prev: ActionState, formData: FormD
 
 export async function removeComputedFieldAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
   const datasetId = String(formData.get('datasetId') ?? '');
-  return run(['/admin/datasets'], async () => {
+  return run(['/admin/datasets', `/admin/datasets/${datasetId}/schema`], async () => {
     const admin = await requireAdminAction();
     await repo.removeComputedField(admin, datasetId, String(formData.get('fieldName') ?? ''));
+  });
+}
+
+/** Replace a file dataset's joins (the join builder in the Schema section). */
+export async function setDatasetJoinsAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const datasetId = String(formData.get('datasetId') ?? '');
+  return run(['/admin/datasets', `/admin/datasets/${datasetId}/schema`, '/data', '/'], async () => {
+    const admin = await requireAdminAction();
+    let joins: {
+      rightDatasetId: string;
+      joinType: 'inner' | 'left';
+      leftColumn: string;
+      rightColumn: string;
+    }[] = [];
+    const raw = formData.get('joinsJson');
+    if (raw) {
+      try {
+        const parsed = JSON.parse(String(raw));
+        if (Array.isArray(parsed)) joins = parsed;
+      } catch {
+        return { error: 'Invalid joins payload.' };
+      }
+    }
+    await repo.setDatasetJoins(admin, datasetId, joins);
   });
 }
 

@@ -27,14 +27,34 @@ import type {
 } from './types';
 import { Aggregation } from './types';
 import { queryDuck, parquetLiteral, toNumber, coerceByType } from './duck/connection';
-import { buildDuckAggregated, buildDuckSummary, buildDuckRows, buildDuckTable } from './duck/buildDuckQuery';
+import { buildDuckAggregated, buildDuckSummary, buildDuckRows, buildDuckTable, type DuckSource } from './duck/buildDuckQuery';
 import { formatBucketKey } from './dateBuckets';
+
+/**
+ * One resolved join for a multi-Parquet file dataset: the join keys plus the on-disk Parquet
+ * path of the joined dataset (resolved from JoinStep.rightDatasetId by resolveDataset.ts).
+ * `rightTable` is the alias/prefix used in this dataset's qualified column names.
+ */
+export interface ResolvedFileJoin {
+  joinType: 'inner' | 'left';
+  leftTable: string;
+  leftColumn: string;
+  rightTable: string;
+  rightParquetPath: string;
+  rightColumn: string;
+}
 
 interface FileDataset {
   id: string;
   name: string;
   parquetPath: string;
-  columnsJson: { name: string; type: ColumnType; format?: ColumnFormat }[];
+  // Multi-table (joined) file datasets store qualified names ("alias.column") + a `table`
+  // (the alias); single-table datasets store bare names and no `table`.
+  columnsJson: { name: string; type: ColumnType; table?: string; format?: ColumnFormat }[];
+  /** The tenant column (qualified for joined datasets). Omitted from multi-table row projection. */
+  tenantColumn?: string;
+  /** Present only for joined datasets; resolveDataset resolves each join's Parquet path. */
+  joins?: ResolvedFileJoin[];
 }
 
 export class DuckDbProvider implements DataProvider {
@@ -54,6 +74,24 @@ export class DuckDbProvider implements DataProvider {
     return this.dataset.columnsJson.map((c) => ({ name: c.name, type: c.type, format: c.format }));
   }
 
+  // The FROM source. Single-table (joins=[]) emits the exact legacy `FROM read_parquet(<lit>)`.
+  // For joined datasets the base is aliased by the dataset id (the prefix its qualified column
+  // names use) and each join reads another dataset's Parquet under its own alias.
+  private buildSource(): DuckSource {
+    return {
+      baseParquet: this.parquet,
+      baseTable: this.dataset.id,
+      joins: (this.dataset.joins ?? []).map((j) => ({
+        joinType: j.joinType,
+        leftTable: j.leftTable,
+        leftColumn: j.leftColumn,
+        rightTable: j.rightTable,
+        rightParquet: parquetLiteral(j.rightParquetPath),
+        rightColumn: j.rightColumn,
+      })),
+    };
+  }
+
   async listDatasets(): Promise<Dataset[]> {
     return [{ id: this.dataset.id, name: this.dataset.name }];
   }
@@ -67,7 +105,7 @@ export class DuckDbProvider implements DataProvider {
     if (datasetId !== this.dataset.id) throw new Error(`Unknown dataset: ${datasetId}`);
 
     const { text, values, bucketed } = buildDuckAggregated(
-      this.parquet,
+      this.buildSource(),
       q,
       this.getAllowedCols(),
       this.getColumns(),
@@ -97,7 +135,7 @@ export class DuckDbProvider implements DataProvider {
   async querySummary(datasetId: string, q: SummaryQuery): Promise<SummaryResult> {
     if (datasetId !== this.dataset.id) throw new Error(`Unknown dataset: ${datasetId}`);
 
-    const { text, values } = buildDuckSummary(this.parquet, q, this.getAllowedCols());
+    const { text, values } = buildDuckSummary(this.buildSource(), q, this.getAllowedCols());
     const rows = await queryDuck(text, values);
     const row = rows[0] ?? {};
 
@@ -114,7 +152,7 @@ export class DuckDbProvider implements DataProvider {
     if (datasetId !== this.dataset.id) throw new Error(`Unknown dataset: ${datasetId}`);
 
     const columns = this.getColumns();
-    const { text, values } = buildDuckTable(this.parquet, q, this.getAllowedCols(), columns);
+    const { text, values } = buildDuckTable(this.buildSource(), q, this.getAllowedCols(), columns);
     const rowsRaw = await queryDuck(text, values);
 
     const typeByName = new Map(columns.map((c) => [c.name, c.type]));
@@ -149,7 +187,13 @@ export class DuckDbProvider implements DataProvider {
   async queryRows(datasetId: string, q: RowsQuery): Promise<RowsResult> {
     if (datasetId !== this.dataset.id) throw new Error(`Unknown dataset: ${datasetId}`);
 
-    const { dataQuery, countQuery } = buildDuckRows(this.parquet, q, this.getAllowedCols());
+    const { dataQuery, countQuery } = buildDuckRows(
+      this.buildSource(),
+      q,
+      this.getAllowedCols(),
+      this.dataset.columnsJson,
+      this.dataset.tenantColumn,
+    );
 
     // Single shared connection — run sequentially rather than racing two reads on it.
     const dataRows = await queryDuck(dataQuery.text, dataQuery.values);

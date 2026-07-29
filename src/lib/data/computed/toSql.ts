@@ -25,17 +25,23 @@ function binSql(op: '+' | '-' | '*' | '/', left: string, right: string): string 
   return `(${left} ${op} ${right})`;
 }
 
+// Maps a stored (bare) column name to the identifier text quoteIdent should quote. Defaults to
+// identity — used unchanged by the SQL path and single-table file datasets. Multi-table file
+// datasets pass a mapper that prefixes bare base columns with the base alias (e.g. "Sell" →
+// "consignments.Sell") so refs stay unambiguous when a joined Parquet has a same-named column.
+type NameMapper = (name: string) => string;
+
 /** Row-level translation (used inside an aggregate function's argument). Columns are raw. */
-function rowSql(e: Expr): string {
+function rowSql(e: Expr, mapName: NameMapper): string {
   switch (e.kind) {
     case 'num':
       return String(e.value);
     case 'col':
-      return quoteIdent(e.name);
+      return quoteIdent(mapName(e.name));
     case 'neg':
-      return `(-(${rowSql(e.operand)}))`;
+      return `(-(${rowSql(e.operand, mapName)}))`;
     case 'bin':
-      return binSql(e.op, rowSql(e.left), rowSql(e.right));
+      return binSql(e.op, rowSql(e.left, mapName), rowSql(e.right, mapName));
     case 'agg':
       // The parser forbids nested aggregates, so this is unreachable in practice.
       throw new Error('Aggregate functions cannot be nested.');
@@ -43,22 +49,26 @@ function rowSql(e: Expr): string {
 }
 
 /** Aggregate-level translation: bare columns default to SUM; aggregates reduce their arg. */
-function aggSql(e: Expr): string {
+function aggSql(e: Expr, mapName: NameMapper): string {
   switch (e.kind) {
     case 'num':
       return String(e.value);
     case 'col':
-      return `SUM(${quoteIdent(e.name)})`;
+      return `SUM(${quoteIdent(mapName(e.name))})`;
     case 'agg':
-      return `${e.op.toUpperCase()}(${rowSql(e.arg)})`;
+      return `${e.op.toUpperCase()}(${rowSql(e.arg, mapName)})`;
     case 'neg':
-      return `(-(${aggSql(e.operand)}))`;
+      return `(-(${aggSql(e.operand, mapName)}))`;
     case 'bin':
-      return binSql(e.op, aggSql(e.left), aggSql(e.right));
+      return binSql(e.op, aggSql(e.left, mapName), aggSql(e.right, mapName));
   }
 }
 
-/** The SQL expression a computed field aggregates to, for use as a GROUP BY measure. */
-export function computedMeasureToSql(ast: Expr): string {
-  return aggSql(ast);
+/**
+ * The SQL expression a computed field aggregates to, for use as a GROUP BY measure. `mapName`
+ * (default identity) rewrites each column name before quoting — used to qualify base columns
+ * with a table alias in multi-table file joins.
+ */
+export function computedMeasureToSql(ast: Expr, mapName: NameMapper = (n) => n): string {
+  return aggSql(ast, mapName);
 }

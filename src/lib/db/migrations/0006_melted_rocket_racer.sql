@@ -1,0 +1,1 @@
+ALTER TABLE `datasets` ADD `role` text DEFAULT 'fact' NOT NULL;

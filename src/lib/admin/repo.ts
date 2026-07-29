@@ -741,7 +741,16 @@ export interface DatasetAdminRow {
   /** Source columns of the dataset (from columnsJson), used to power computed-field autocomplete. */
   columns: DatasetColumn[];
   computedFields: ComputedField[];
+  /** Configured joins (empty for single-table datasets). */
+  joins: JoinStep[];
   createdAt: Date;
+}
+
+/** A file dataset that can be a join target: its id, name, and columns for the picker. */
+export interface JoinableDataset {
+  id: string;
+  name: string;
+  columns: DatasetColumn[];
 }
 
 export type JoinStepInput = JoinStep;
@@ -947,14 +956,166 @@ export async function listDatasetsAdmin(admin: AdminContext): Promise<DatasetAdm
       tenantColumn: datasets.tenantColumn,
       columnsJson: datasets.columnsJson,
       computedFieldsJson: datasets.computedFieldsJson,
+      joinsJson: datasets.joinsJson,
       createdAt: datasets.createdAt,
     })
     .from(datasets);
-  return rows.map(({ columnsJson, computedFieldsJson, ...r }) => ({
+  return rows.map(({ columnsJson, computedFieldsJson, joinsJson, ...r }) => ({
     ...r,
     columns: (columnsJson ?? []) as DatasetColumn[],
     computedFields: (computedFieldsJson ?? []) as ComputedField[],
+    joins: (joinsJson ?? []) as JoinStep[],
   }));
+}
+
+/** Summary of a single dataset for its detail page (the dataset-hub header). */
+export interface DatasetAdminSummary {
+  id: string;
+  name: string;
+  /** Where the data comes from. Derived from the source discriminator, not stored directly. */
+  kind: 'sql' | 'file';
+  /** Base table name for SQL datasets; null for file-backed ones. */
+  tableName: string | null;
+  tenantColumn: string;
+}
+
+/**
+ * Load one dataset's header summary for the detail page. Returns null when the id is unknown
+ * (the page turns that into a 404). Owner-only, like the rest of dataset administration.
+ */
+export async function getDatasetForAdmin(
+  admin: AdminContext,
+  datasetId: string,
+): Promise<DatasetAdminSummary | null> {
+  assertOwner(admin);
+  const [row] = await db
+    .select({
+      id: datasets.id,
+      name: datasets.name,
+      connectionId: datasets.connectionId,
+      tableName: datasets.tableName,
+      tenantColumn: datasets.tenantColumn,
+    })
+    .from(datasets)
+    .where(eq(datasets.id, datasetId))
+    .limit(1);
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    kind: row.connectionId !== null ? 'sql' : 'file',
+    tableName: row.tableName,
+    tenantColumn: row.tenantColumn,
+  };
+}
+
+/**
+ * Load one dataset's full admin row (source columns + computed fields) for its detail-page
+ * Schema section. Returns null when the id is unknown. Owner-only.
+ */
+export async function getDatasetAdminRow(
+  admin: AdminContext,
+  datasetId: string,
+): Promise<DatasetAdminRow | null> {
+  assertOwner(admin);
+  const [row] = await db
+    .select({
+      id: datasets.id,
+      name: datasets.name,
+      connectionId: datasets.connectionId,
+      tableName: datasets.tableName,
+      parquetPath: datasets.parquetPath,
+      tenantColumn: datasets.tenantColumn,
+      columnsJson: datasets.columnsJson,
+      computedFieldsJson: datasets.computedFieldsJson,
+      joinsJson: datasets.joinsJson,
+      createdAt: datasets.createdAt,
+    })
+    .from(datasets)
+    .where(eq(datasets.id, datasetId))
+    .limit(1);
+  if (!row) return null;
+  const { columnsJson, computedFieldsJson, joinsJson, ...rest } = row;
+  return {
+    ...rest,
+    columns: (columnsJson ?? []) as DatasetColumn[],
+    computedFields: (computedFieldsJson ?? []) as ComputedField[],
+    joins: (joinsJson ?? []) as JoinStep[],
+  };
+}
+
+/**
+ * File datasets that can be a join target for `excludeId` — every OTHER file-backed dataset,
+ * with its columns for the join-key picker. SQL datasets are excluded (file joins are
+ * Parquet-to-Parquet).
+ */
+export async function listJoinableFileDatasets(
+  admin: AdminContext,
+  excludeId: string,
+): Promise<JoinableDataset[]> {
+  assertOwner(admin);
+  const rows = await db
+    .select({ id: datasets.id, name: datasets.name, parquetPath: datasets.parquetPath, columnsJson: datasets.columnsJson })
+    .from(datasets);
+  return rows
+    .filter((r) => r.parquetPath !== null && r.id !== excludeId)
+    .map((r) => ({ id: r.id, name: r.name, columns: (r.columnsJson ?? []) as DatasetColumn[] }));
+}
+
+/**
+ * Replace a file dataset's joins. Validates each step: the target must be a distinct
+ * file-backed dataset, and both join-key columns must exist on their respective datasets.
+ * Stored as JoinStep[] (leftTable = this dataset id; tableName = the target's id, used as its
+ * alias/prefix in qualified column names). resolveDataset qualifies the joined columns at
+ * query time — nothing about columnsJson changes here.
+ */
+export async function setDatasetJoins(
+  admin: AdminContext,
+  datasetId: string,
+  joins: { rightDatasetId: string; joinType: 'inner' | 'left'; leftColumn: string; rightColumn: string }[],
+): Promise<void> {
+  assertOwner(admin);
+  const [row] = await db
+    .select({ parquetPath: datasets.parquetPath, columnsJson: datasets.columnsJson })
+    .from(datasets)
+    .where(eq(datasets.id, datasetId))
+    .limit(1);
+  if (!row) throw new ForbiddenError('Dataset not found.');
+  if (row.parquetPath === null) {
+    throw new ForbiddenError('Joins for SQL datasets are configured when the dataset is created.');
+  }
+  const baseCols = new Set((row.columnsJson as DatasetColumn[]).map((c) => c.name));
+
+  const built: JoinStep[] = [];
+  for (const j of joins) {
+    if (j.rightDatasetId === datasetId) throw new ForbiddenError('A dataset cannot be joined to itself.');
+    if (j.joinType !== 'inner' && j.joinType !== 'left') throw new ForbiddenError('Invalid join type.');
+    if (!baseCols.has(j.leftColumn)) {
+      throw new ForbiddenError(`Left column "${j.leftColumn}" is not a column of this dataset.`);
+    }
+    const [target] = await db
+      .select({ parquetPath: datasets.parquetPath, columnsJson: datasets.columnsJson })
+      .from(datasets)
+      .where(eq(datasets.id, j.rightDatasetId))
+      .limit(1);
+    if (!target || target.parquetPath === null) {
+      throw new ForbiddenError(`Joined dataset "${j.rightDatasetId}" is missing or not file-backed.`);
+    }
+    const targetCols = new Set((target.columnsJson as DatasetColumn[]).map((c) => c.name));
+    if (!targetCols.has(j.rightColumn)) {
+      throw new ForbiddenError(`Right column "${j.rightColumn}" is not a column of the joined dataset.`);
+    }
+    built.push({
+      tableName: j.rightDatasetId, // alias/prefix for the joined dataset
+      joinType: j.joinType,
+      leftTable: datasetId, // the base alias
+      leftColumn: j.leftColumn,
+      rightColumn: j.rightColumn,
+      rightDatasetId: j.rightDatasetId,
+    });
+  }
+
+  await db.update(datasets).set({ joinsJson: built }).where(eq(datasets.id, datasetId));
 }
 
 /** Remove `target` only if it resolves strictly inside `baseDir` (traversal guard). */

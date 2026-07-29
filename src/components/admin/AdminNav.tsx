@@ -5,18 +5,18 @@ import { usePathname } from 'next/navigation';
 
 export default function AdminNav({ isOwner }: { isOwner: boolean }) {
   const pathname = usePathname();
+  // Grouped into Data (owner-only) and People. Per-dataset facets — a dataset's formats,
+  // column access, and file imports — now live on its own detail page (/admin/datasets/[id]),
+  // so they are no longer top-level tabs.
   const links = [
-    { href: '/admin/users', label: 'Users' },
-    { href: '/admin/profiles', label: 'Row profiles' },
     ...(isOwner
       ? [
-          { href: '/admin/columns', label: 'Company columns' },
-          { href: '/admin/formats', label: 'Formats' },
-          { href: '/admin/connections', label: 'Connections' },
           { href: '/admin/datasets', label: 'Datasets' },
-          { href: '/admin/import', label: 'Import' },
+          { href: '/admin/connections', label: 'Connections' },
         ]
       : []),
+    { href: '/admin/users', label: 'Users' },
+    { href: '/admin/profiles', label: 'Row profiles' },
   ];
 
   return (

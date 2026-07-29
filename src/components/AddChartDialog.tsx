@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import type { ColumnSchema, DatasetSchema, DateBucket } from '@/lib/data/types';
+import { useEffect, useRef, useState } from 'react';
+import type { DateBucket } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import type { ChartConfig, ChartType, ComboMeasure, AxisSide } from './chartTypes';
 import {
@@ -15,7 +15,7 @@ import {
   DEFAULT_BREAKDOWN_LIMIT,
 } from './chartTypes';
 import { inputClass } from './ui/forms';
-import { getJson } from '@/lib/api/client';
+import { useSchema } from './useSchema';
 
 interface Props {
   datasetId: string;
@@ -36,9 +36,9 @@ const comboLine = (c?: ChartConfig): ComboMeasure | undefined =>
 export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }: Props) {
   const editing = Boolean(initial);
 
-  const [columns, setColumns] = useState<ColumnSchema[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Columns from the shared schema hook — identical source to the table builder, dashboard
+  // tiles/filters, and the Data Explorer, so joined columns are offered everywhere alike.
+  const { columns, loading, error } = useSchema(datasetId);
 
   const [title, setTitle] = useState(initial?.title ?? '');
   const [chartType, setChartType] = useState<ChartType>(initial?.type ?? 'bar');
@@ -79,25 +79,18 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
   // Columns you can split by: any real (non-computed) dimension other than the x axis.
   const breakdownColumns = columns.filter((c) => !c.isComputed && c.name !== xCol);
 
+  // Seed default axes/measures once columns first arrive (new chart only).
+  const didInitRef = useRef(false);
   useEffect(() => {
-    getJson<DatasetSchema>(`/api/schema?datasetId=${encodeURIComponent(datasetId)}`)
-      .then((schema) => {
-        setColumns(schema.columns);
-        if (!initial && schema.columns.length > 0) {
-          setXCol(schema.columns[0].name);
-          const numCol = schema.columns.find((c) => c.type === 'number');
-          const defaultY = numCol?.name ?? schema.columns[0].name;
-          setYCol(defaultY);
-          setBarY(defaultY);
-          setLineY(defaultY);
-        }
-        setLoading(false);
-      })
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : 'Unknown error');
-        setLoading(false);
-      });
-  }, [datasetId, initial]);
+    if (initial || didInitRef.current || columns.length === 0) return;
+    didInitRef.current = true;
+    setXCol(columns[0].name);
+    const numCol = columns.find((c) => c.type === 'number');
+    const defaultY = numCol?.name ?? columns[0].name;
+    setYCol(defaultY);
+    setBarY(defaultY);
+    setLineY(defaultY);
+  }, [columns, initial]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();

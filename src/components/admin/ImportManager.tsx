@@ -47,9 +47,18 @@ type UploadStatus = { name: string; status: 'pending' | 'done' | 'error'; bytes?
 const SECTION = 'rounded-card border border-border bg-surface p-6 shadow-card';
 const H2 = 'mb-4 text-lg font-semibold text-foreground';
 
-export default function ImportManager({ datasets }: { datasets: FileDataset[] }) {
-  const [name, setName] = useState('');
-  const [tenantColumn, setTenantColumn] = useState('tenantId');
+export default function ImportManager({
+  datasets = [],
+  scoped,
+}: {
+  datasets?: FileDataset[];
+  // When set, the wizard is pinned to one existing dataset (its Source & loads page): the
+  // name/tenant are fixed and the "other datasets" list is hidden, so this is purely a
+  // re-import / append surface for that dataset. Unset = the create-a-new-dataset flow.
+  scoped?: FileDataset;
+}) {
+  const [name, setName] = useState(scoped?.name ?? '');
+  const [tenantColumn, setTenantColumn] = useState(scoped?.tenantColumn ?? 'tenantId');
   const [append, setAppend] = useState(false);
   const [slug, setSlug] = useState<string | null>(null);
   const [files, setFiles] = useState<File[]>([]);
@@ -79,8 +88,10 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
   // After a successful publish, reset the wizard (the list revalidates server-side).
   useEffect(() => {
     if (publishState.ok && publishState.message && !publishState.error) {
-      setName('');
-      setTenantColumn('tenantId');
+      // In scoped mode keep the pinned dataset's name/tenant so the page stays usable for
+      // the next load; otherwise clear back to an empty create form.
+      setName(scoped?.name ?? '');
+      setTenantColumn(scoped?.tenantColumn ?? 'tenantId');
       setAppend(false);
       setSlug(null);
       setFiles([]);
@@ -88,7 +99,7 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
       setColTypes({});
       setKeyColumns(null);
     }
-  }, [publishState]);
+  }, [publishState, scoped]);
 
   // Prefill the type overrides from detection whenever a fresh analysis arrives, and seed the
   // dedup key selection from the saved key the first time (so it survives a re-import).
@@ -225,7 +236,7 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
     <div className="flex flex-col gap-6">
       {/* ---- Wizard ------------------------------------------------------ */}
       <section className={SECTION}>
-        <h2 className={H2}>Import a dataset</h2>
+        <h2 className={H2}>{scoped ? 'Load data' : 'Import a dataset'}</h2>
         <p className="mb-4 text-sm text-foreground-muted">
           Upload one or more CSV/Excel files. Each row&apos;s company comes from a column in the
           files (the <strong>tenant column</strong>). By default uploading{' '}
@@ -235,27 +246,37 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
 
         {/* Step 1 — create/reset the dataset folder */}
         <form action={createAction} className="flex flex-wrap items-end gap-3">
-          <label className={labelClass}>
-            Dataset name
-            <input
-              name="name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              required
-              className={`${inputClass} w-64`}
-              placeholder="Customer Orders"
-            />
-          </label>
-          <label className={labelClass}>
-            Tenant column
-            <input
-              name="tenantColumn"
-              value={tenantColumn}
-              onChange={(e) => setTenantColumn(e.target.value)}
-              className={`${inputClass} w-48`}
-              placeholder="tenantId"
-            />
-          </label>
+          {scoped ? (
+            // Pinned to this dataset: name/tenant are fixed, submitted as hidden fields.
+            <>
+              <input type="hidden" name="name" value={name} />
+              <input type="hidden" name="tenantColumn" value={tenantColumn} />
+            </>
+          ) : (
+            <>
+              <label className={labelClass}>
+                Dataset name
+                <input
+                  name="name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  required
+                  className={`${inputClass} w-64`}
+                  placeholder="Customer Orders"
+                />
+              </label>
+              <label className={labelClass}>
+                Tenant column
+                <input
+                  name="tenantColumn"
+                  value={tenantColumn}
+                  onChange={(e) => setTenantColumn(e.target.value)}
+                  className={`${inputClass} w-48`}
+                  placeholder="tenantId"
+                />
+              </label>
+            </>
+          )}
           {/* Controlled checkbox; a checked box submits "on", which the action reads via bool(). */}
           <label className="mb-1 flex items-center gap-2 self-end text-sm text-foreground">
             <input
@@ -638,7 +659,8 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
         )}
       </section>
 
-      {/* ---- Existing file datasets -------------------------------------- */}
+      {/* ---- Existing file datasets (hidden in per-dataset scoped mode) --- */}
+      {!scoped && (
       <section className={SECTION}>
         <h2 className={H2}>File-backed datasets</h2>
         {datasets.length === 0 ? (
@@ -680,6 +702,7 @@ export default function ImportManager({ datasets }: { datasets: FileDataset[] })
         )}
         <FormError error={deleteState.error} />
       </section>
+      )}
     </div>
   );
 }

@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import type { ColumnSchema, DatasetSchema, SummaryMetric, SummaryResult } from '@/lib/data/types';
+import { useEffect, useRef, useState } from 'react';
+import type { SummaryMetric, SummaryResult } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import type { TableConfig, TableMeasureConfig, TableSort } from './chartTypes';
 import { defaultTableTitle, prettify, aggregationOptionLabel, aggregationsForColumnType, reconcileAggregation, metricLabel } from './chartTypes';
 import { inputClass } from './ui/forms';
-import { getJson, postJson } from '@/lib/api/client';
+import { postJson } from '@/lib/api/client';
+import { useSchema } from './useSchema';
 
 interface Props {
   datasetId: string;
@@ -31,9 +32,9 @@ const MAX_UNLIMITED_ROWS = 1000;
 export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }: Props) {
   const editing = Boolean(initial);
 
-  const [columns, setColumns] = useState<ColumnSchema[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Columns come from the shared schema hook — the same source the dashboard's tiles/filters
+  // and the chart builder use — so every surface offers exactly the same columns (joins included).
+  const { columns, loading, error } = useSchema(datasetId);
 
   // How many rows this breakdown will produce (the distinct-value count of the chosen
   // dimension(s)), used to force a Top N before a high-cardinality breakdown is created.
@@ -63,23 +64,16 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
   // type (see aggregationsForColumnType), so no column filtering is needed here.
   const measureColumns = columns;
 
+  // Seed the default breakdown + measure once columns first arrive (new table only).
+  const didInitRef = useRef(false);
   useEffect(() => {
-    getJson<DatasetSchema>(`/api/schema?datasetId=${encodeURIComponent(datasetId)}`)
-      .then((schema) => {
-        setColumns(schema.columns);
-        if (!initial && schema.columns.length > 0) {
-          const firstDim = schema.columns.find((c) => !c.isComputed) ?? schema.columns[0];
-          setDim1(firstDim.name);
-          const numCol = schema.columns.find((c) => c.type === 'number');
-          setMeasures([{ y: numCol?.name ?? schema.columns[0].name, aggregation: Aggregation.Sum }]);
-        }
-        setLoading(false);
-      })
-      .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : 'Unknown error');
-        setLoading(false);
-      });
-  }, [datasetId, initial]);
+    if (initial || didInitRef.current || columns.length === 0) return;
+    didInitRef.current = true;
+    const firstDim = columns.find((c) => !c.isComputed) ?? columns[0];
+    setDim1(firstDim.name);
+    const numCol = columns.find((c) => c.type === 'number');
+    setMeasures([{ y: numCol?.name ?? columns[0].name, aggregation: Aggregation.Sum }]);
+  }, [columns, initial]);
 
   // Estimate how many rows the current breakdown will produce, so we can force a Top N before a
   // high-cardinality dimension creates a table that renders hundreds of thousands of rows and

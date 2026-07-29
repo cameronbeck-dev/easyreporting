@@ -5,6 +5,8 @@ import {
   buildDuckSummary,
   buildDuckRows,
   buildDuckTable,
+  buildDuckFrom,
+  type DuckSource,
 } from '@/lib/data/duck/buildDuckQuery';
 import { Aggregation } from '@/lib/data/types';
 import type { ColumnSchema } from '@/lib/data/types';
@@ -17,6 +19,10 @@ const columns: ColumnSchema[] = [
 ];
 // DuckDbProvider passes the already-quoted read_parquet literal; stand-in here.
 const P = "'data/warehouse/ds.parquet'";
+const Q = "'data/warehouse/companies.parquet'";
+// Single-table source: buildDuckFrom emits `FROM read_parquet(<P>)` with no alias, so every
+// legacy assertion below stays byte-identical to the pre-join string API.
+const src: DuckSource = { baseParquet: P, baseTable: 'ds', joins: [] };
 
 describe('buildDuckWhere', () => {
   it('no filters → empty clause and values', () => {
@@ -109,7 +115,7 @@ describe('buildDuckWhere', () => {
 describe('buildDuckAggregated', () => {
   it('reads from read_parquet and groups/orders by the x alias', () => {
     const { text, values, bucketed } = buildDuckAggregated(
-      P,
+      src,
       { x: 'region', y: 'amount', aggregation: Aggregation.Sum, filters: [] },
       allCols,
       columns,
@@ -123,7 +129,7 @@ describe('buildDuckAggregated', () => {
 
   it('Count aggregation emits COUNT(*) and needs no y column', () => {
     const { text } = buildDuckAggregated(
-      P,
+      src,
       { x: 'region', y: 'amount', aggregation: Aggregation.Count, filters: [] },
       allCols,
       columns,
@@ -133,7 +139,7 @@ describe('buildDuckAggregated', () => {
 
   it('CountUnique aggregation emits COUNT(DISTINCT col)', () => {
     const { text } = buildDuckAggregated(
-      P,
+      src,
       { x: 'region', y: 'amount', aggregation: Aggregation.CountUnique, filters: [] },
       allCols,
       columns,
@@ -143,7 +149,7 @@ describe('buildDuckAggregated', () => {
 
   it('date x with a bucket uses date_trunc + strftime and flags bucketed', () => {
     const { text, bucketed } = buildDuckAggregated(
-      P,
+      src,
       { x: 'order_date', y: 'amount', aggregation: Aggregation.Sum, filters: [], dateBucket: 'month' },
       allCols,
       columns,
@@ -154,7 +160,7 @@ describe('buildDuckAggregated', () => {
 
   it('date x without a bucket is formatted as a plain date string', () => {
     const { text, bucketed } = buildDuckAggregated(
-      P,
+      src,
       { x: 'order_date', y: 'amount', aggregation: Aggregation.Sum, filters: [] },
       allCols,
       columns,
@@ -165,7 +171,7 @@ describe('buildDuckAggregated', () => {
 
   it('does not bucket a non-date x even if a dateBucket is supplied', () => {
     const { text, bucketed } = buildDuckAggregated(
-      P,
+      src,
       { x: 'region', y: 'amount', aggregation: Aggregation.Sum, filters: [], dateBucket: 'month' },
       allCols,
       columns,
@@ -176,7 +182,7 @@ describe('buildDuckAggregated', () => {
 
   it('appends the WHERE clause before GROUP BY', () => {
     const { text, values } = buildDuckAggregated(
-      P,
+      src,
       {
         x: 'region',
         y: 'amount',
@@ -192,7 +198,7 @@ describe('buildDuckAggregated', () => {
 
   it('top-N on a non-date x orders by the measure and limits', () => {
     const { text } = buildDuckAggregated(
-      P,
+      src,
       { x: 'region', y: 'amount', aggregation: Aggregation.Sum, filters: [], limit: 10 },
       allCols,
       columns,
@@ -202,7 +208,7 @@ describe('buildDuckAggregated', () => {
 
   it('ignores top-N on a date x (stays chronological)', () => {
     const { text } = buildDuckAggregated(
-      P,
+      src,
       { x: 'order_date', y: 'amount', aggregation: Aggregation.Sum, filters: [], dateBucket: 'month', limit: 10 },
       allCols,
       columns,
@@ -213,7 +219,7 @@ describe('buildDuckAggregated', () => {
 
   it('clamps an out-of-range top-N limit', () => {
     const { text } = buildDuckAggregated(
-      P,
+      src,
       { x: 'region', y: 'amount', aggregation: Aggregation.Sum, filters: [], limit: 99999 },
       allCols,
       columns,
@@ -227,7 +233,7 @@ describe('buildDuckSummary', () => {
     // KpiSnapshot sends Count tiles as { column: '__count__' }; Count → COUNT(*) ignores
     // the column, so it must not be rejected by the allow-list check.
     const { text } = buildDuckSummary(
-      P,
+      src,
       { metrics: [{ column: '__count__', aggregation: Aggregation.Count }], filters: [] },
       allCols,
     );
@@ -236,7 +242,7 @@ describe('buildDuckSummary', () => {
 
   it('emits one aliased aggregate per metric', () => {
     const { text } = buildDuckSummary(
-      P,
+      src,
       {
         metrics: [
           { column: 'amount', aggregation: Aggregation.Sum },
@@ -255,7 +261,7 @@ describe('buildDuckSummary', () => {
 describe('buildDuckRows', () => {
   it('selects * with LIMIT/OFFSET bound after the filter values', () => {
     const { dataQuery, countQuery } = buildDuckRows(
-      P,
+      src,
       { page: 2, pageSize: 20, filters: [{ column: 'tenantId', operator: 'eq', value: 'globex' }] },
       allCols,
     );
@@ -271,7 +277,7 @@ describe('buildDuckRows', () => {
   });
 
   it('works without filters (no WHERE clause)', () => {
-    const { dataQuery, countQuery } = buildDuckRows(P, { page: 1, pageSize: 50, filters: [] }, allCols);
+    const { dataQuery, countQuery } = buildDuckRows(src, { page: 1, pageSize: 50, filters: [] }, allCols);
     expect(dataQuery.text).toBe(`SELECT * FROM read_parquet(${P}) LIMIT $1 OFFSET $2`);
     expect(dataQuery.values).toEqual([50, 0]);
     expect(countQuery.text).toBe(`SELECT COUNT(*) AS total FROM read_parquet(${P})`);
@@ -289,7 +295,7 @@ describe('buildDuckTable', () => {
 
   it('rankBy ranks the single-dimension top-N by the chosen measure, biggest-first', () => {
     const { text } = buildDuckTable(
-      P,
+      src,
       {
         dimensions: ['region'],
         measures: [
@@ -309,7 +315,7 @@ describe('buildDuckTable', () => {
 
   it('rankBy ranks the two-dimension primary cut by the chosen measure', () => {
     const { text } = buildDuckTable(
-      P,
+      src,
       {
         dimensions: ['region', 'category'],
         measures: [
@@ -328,7 +334,7 @@ describe('buildDuckTable', () => {
 
   it('an out-of-range rankBy falls back to the default ranking', () => {
     const { text } = buildDuckTable(
-      P,
+      src,
       {
         dimensions: ['region'],
         measures: [{ y: 'revenue', aggregation: Aggregation.Sum }],
@@ -343,7 +349,7 @@ describe('buildDuckTable', () => {
 
   it('two-dimension top-N ranked by a distinct-count measure ranks by COUNT(DISTINCT ...) from base', () => {
     const { text } = buildDuckTable(
-      P,
+      src,
       {
         dimensions: ['region', 'category'],
         measures: [{ y: 'revenue', aggregation: Aggregation.CountUnique }],
@@ -358,5 +364,93 @@ describe('buildDuckTable', () => {
       `ranked AS (SELECT "region" AS rk FROM read_parquet(${P}) GROUP BY "region" ORDER BY COUNT(DISTINCT "revenue") DESC LIMIT 3)`,
     );
     expect(text).not.toContain('ORDER BY COUNT(*)');
+  });
+});
+
+describe('buildDuckFrom', () => {
+  it('single-table → FROM read_parquet with no alias (legacy shape)', () => {
+    expect(buildDuckFrom(src)).toBe(`FROM read_parquet(${P})`);
+  });
+
+  it('inner join aliases both parquets and maps the join type through the allow-list', () => {
+    const s: DuckSource = {
+      baseParquet: P,
+      baseTable: 'consignments',
+      joins: [
+        {
+          joinType: 'inner',
+          leftTable: 'consignments',
+          leftColumn: 'Company',
+          rightTable: 'companies',
+          rightParquet: Q,
+          rightColumn: 'company',
+        },
+      ],
+    };
+    expect(buildDuckFrom(s)).toBe(
+      `FROM read_parquet(${P}) AS "consignments" INNER JOIN read_parquet(${Q}) AS "companies" ` +
+        `ON "companies"."company" = "consignments"."Company"`,
+    );
+  });
+
+  it('left join maps to LEFT JOIN', () => {
+    const s: DuckSource = {
+      baseParquet: P,
+      baseTable: 'c',
+      joins: [
+        { joinType: 'left', leftTable: 'c', leftColumn: 'k', rightTable: 'd', rightParquet: Q, rightColumn: 'k' },
+      ],
+    };
+    expect(buildDuckFrom(s)).toContain('LEFT JOIN read_parquet');
+  });
+
+  it('rejects an unknown join type (never interpolates the raw string)', () => {
+    const s = {
+      baseParquet: P,
+      baseTable: 'c',
+      joins: [
+        { joinType: 'cross', leftTable: 'c', leftColumn: 'k', rightTable: 'd', rightParquet: Q, rightColumn: 'k' },
+      ],
+    } as unknown as DuckSource;
+    expect(() => buildDuckFrom(s)).toThrow(/Invalid joinType/);
+  });
+});
+
+describe('buildDuckRows — multi-table qualified projection', () => {
+  const multiSrc: DuckSource = {
+    baseParquet: P,
+    baseTable: 'consignments',
+    joins: [
+      {
+        joinType: 'left',
+        leftTable: 'consignments',
+        leftColumn: 'Company',
+        rightTable: 'companies',
+        rightParquet: Q,
+        rightColumn: 'company',
+      },
+    ],
+  };
+  const qualCols = new Set(['consignments.Company', 'consignments.Sell Ex Tax', 'companies.parent']);
+  const stored = [
+    { name: 'consignments.Company', table: 'consignments' },
+    { name: 'consignments.Sell Ex Tax', table: 'consignments' },
+    { name: 'companies.parent', table: 'companies' },
+  ];
+
+  it('projects each qualified column AS its stored dotted name and excludes the tenant column', () => {
+    const { dataQuery } = buildDuckRows(
+      multiSrc,
+      { page: 1, pageSize: 10, filters: [] },
+      qualCols,
+      stored,
+      'consignments.Company',
+    );
+    expect(dataQuery.text).toContain('"consignments"."Sell Ex Tax" AS "consignments.Sell Ex Tax"');
+    expect(dataQuery.text).toContain('"companies"."parent" AS "companies.parent"');
+    // tenant column is stripped from the projection
+    expect(dataQuery.text).not.toContain('AS "consignments.Company"');
+    // and the FROM carries the join
+    expect(dataQuery.text).toContain('LEFT JOIN read_parquet');
   });
 });

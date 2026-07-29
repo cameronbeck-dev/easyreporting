@@ -43,6 +43,13 @@
       "when": 1784787155981,
       "tag": "0005_dark_living_tribunal",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1785284057674,
+      "tag": "0006_melted_rocket_racer",
+      "breakpoints": true
     }
   ]
 }
