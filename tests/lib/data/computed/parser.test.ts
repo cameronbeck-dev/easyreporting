@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { parseComputedExpression } from '@/lib/data/computed/parser';
 import { ComputedParseError } from '@/lib/data/computed/types';
 
-const COLS = ['a', 'b', 'c', 'revenue', 'cost', 'orders.revenue', 'orders.cost', 'Sell Ex Tax', 'Cost Ex Tax'];
+const COLS = [
+  'a', 'b', 'c', 'revenue', 'cost', 'orders.revenue', 'orders.cost', 'Sell Ex Tax', 'Cost Ex Tax',
+  'reconciled.price', 'price',
+];
 
 describe('parseComputedExpression — valid expressions', () => {
   it('simple addition', () => {
@@ -89,6 +92,55 @@ describe('parseComputedExpression — valid expressions', () => {
     // `sum` bare + `(` is the function; `[sum]`... would need to be a valid column. Here we
     // just confirm a bare aggregate name NOT followed by `(` is treated as a column ref.
     expect(() => parseComputedExpression('sum', COLS)).toThrow(ComputedParseError); // unknown column 'sum'
+  });
+});
+
+describe('parseComputedExpression — COALESCE', () => {
+  it('parses a two-argument fallback and extracts both dependencies', () => {
+    const { ast, dependencies } = parseComputedExpression('COALESCE([reconciled.price], price)', COLS);
+    expect(ast.kind).toBe('coalesce');
+    expect(dependencies.sort()).toEqual(['price', 'reconciled.price']);
+  });
+
+  it('is case-insensitive', () => {
+    expect(() => parseComputedExpression('coalesce(a, b)', COLS)).not.toThrow();
+  });
+
+  it('accepts more than two arguments', () => {
+    const { dependencies } = parseComputedExpression('COALESCE(a, b, c)', COLS);
+    expect(dependencies.sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('allows arithmetic inside an argument', () => {
+    const { dependencies } = parseComputedExpression('COALESCE(a * 2, b + c)', COLS);
+    expect(dependencies.sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('nests inside an aggregate: SUM(COALESCE(...))', () => {
+    const { ast, dependencies } = parseComputedExpression('sum(COALESCE([reconciled.price], price))', COLS);
+    expect(ast.kind).toBe('agg');
+    expect(dependencies.sort()).toEqual(['price', 'reconciled.price']);
+  });
+
+  it('rejects a single argument', () => {
+    expect(() => parseComputedExpression('COALESCE(a)', COLS)).toThrow(ComputedParseError);
+  });
+
+  it('rejects an aggregate inside the arguments', () => {
+    expect(() => parseComputedExpression('COALESCE(sum(a), b)', COLS)).toThrow(ComputedParseError);
+  });
+
+  it('rejects an unknown column argument', () => {
+    expect(() => parseComputedExpression('COALESCE(a, unknown_col)', COLS)).toThrow(ComputedParseError);
+  });
+
+  it('rejects an unclosed call', () => {
+    expect(() => parseComputedExpression('COALESCE(a, b', COLS)).toThrow(ComputedParseError);
+  });
+
+  it('a column named like the function is still a column when not called', () => {
+    // `COALESCE` not followed by `(` is a plain identifier — here unknown, so it throws.
+    expect(() => parseComputedExpression('COALESCE', COLS)).toThrow(ComputedParseError);
   });
 });
 

@@ -46,6 +46,9 @@ function rowSql(e: Expr, mapName: NameMapper, quote: Quoter): string {
       return `(-(${rowSql(e.operand, mapName, quote)}))`;
     case 'bin':
       return binSql(e.op, rowSql(e.left, mapName, quote), rowSql(e.right, mapName, quote));
+    case 'coalesce':
+      // COALESCE is the same builtin in Postgres, DuckDB and SQL Server, so this is portable.
+      return `COALESCE(${e.args.map((a) => rowSql(a, mapName, quote)).join(', ')})`;
     case 'agg':
       // The parser forbids nested aggregates, so this is unreachable in practice.
       throw new Error('Aggregate functions cannot be nested.');
@@ -59,6 +62,10 @@ function aggSql(e: Expr, mapName: NameMapper, quote: Quoter): string {
       return String(e.value);
     case 'col':
       return `SUM(${quote(mapName(e.name))})`;
+    case 'coalesce':
+      // A bare COALESCE at the aggregate level totals its per-row value, mirroring the
+      // bare-column → SUM(column) default: SUM(COALESCE([reconciled.price], [price])).
+      return `SUM(${rowSql(e, mapName, quote)})`;
     case 'agg':
       return `${e.op.toUpperCase()}(${rowSql(e.arg, mapName, quote)})`;
     case 'neg':

@@ -41,6 +41,14 @@ export function evaluateAst(ast: Expr, row: Record<string, unknown>): number | n
       return null;
     }
 
+    case 'coalesce': {
+      for (const arg of ast.args) {
+        const v = evaluateAst(arg, row);
+        if (v !== null) return v;
+      }
+      return null;
+    }
+
     case 'agg': {
       const v = evaluateAst(ast.arg, row);
       if (ast.op === 'count') return v === null ? 0 : 1;
@@ -82,6 +90,11 @@ export function evaluateAggregate(ast: Expr, rows: Record<string, unknown>[]): n
     case 'col':
       // Bare column at aggregate level = SUM(column) (the default aggregation).
       return reduceAgg('sum', rows.map((r) => coerceNum(r[ast.name])));
+
+    case 'coalesce':
+      // Bare COALESCE at aggregate level = SUM of the per-row fallback value, mirroring the
+      // bare-column → SUM(column) default and the SQL push-down in toSql.ts.
+      return reduceAgg('sum', rows.map((r) => evaluateAst(ast, r)));
 
     case 'agg':
       return reduceAgg(ast.op, rows.map((r) => evaluateAst(ast.arg, r)));

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { parseComputedExpression } from '@/lib/data/computed/parser';
 import { computedMeasureToSql } from '@/lib/data/computed/toSql';
 
-const COLS = ['revenue', 'cost', 'Sell Ex Tax', 'Cost Ex Tax'];
+const COLS = ['revenue', 'cost', 'Sell Ex Tax', 'Cost Ex Tax', 'reconciled.price', 'price'];
 
 function sql(expr: string): string {
   const { ast } = parseComputedExpression(expr, COLS);
@@ -43,5 +43,18 @@ describe('computedMeasureToSql', () => {
 
   it('quotes bracketed columns with spaces', () => {
     expect(sql('[Sell Ex Tax] - [Cost Ex Tax]')).toBe('(SUM("Sell Ex Tax") - SUM("Cost Ex Tax"))');
+  });
+
+  it('wraps a bare COALESCE in SUM (the fallback-then-total case)', () => {
+    // reconciled price where present, else quoted price, summed across the group.
+    expect(sql('COALESCE([reconciled.price], price)')).toBe(
+      'SUM(COALESCE("reconciled"."price", "price"))',
+    );
+  });
+
+  it('leaves COALESCE raw inside an explicit aggregate', () => {
+    expect(sql('sum(COALESCE([reconciled.price], price))')).toBe(
+      'SUM(COALESCE("reconciled"."price", "price"))',
+    );
   });
 });

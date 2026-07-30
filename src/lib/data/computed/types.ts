@@ -18,6 +18,12 @@ export type Expr =
   | { kind: 'col'; name: string }
   | { kind: 'neg'; operand: Expr }
   | { kind: 'bin'; op: '+' | '-' | '*' | '/'; left: Expr; right: Expr }
+  // COALESCE(a, b, …): the first argument that is non-null, evaluated per row. Its arguments
+  // are row-level (aggregates are not allowed inside), so it may appear inside an aggregate —
+  // e.g. SUM(COALESCE([reconciled.price], [price])) totals the reconciled price where present
+  // and falls back to the quoted price otherwise. As a BARE expression at the aggregate level
+  // it defaults to SUM(COALESCE(…)), exactly as a bare column defaults to SUM(column).
+  | { kind: 'coalesce'; args: Expr[] }
   // An aggregate over the rows in a group, e.g. SUM([Sell] - [Cost]). `arg` is evaluated
   // per row (row-level), then reduced by `op`. Cannot be nested inside another aggregate.
   | { kind: 'agg'; op: AggOp; arg: Expr };

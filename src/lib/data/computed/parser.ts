@@ -13,17 +13,19 @@ const AGG_FUNCTIONS: Record<string, AggOp> = {
   MAX: 'max',
 };
 
-/** True if the AST contains an aggregate node anywhere (used to reject nesting). */
+/** True if the AST contains an aggregate node anywhere (used to reject nesting). COALESCE is
+ * row-level, so we recurse into its arguments rather than treating it as an aggregate. */
 function containsAgg(e: Expr): boolean {
   switch (e.kind) {
     case 'agg': return true;
     case 'neg': return containsAgg(e.operand);
     case 'bin': return containsAgg(e.left) || containsAgg(e.right);
+    case 'coalesce': return e.args.some(containsAgg);
     default: return false;
   }
 }
 
-type TokenKind = 'num' | 'ident' | 'plus' | 'minus' | 'star' | 'slash' | 'lparen' | 'rparen' | 'eof';
+type TokenKind = 'num' | 'ident' | 'plus' | 'minus' | 'star' | 'slash' | 'lparen' | 'rparen' | 'comma' | 'eof';
 
 interface Token {
   kind: TokenKind;
@@ -48,6 +50,7 @@ function tokenize(expr: string): Token[] {
     if (ch === '/') { tokens.push({ kind: 'slash', text: '/' }); i++; continue; }
     if (ch === '(') { tokens.push({ kind: 'lparen', text: '(' }); i++; continue; }
     if (ch === ')') { tokens.push({ kind: 'rparen', text: ')' }); i++; continue; }
+    if (ch === ',') { tokens.push({ kind: 'comma', text: ',' }); i++; continue; }
 
     // Bracketed column reference: [Sell Ex Tax]. Everything up to the closing ] is taken
     // as the column name verbatim, so names containing spaces (or other punctuation the
@@ -178,8 +181,31 @@ class Parser {
     }
 
     if (t.kind === 'ident') {
+      const upper = t.text.toUpperCase();
+
+      // COALESCE(a, b, …): the first non-null argument, per row. It is NOT an aggregate — its
+      // arguments are row-level expressions and it may sit inside SUM(...) — so it has its own
+      // parse path (a column literally named "coalesce" is still referenced via [coalesce]).
+      if (upper === 'COALESCE' && this.tokens[this.pos + 1]?.kind === 'lparen') {
+        this.consume(); // function name
+        this.expect('lparen');
+        const args: Expr[] = [this.parseExpr()];
+        while (this.peek().kind === 'comma') {
+          this.consume();
+          args.push(this.parseExpr());
+        }
+        this.expect('rparen');
+        if (args.length < 2) {
+          throw new ComputedParseError('COALESCE requires at least two arguments.');
+        }
+        if (args.some(containsAgg)) {
+          throw new ComputedParseError('Aggregate functions cannot be used inside COALESCE.');
+        }
+        return { kind: 'coalesce', args };
+      }
+
       // Aggregate function call: SUM( ... ), AVG( ... ), etc.
-      const op = AGG_FUNCTIONS[t.text.toUpperCase()];
+      const op = AGG_FUNCTIONS[upper];
       if (op && this.tokens[this.pos + 1]?.kind === 'lparen') {
         this.consume(); // function name
         this.expect('lparen');

@@ -265,7 +265,10 @@ export default function SchemaEditor({
         <h3 className="mb-1 text-sm font-semibold text-foreground">Computed fields</h3>
         <p className="mb-4 text-sm text-foreground-muted">
           Derived numeric fields defined by a formula over this dataset&apos;s columns (e.g.{' '}
-          <code>revenue - cost</code>). Available as measures everywhere the dataset is used.
+          <code>revenue - cost</code>), including columns brought in by joins. Use{' '}
+          <code>COALESCE(a, b)</code> to fall back from one column to another when the first is
+          empty (e.g. a reconciled price over a quoted price). Available as measures everywhere
+          the dataset is used.
         </p>
 
         {dataset.computedFields.length > 0 && (

@@ -87,6 +87,46 @@ describe('evaluateAst — null/zero edge cases', () => {
   });
 });
 
+describe('evaluateAst — COALESCE (per-row fallback)', () => {
+  const cols = ['reconciled.price', 'price'];
+
+  it('returns the first argument when it is present', () => {
+    expect(evalExpr('COALESCE([reconciled.price], price)', { 'reconciled.price': 120, price: 100 }, cols)).toBe(120);
+  });
+
+  it('falls back to the second argument when the first is null', () => {
+    expect(evalExpr('COALESCE([reconciled.price], price)', { 'reconciled.price': null, price: 100 }, cols)).toBe(100);
+  });
+
+  it('treats an empty string (missing join) as absent and falls back', () => {
+    expect(evalExpr('COALESCE([reconciled.price], price)', { 'reconciled.price': '', price: 100 }, cols)).toBe(100);
+  });
+
+  it('returns null when every argument is null', () => {
+    expect(evalExpr('COALESCE([reconciled.price], price)', { 'reconciled.price': null, price: null }, cols)).toBeNull();
+  });
+
+  it('picks the first non-null across three arguments', () => {
+    expect(evalExpr('COALESCE(a, b, c)', { a: null, b: null, c: 7 })).toBe(7);
+  });
+});
+
+describe('evaluateAggregate — COALESCE totals the per-row fallback', () => {
+  // Consignment 1 reconciled (120 beats its 100 quote); consignment 2 not yet reconciled (→ 90 quote).
+  const cons = [
+    { 'reconciled.price': 120, price: 100 },
+    { 'reconciled.price': null, price: 90 },
+  ];
+  const cols = ['reconciled.price', 'price'];
+
+  it('sums COALESCE(reconciled, quote) across the group', () => {
+    // 120 (reconciled) + 90 (quote fallback) = 210
+    expect(evalAgg('COALESCE([reconciled.price], price)', cons, cols)).toBe(210);
+    // Same result whether or not the SUM is written explicitly.
+    expect(evalAgg('sum(COALESCE([reconciled.price], price))', cons, cols)).toBe(210);
+  });
+});
+
 describe('aggregateComputedValues', () => {
   it('sum excludes nulls', () => {
     expect(aggregateComputedValues([1, null, 3], Aggregation.Sum)).toBe(4);

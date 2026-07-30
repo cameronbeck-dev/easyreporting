@@ -1020,6 +1020,30 @@ export async function getDatasetForAdmin(
  * Load one dataset's full admin row (source columns + computed fields) for its detail-page
  * Schema section. Returns null when the id is unknown. Owner-only.
  */
+/**
+ * The columns a file dataset's joins bring in, surfaced under each join's alias/prefix as
+ * "<alias>.<column>" — mirroring how resolveDataset assembles effective columns at query time.
+ * These are NOT stored on the dataset row; they are resolved on demand so computed-field
+ * formulas can reference joined columns (e.g. a reconciled price on a joined dataset) and the
+ * Schema UI can autocomplete them. Returns [] for datasets without joins.
+ */
+async function resolveJoinColumns(joins: JoinStep[]): Promise<DatasetColumn[]> {
+  const out: DatasetColumn[] = [];
+  for (const j of joins) {
+    if (!j.rightDatasetId) continue;
+    const [jr] = await db
+      .select({ columnsJson: datasets.columnsJson })
+      .from(datasets)
+      .where(eq(datasets.id, j.rightDatasetId))
+      .limit(1);
+    const cols = (jr?.columnsJson ?? []) as DatasetColumn[];
+    for (const c of cols) {
+      out.push({ name: `${j.tableName}.${c.name}`, type: c.type });
+    }
+  }
+  return out;
+}
+
 export async function getDatasetAdminRow(
   admin: AdminContext,
   datasetId: string,
@@ -1043,11 +1067,15 @@ export async function getDatasetAdminRow(
     .limit(1);
   if (!row) return null;
   const { columnsJson, computedFieldsJson, joinsJson, ...rest } = row;
+  const joins = (joinsJson ?? []) as JoinStep[];
+  // Surface joined datasets' columns (qualified as "<alias>.<column>") alongside the base
+  // columns so computed-field formulas can reference them and the UI can autocomplete them.
+  const joinColumns = await resolveJoinColumns(joins);
   return {
     ...rest,
-    columns: (columnsJson ?? []) as DatasetColumn[],
+    columns: [...((columnsJson ?? []) as DatasetColumn[]), ...joinColumns],
     computedFields: (computedFieldsJson ?? []) as ComputedField[],
-    joins: (joinsJson ?? []) as JoinStep[],
+    joins,
   };
 }
 
@@ -1363,7 +1391,15 @@ export async function addComputedField(
   if (!row) throw new ForbiddenError('Dataset not found.');
 
   const existing = (row.computedFieldsJson ?? []) as ComputedField[];
-  const sourceColNames = (row.columnsJson as { name: string }[]).map((c) => c.name);
+  // A formula may reference this dataset's own columns AND any columns its joins bring in
+  // (qualified "<alias>.<column>"), so a computed field can e.g. fall back from a joined
+  // reconciled price to the base quoted price. Resolve the joined columns the same way
+  // getDatasetAdminRow and resolveDataset do.
+  const joinColNames = (await resolveJoinColumns((row.joinsJson ?? []) as JoinStep[])).map((c) => c.name);
+  const sourceColNames = [
+    ...(row.columnsJson as { name: string }[]).map((c) => c.name),
+    ...joinColNames,
+  ];
 
   const newFields = validateComputedFields(
     [...existing.map((f) => ({ name: f.name, expression: f.expression })), input],
