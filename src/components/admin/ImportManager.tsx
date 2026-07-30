@@ -108,7 +108,7 @@ export default function ImportManager({
     if (!a || !a.ok) return;
     const next: Record<string, ColumnTypeChoice> = {};
     for (const s of a.suggestions) {
-      next[s.name] = { type: s.suggestedType, dateFormat: s.dateFormat };
+      next[s.name] = { type: s.suggestedType, dateFormat: s.dateFormat, numberStyle: s.numberStyle };
     }
     setColTypes(next);
     setKeyColumns((prev) => (prev === null ? a.uniqueKey : prev));
@@ -186,21 +186,32 @@ export default function ImportManager({
     setColTypes((prev) => {
       const dateFormat =
         type === 'date' ? prev[name]?.dateFormat || detectedFormat || '%Y-%m-%d' : undefined;
-      return { ...prev, [name]: { type, dateFormat } };
+      // Keep a percent style only while the column stays numeric.
+      const numberStyle = type === 'number' ? prev[name]?.numberStyle : undefined;
+      return { ...prev, [name]: { type, dateFormat, numberStyle } };
     });
   }
   function setColFormat(name: string, dateFormat: string) {
     setColTypes((prev) => ({ ...prev, [name]: { type: 'date', dateFormat } }));
   }
+  function setColNumberStyle(name: string, percent: boolean) {
+    setColTypes((prev) => ({
+      ...prev,
+      [name]: { ...prev[name], type: 'number', numberStyle: percent ? 'percent' : undefined },
+    }));
+  }
 
   // Only send columns whose chosen type differs from what was sniffed, or that are dates
-  // (a text→date column always needs its strptime cast). Mirrors buildCastSelect server-side.
+  // (a text→date column always needs its strptime cast), or that carry a percent style (which
+  // sets a display format even when the sniffed type is unchanged). Mirrors buildCastSelect.
   function submittedColumnTypes(): Record<string, ColumnTypeChoice> {
     if (!analysis || !analysis.ok) return {};
     const sniffed = new Map(analysis.suggestions.map((s) => [s.name, s.sniffedType]));
     const out: Record<string, ColumnTypeChoice> = {};
     for (const [name, choice] of Object.entries(colTypes)) {
-      if (choice.type === 'date' || choice.type !== sniffed.get(name)) out[name] = choice;
+      if (choice.type === 'date' || choice.type !== sniffed.get(name) || choice.numberStyle) {
+        out[name] = choice;
+      }
     }
     return out;
   }
@@ -577,12 +588,13 @@ export default function ImportManager({
                         <tr>
                           <th className="py-1 pr-3 font-semibold">Column</th>
                           <th className="py-1 pr-3 font-semibold">Type</th>
-                          <th className="py-1 font-semibold">Date format</th>
+                          <th className="py-1 font-semibold">Format</th>
                         </tr>
                       </thead>
                       <tbody>
                         {analysis.suggestions.map((s) => {
-                          const choice = colTypes[s.name] ?? { type: s.suggestedType, dateFormat: s.dateFormat };
+                          const choice =
+                            colTypes[s.name] ?? { type: s.suggestedType, dateFormat: s.dateFormat, numberStyle: s.numberStyle };
                           const changed = choice.type !== s.sniffedType;
                           const isTenant = s.name === analysis.tenantColumn;
                           return (
@@ -617,6 +629,16 @@ export default function ImportManager({
                                     className={`${inputClass} w-44 py-1 font-mono text-xs`}
                                     aria-label={`Date format for ${s.name}`}
                                   />
+                                ) : choice.type === 'number' ? (
+                                  <select
+                                    value={choice.numberStyle === 'percent' ? 'percent' : 'plain'}
+                                    onChange={(e) => setColNumberStyle(s.name, e.target.value === 'percent')}
+                                    className={`${inputClass} w-44 py-1`}
+                                    aria-label={`Number style for ${s.name}`}
+                                  >
+                                    <option value="plain">Plain number</option>
+                                    <option value="percent">Percent (e.g. 12.5% → 0.125)</option>
+                                  </select>
                                 ) : (
                                   <span className="text-xs text-foreground-muted">—</span>
                                 )}

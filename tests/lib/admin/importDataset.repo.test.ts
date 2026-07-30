@@ -36,8 +36,11 @@ vi.mock('@/lib/db/client', async () => {
 });
 
 const { db } = await import('@/lib/db/client');
-const { createFileImport, deleteDataset, addRowScope, createUser } = await import('@/lib/admin/repo');
-const { DATASETS_DIR, WAREHOUSE_DIR } = await import('@/lib/data/duck/importDataset');
+const { createFileImport, deleteDataset, addRowScope, createUser, publishFileImport } = await import(
+  '@/lib/admin/repo'
+);
+const { DATASETS_DIR, WAREHOUSE_DIR, materializeFolder } = await import('@/lib/data/duck/importDataset');
+const { getDuckConnection, parquetLiteral } = await import('@/lib/data/duck/connection');
 const { datasets, dashboards, tenantColumnRules, users, connections, accessProfiles, profileRowScopes } =
   await import('@/lib/db/schema');
 const { eq } = await import('drizzle-orm');
@@ -49,11 +52,15 @@ const GLOBEX_ADMIN: any = { isPlatformAdmin: false, tenantId: 'globex', userId: 
 
 const CREATED = `imp-create-${process.pid}`;
 const DEL = `imp-del-${process.pid}`;
+const PCT = `imp-pct-${process.pid}`;
 
 afterAll(() => {
   fs.rmSync(path.join(DATASETS_DIR, CREATED), { recursive: true, force: true });
   fs.rmSync(path.join(DATASETS_DIR, DEL), { recursive: true, force: true });
   fs.rmSync(path.join(WAREHOUSE_DIR, `${DEL}.parquet`), { force: true });
+  fs.rmSync(path.join(DATASETS_DIR, PCT), { recursive: true, force: true });
+  fs.rmSync(path.join(WAREHOUSE_DIR, `${PCT}.parquet`), { force: true });
+  fs.rmSync(path.join(WAREHOUSE_DIR, `${PCT}.staging.parquet`), { force: true });
 });
 
 describe('createFileImport', () => {
@@ -102,6 +109,46 @@ describe('createFileImport', () => {
       columnsJson: [{ name: 'tenant_id', type: 'string' }],
     });
     await expect(createFileImport(ADMIN, { name: 'My SQL DS', tenantColumn: 't' })).rejects.toThrow();
+  });
+});
+
+describe('publish — percent column (end-to-end)', () => {
+  it('detects percent text, stores fractions, and persists a percent display format', async () => {
+    await createFileImport(ADMIN, { name: PCT, tenantColumn: 'tenantId' });
+    fs.writeFileSync(
+      path.join(DATASETS_DIR, PCT, 'data.csv'),
+      'diff,amount,tenantId\n' +
+        '"0.00%",100,globex\n' +
+        '"12.50%",200,globex\n' +
+        '"-5.00%",300,initech\n' +
+        '"100.00%",400,acme\n',
+    );
+
+    const m = await materializeFolder(PCT);
+    expect(m.ok).toBe(true);
+    if (!m.ok) return;
+    expect(m.suggestions.find((s) => s.name === 'diff')?.numberStyle).toBe('percent');
+
+    const res = await publishFileImport(ADMIN, PCT);
+    expect(res.ok).toBe(true);
+
+    // The stored schema: diff is a number carrying a percent display format.
+    const [row] = await db.select().from(datasets).where(eq(datasets.id, PCT)).limit(1);
+    const cols = row.columnsJson as { name: string; type: string; format?: { style?: string } }[];
+    const diff = cols.find((c) => c.name === 'diff');
+    expect(diff?.type).toBe('number');
+    expect(diff?.format?.style).toBe('percent');
+
+    // The stored values are fractions (12.50% → 0.125), so the percent style renders them back.
+    const conn = await getDuckConnection();
+    const vals = (
+      await conn.runAndReadAll(
+        `SELECT diff FROM read_parquet(${parquetLiteral(path.join(WAREHOUSE_DIR, `${PCT}.parquet`))}) ORDER BY amount`,
+      )
+    )
+      .getRowObjects()
+      .map((r) => Number(r['diff']));
+    expect(vals).toEqual([0, 0.125, -0.05, 1]);
   });
 });
 

@@ -49,9 +49,22 @@ describe('buildCastSelect', () => {
     expect(sql).not.toContain(EXCEL_SERIAL_FORMAT);
   });
 
-  it('casts a number override with TRY_CAST', () => {
+  it('casts a number override with a format-tolerant TRY_CAST', () => {
+    // Finance/Excel exports wrap amounts in commas/currency/parens; the cast normalises them
+    // (see tryNumeric) so no value is silently NULLed. Detection uses the identical expression.
     const sql = buildCastSelect(sniffed, { amount: { type: 'number' } });
-    expect(sql).toContain('TRY_CAST("amount" AS DOUBLE) AS "amount"');
+    expect(sql).toContain('TRY_CAST(');
+    expect(sql).toContain('AS DOUBLE) AS "amount"');
+    // The column is only ever referenced as a quoted identifier (no injection surface).
+    expect(sql).toContain('CAST("amount" AS VARCHAR)');
+    // The thousands-grouping guard must be present so decimal commas aren't rescaled.
+    expect(sql).toContain('regexp_full_match');
+  });
+
+  it('casts a percent column by stripping % and dividing by 100 (stores the fraction)', () => {
+    const sql = buildCastSelect(sniffed, { amount: { type: 'number', numberStyle: 'percent' } });
+    expect(sql).toContain("replace(trim(CAST(\"amount\" AS VARCHAR)), '%', '')");
+    expect(sql).toContain('/ 100.0) AS "amount"');
   });
 
   it('returns null when nothing needs recasting', () => {

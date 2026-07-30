@@ -13,6 +13,7 @@ import {
   analyzeTenants,
   resolveUploadTarget,
 } from '@/lib/data/duck/importDataset';
+import { buildCastSelect } from '@/lib/data/duck/detectColumnTypes';
 import { getDuckConnection, parquetLiteral } from '@/lib/data/duck/connection';
 
 // Unique folder names under the real data/datasets dir (materializeFolder resolves against
@@ -24,6 +25,8 @@ const MIXED = `__importtest_mixed_${process.pid}`;
 const XLSX = `__importtest_xlsx_${process.pid}`;
 const DEDUP = `__importtest_dedup_${process.pid}`;
 const BADKEY = `__importtest_badkey_${process.pid}`;
+const THOUSANDS = `__importtest_thousands_${process.pid}`;
+const FORMATS = `__importtest_formats_${process.pid}`;
 
 function writeSidecar(name: string, sidecar: Record<string, unknown>) {
   fs.writeFileSync(path.join(DATASETS_DIR, name, 'dataset.json'), JSON.stringify(sidecar));
@@ -101,6 +104,33 @@ beforeAll(async () => {
 
   writeFolder(BADKEY, 'orders.csv', 'orderId,tenantId\n1,globex\n');
   writeSidecar(BADKEY, { tenantColumn: 'tenantId', uniqueKey: ['nope'] });
+
+  // A finance/Excel export: the price column quotes amounts ≥ 1000 with a thousands-separator
+  // comma ("2,137.00"), so the CSV sniffer leaves it VARCHAR. Detection must still promote it
+  // to a number (commas stripped). The percentage column carries a "%" and must stay text.
+  writeFolder(
+    THOUSANDS,
+    'orders.csv',
+    'price,pct,tenantId\n' +
+      '"500.00","0.00%",globex\n' +
+      '"2,137.00","0.01%",globex\n' +
+      '"16,000.00","-0.05%",initech\n' +
+      '"21,542.40","100.00%",acme\n' +
+      '"75.50","0.02%",globex\n',
+  );
+
+  // The full format matrix a finance/Excel export throws at us. Each column is either wholly
+  // parseable (→ number) or genuinely non-numeric/ambiguous (→ stays text, never mangled).
+  writeFolder(
+    FORMATS,
+    'orders.csv',
+    'usd,accting,euro_dec,pct,sentinel,plain,tenantId\n' +
+      '"$1,234.56","(500.00)","1,50","0.00%","N/A",10,globex\n' +
+      '"$75.00","(1,000.00)","2,75","100.00%",123,20,globex\n' +
+      '"A$2,000.00",250.00,"3,00","0.01%",456,30,initech\n' +
+      '"£9.99","(2,137.00)","4,20","-0.05%",789,40,acme\n' +
+      '"€16,000.00","3,245.00","5,99","0.02%",1000,50,globex\n',
+  );
 });
 
 afterAll(() => {
@@ -111,6 +141,8 @@ afterAll(() => {
   cleanup(XLSX);
   cleanup(DEDUP);
   cleanup(BADKEY);
+  cleanup(THOUSANDS);
+  cleanup(FORMATS);
 });
 
 describe('materializeFolder', () => {
@@ -167,6 +199,68 @@ describe('materializeFolder', () => {
     // The free-text value means the whole column is not convertible, so it stays text
     // rather than being cast to a number (which would NULL the text row).
     expect(m.suggestions.find((c) => c.name === 'note')?.suggestedType).toBe('string');
+  });
+
+  it('promotes a price column with thousands-separator commas to number, keeping percentages as text', async () => {
+    const m = await materializeFolder(THOUSANDS);
+    expect(m.ok).toBe(true);
+    if (!m.ok) return;
+    // The sniffer leaves the comma-formatted price as text…
+    expect(m.columnsJson.find((c) => c.name === 'price')?.type).toBe('string');
+    // …but detection recommends number (commas are thousands separators, not decimals).
+    expect(m.suggestions.find((c) => c.name === 'price')?.suggestedType).toBe('number');
+    // The "%" column is detected as a percent (number stored as a fraction).
+    expect(m.suggestions.find((c) => c.name === 'pct')?.suggestedType).toBe('number');
+    expect(m.suggestions.find((c) => c.name === 'pct')?.numberStyle).toBe('percent');
+  });
+
+  it('detects numbers across currency / accounting / grouping formats, leaving ambiguous ones as text', async () => {
+    const m = await materializeFolder(FORMATS);
+    expect(m.ok).toBe(true);
+    if (!m.ok) return;
+    const suggested = (name: string) => m.suggestions.find((c) => c.name === name)?.suggestedType;
+    // Unambiguously numeric once display formatting is stripped:
+    expect(suggested('usd')).toBe('number'); //  $1,234.56  A$2,000.00  £9.99  €16,000.00
+    expect(suggested('accting')).toBe('number'); //  (500.00) → -500 ; 3,245.00
+    expect(suggested('plain')).toBe('number'); //  already numeric to the sniffer
+    // Percent text is a number (stored as a fraction) with a percent display style:
+    expect(suggested('pct')).toBe('number');
+    expect(m.suggestions.find((c) => c.name === 'pct')?.numberStyle).toBe('percent');
+    // Deliberately left as text (ambiguous or genuinely non-numeric) — never silently rescaled:
+    expect(suggested('euro_dec')).toBe('string'); //  "1,50" is not thousands-grouped
+    expect(suggested('sentinel')).toBe('string'); //  one "N/A" ⇒ column not wholly numeric
+  });
+
+  it('round-trips the formatted values to correct numbers at cast time (no data loss)', async () => {
+    // The publish-time cast must produce the same verdict as detection AND the right value.
+    const proj = buildCastSelect([{ name: 'amount', type: 'string' }], { amount: { type: 'number' } });
+    expect(proj).not.toBeNull();
+    const conn = await getDuckConnection();
+    const rows = (
+      await conn.runAndReadAll(
+        `${proj} FROM (VALUES ('$16,000.00'),('(2,137.00)'),('2,137.00'),('75.50'),` +
+          `('A$100'),('£9.99'),('€50'),('1,50'),('0.00%'),('N/A')) t(amount)`,
+      )
+    ).getRowObjects();
+    const got = rows.map((r) => (r['amount'] === null ? null : Number(r['amount'])));
+    expect(got).toEqual([16000, -2137, 2137, 75.5, 100, 9.99, 50, null, null, null]);
+  });
+
+  it('casts percent text to fractions (÷100) so the percent display style round-trips', async () => {
+    const proj = buildCastSelect(
+      [{ name: 'diff', type: 'string' }],
+      { diff: { type: 'number', numberStyle: 'percent' } },
+    );
+    expect(proj).not.toBeNull();
+    const conn = await getDuckConnection();
+    const rows = (
+      await conn.runAndReadAll(
+        `${proj} FROM (VALUES ('0.00%'),('12.50%'),('-5.00%'),('100.00%'),('1,234.50%'),('N/A')) t(diff)`,
+      )
+    ).getRowObjects();
+    const got = rows.map((r) => (r['diff'] === null ? null : Number(r['diff'])));
+    //          0.00%→0  12.50%→0.125  -5.00%→-0.05  100.00%→1  1,234.50%→12.345  N/A→null
+    expect(got).toEqual([0, 0.125, -0.05, 1, 12.345, null]);
   });
 
   it('deduplicates on the sidecar unique key, keeping the most recently uploaded file’s row', async () => {

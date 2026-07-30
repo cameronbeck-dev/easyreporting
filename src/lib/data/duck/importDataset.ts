@@ -343,7 +343,7 @@ function mergeSavedTypes(
   return detected.map((s) => {
     const choice = saved[s.name];
     if (!choice) return s;
-    return { ...s, suggestedType: choice.type, dateFormat: choice.dateFormat };
+    return { ...s, suggestedType: choice.type, dateFormat: choice.dateFormat, numberStyle: choice.numberStyle };
   });
 }
 
@@ -358,7 +358,7 @@ export function choicesFromSuggestions(
   const out: Record<string, ColumnTypeChoice> = {};
   for (const s of suggestions) {
     if (s.suggestedType === 'date' || s.suggestedType !== s.sniffedType) {
-      out[s.name] = { type: s.suggestedType, dateFormat: s.dateFormat };
+      out[s.name] = { type: s.suggestedType, dateFormat: s.dateFormat, numberStyle: s.numberStyle };
     }
   }
   return out;
@@ -392,7 +392,7 @@ async function upsertRow(args: {
   id: string;
   displayName: string;
   tenantColumn: string;
-  columnsJson: DatasetColumn[];
+  columnsJson: (DatasetColumn & { format?: ColumnFormat })[];
 }): Promise<void> {
   const parquetRel = finalRel(args.id);
 
@@ -521,11 +521,20 @@ async function finalizeStaging(args: {
   ).getRowObjects();
   const rowCount = Number(countRows[0]?.['n'] ?? 0);
 
+  // A column parsed from percent text is stored as a fraction; give it a percent display style
+  // so it renders back as "12.5%". upsertRow lets an owner-configured format override this on
+  // re-import, so a later manual format choice is never clobbered.
+  const withFormats = columnsJson.map((c) =>
+    args.choices[c.name]?.numberStyle === 'percent' && c.type === 'number'
+      ? { ...c, format: { style: 'percent' as const } }
+      : c,
+  );
+
   await upsertRow({
     id: args.id,
     displayName: args.displayName,
     tenantColumn: args.tenantColumn,
-    columnsJson,
+    columnsJson: withFormats,
   });
   writeSidecarColumnTypes(args.folderName, args.choices);
   return { rowCount, columnsJson };

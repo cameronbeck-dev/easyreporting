@@ -21,6 +21,12 @@ export interface ColumnTypeSuggestion {
   suggestedType: ColumnType;
   /** strptime format when the suggestion is a date/timestamp, else undefined. */
   dateFormat?: string;
+  /**
+   * 'percent' when the column is percent-formatted text ("12.5%"): suggestedType is 'number',
+   * but the cast strips the % and divides by 100 to store the fraction (0.125), and the column
+   * gets a percent display format so it renders back as "12.5%". Undefined for plain numbers.
+   */
+  numberStyle?: 'percent';
 }
 
 /** The owner's final choice for a column, applied as a cast at publish time. */
@@ -28,6 +34,8 @@ export interface ColumnTypeChoice {
   type: ColumnType;
   /** Required when type is 'date' and the source is a string in a non-ISO format. */
   dateFormat?: string;
+  /** 'percent' pairs with type 'number' to parse percent text into a fraction (see above). */
+  numberStyle?: 'percent';
 }
 
 // Ordered candidate formats. Date-only formats come first so a column with no time part
@@ -86,6 +94,41 @@ function sqlStr(s: string): string {
 }
 
 /**
+ * SQL that parses a text value as a number, tolerating the display formatting that finance and
+ * Excel exports wrap amounts in. DuckDB's own numeric cast rejects all of these, so an otherwise
+ * entirely-numeric column would be left as text (and, if force-typed, would silently NULL the
+ * affected values). Used by BOTH numeric detection and the publish-time cast, so a column
+ * detected as numeric is guaranteed to cast without data loss (the two must stay identical).
+ *
+ * Handled (all unambiguous):
+ *   • Currency symbols, incl. country-prefixed forms:  $1,234.56   A$100   US$50   £9.99   €50
+ *   • Accounting negatives in parentheses:             (1,234.00) → -1234.00
+ *   • Thousands-separator commas:                      21,542.40  → 21542.40
+ *
+ * Deliberately NOT handled (left to fail the cast → the column stays text):
+ *   • Decimal commas ("1,50"): ambiguous against thousands grouping ("1,500"), so commas are
+ *     stripped ONLY when the value is a properly grouped number (a thousands comma is always
+ *     followed by exactly three digits). "1,50" therefore stays text rather than becoming 150.
+ *   • Percent ("12.5%") and sentinels ("N/A", "-"): genuinely not plain numbers.
+ *
+ * Patterns use POSIX classes ([0-9], [$]) rather than backslash escapes, so no SQL-string
+ * escaping is involved. The only text emitted is these fixed literals — no user input.
+ */
+function tryNumeric(varcharExpr: string): string {
+  // Strip currency symbols (incl. A$/US$/NZ$… country prefixes) anywhere in the value.
+  const noCurrency = `regexp_replace(${varcharExpr}, '(AU[$]|US[$]|NZ[$]|HK[$]|NT[$]|A[$]|C[$]|S[$]|R[$]|[$]|£|€)', '', 'g')`;
+  // Accounting negative: "(1,234.00)" → "-1,234.00". Branchless — '(' → '-', ')' → ''. A value
+  // with an unbalanced or mid-string paren just fails the numeric cast below and stays text.
+  const signed = `replace(replace(${noCurrency}, '(', '-'), ')', '')`;
+  // Strip thousands commas ONLY for a properly grouped number, so a decimal comma is never
+  // silently rescaled.
+  const degrouped =
+    `CASE WHEN regexp_full_match(${signed}, '[+-]?[0-9]{1,3}(,[0-9]{3})+([.][0-9]+)?') ` +
+    `THEN replace(${signed}, ',', '') ELSE ${signed} END`;
+  return `TRY_CAST(${degrouped} AS DOUBLE)`;
+}
+
+/**
  * Sample one string column and return the best-matching date/timestamp format, or null.
  * Runs a single aggregate query that counts how many sampled values each candidate format
  * parses; the highest count that clears MATCH_RATIO wins (ties resolve to the earlier,
@@ -137,7 +180,7 @@ async function isNumericColumn(parquet: string, column: string): Promise<boolean
   const conn = await getDuckConnection();
   const col = quoteIdent(column);
   const sql =
-    `SELECT count(*) AS nn, count(TRY_CAST(v AS DOUBLE)) AS ok FROM (` +
+    `SELECT count(*) AS nn, count(${tryNumeric('v')}) AS ok FROM (` +
     `SELECT trim(CAST(${col} AS VARCHAR)) AS v FROM read_parquet(${parquet}) ` +
     `WHERE ${col} IS NOT NULL) WHERE v <> ''`;
 
@@ -175,6 +218,29 @@ async function isExcelSerialColumn(parquet: string, column: string): Promise<boo
 }
 
 /**
+ * True when a string column is percent-formatted text: enough non-empty samples, and EVERY one
+ * is a number followed by a "%" ("0.00%", "-0.05%", "100.00%"). Requires a 100% match (like
+ * numeric detection) so a lone "%" value never reclassifies a text column. Probed only after
+ * numeric detection fails (a plain number column is caught there first). The values are stored
+ * as fractions at publish time (strip %, ÷100), so the app's percent display style round-trips.
+ */
+async function isPercentColumn(parquet: string, column: string): Promise<boolean> {
+  const conn = await getDuckConnection();
+  const col = quoteIdent(column);
+  const sql =
+    `SELECT count(*) AS nn, ` +
+    `count(*) FILTER (WHERE ends_with(v, '%') AND ${tryNumeric(`replace(v, '%', '')`)} IS NOT NULL) AS ok FROM (` +
+    `SELECT trim(CAST(${col} AS VARCHAR)) AS v FROM read_parquet(${parquet}) ` +
+    `WHERE ${col} IS NOT NULL) WHERE v <> ''`;
+
+  const [row] = (await conn.runAndReadAll(sql)).getRowObjects();
+  if (!row) return false;
+  const nn = Number(row['nn'] ?? 0);
+  const ok = Number(row['ok'] ?? 0);
+  return nn >= 1 && ok === nn;
+}
+
+/**
  * Detect better types for a staged Parquet. Only string columns are probed (numeric and
  * boolean columns are already correctly typed by DuckDB). Returns one suggestion per
  * column, preserving the sniffed type when nothing better is found.
@@ -198,6 +264,9 @@ export async function detectColumnTypes(
       out.push({ name: c.name, sniffedType: 'string', suggestedType: 'date', dateFormat: EXCEL_SERIAL_FORMAT });
     } else if (await isNumericColumn(parquet, c.name)) {
       out.push({ name: c.name, sniffedType: 'string', suggestedType: 'number' });
+    } else if (await isPercentColumn(parquet, c.name)) {
+      // Percent text → a numeric fraction with a percent display style (cast strips %, ÷100).
+      out.push({ name: c.name, sniffedType: 'string', suggestedType: 'number', numberStyle: 'percent' });
     } else {
       out.push({ name: c.name, sniffedType: 'string', suggestedType: 'string' });
     }
@@ -243,7 +312,15 @@ export function buildCastSelect(
         expr = `TRY_CAST(${col} AS DATE)`;
       }
     } else if (choice.type === 'number') {
-      expr = `TRY_CAST(${col} AS DOUBLE)`;
+      if (choice.numberStyle === 'percent') {
+        // Percent text ("12.5%") → the fraction 0.125, so the app's percent display style renders
+        // it back as "12.5%" and it aggregates as a true ratio. Strip the %, normalise, then ÷100.
+        expr = `(${tryNumeric(`replace(trim(CAST(${col} AS VARCHAR)), '%', '')`)} / 100.0)`;
+      } else {
+        // Mirror detection's comma-tolerant parse so a column detected as numeric never loses a
+        // thousands-separated value (e.g. "2,137.00") at publish time.
+        expr = tryNumeric(`trim(CAST(${col} AS VARCHAR))`);
+      }
     } else if (choice.type === 'boolean') {
       expr = `TRY_CAST(${col} AS BOOLEAN)`;
     } else {
