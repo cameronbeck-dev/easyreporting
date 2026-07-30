@@ -154,7 +154,9 @@ export default function DatasetsManager({
 
   const [selectedConnection, setSelectedConnection] = useState('');
   const [selectedTable, setSelectedTable] = useState('');
-  const [schemaName] = useState('public');
+  // Schema defaults to the selected connection's engine default (Postgres: public,
+  // SQL Server: dbo) and is overridable for databases that use a custom schema.
+  const [schemaName, setSchemaName] = useState('public');
   const [joinSteps, setJoinSteps] = useState<JoinStepDraft[]>([]);
   const [tableColumnCache, setTableColumnCache] = useState<Record<string, ColumnEntry[]>>({});
   const [joinError, setJoinError] = useState<string | null>(null);
@@ -278,10 +280,14 @@ export default function DatasetsManager({
               className={inputClass}
               value={selectedConnection}
               onChange={(e) => {
-                setSelectedConnection(e.target.value);
+                const id = e.target.value;
+                setSelectedConnection(id);
                 setSelectedTable('');
                 setJoinSteps([]);
                 setTableColumnCache({});
+                // Seed the schema with the chosen engine's default.
+                const conn = connections.find((c) => c.id === id);
+                setSchemaName(conn?.driver === 'sqlserver' ? 'dbo' : 'public');
               }}
             >
               <option value="">Select a connection…</option>
@@ -292,6 +298,18 @@ export default function DatasetsManager({
               ))}
             </select>
           </label>
+
+          {selectedConnection && (
+            <label className={labelClass}>
+              Schema
+              <input
+                className={inputClass}
+                value={schemaName}
+                onChange={(e) => setSchemaName(e.target.value)}
+                placeholder="public"
+              />
+            </label>
+          )}
 
           {selectedConnection && (
             <form action={tablesAction} className="flex items-end gap-3">

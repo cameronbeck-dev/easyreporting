@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState } from 'react';
+import { useActionState, useState } from 'react';
 import {
   createConnectionAction,
   deleteConnectionAction,
@@ -57,7 +57,15 @@ export default function ConnectionsManager({ connections }: { connections: Conne
   );
 }
 
+// Default listening port per driver, used to seed the Port field when the driver changes.
+const DEFAULT_PORT: Record<string, number> = { postgres: 5432, sqlserver: 1433 };
+// Human-readable engine labels for the saved-connection list.
+const DRIVER_LABEL: Record<string, string> = { postgres: 'PostgreSQL', sqlserver: 'SQL Server' };
+
 function ConnectionFields() {
+  // Track the selected driver so the Port field can default to the matching engine's port and
+  // the type mapping/dialect on the server is chosen correctly.
+  const [driver, setDriver] = useState('postgres');
   return (
     <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-2">
       <label className={labelClass}>
@@ -65,12 +73,33 @@ function ConnectionFields() {
         <input name="name" required className={inputClass} placeholder="Production DB" />
       </label>
       <label className={labelClass}>
+        Database engine
+        <select
+          name="driver"
+          value={driver}
+          onChange={(e) => setDriver(e.target.value)}
+          className={inputClass}
+        >
+          <option value="postgres">PostgreSQL</option>
+          <option value="sqlserver">SQL Server</option>
+        </select>
+      </label>
+      <label className={labelClass}>
         Host
         <input name="host" required className={inputClass} placeholder="db.example.com" />
       </label>
       <label className={labelClass}>
         Port
-        <input name="port" type="number" defaultValue={5432} required className={inputClass} />
+        {/* Remount on driver change so the default resets to that engine's port; user edits
+            within a driver are preserved until they switch engines. */}
+        <input
+          key={driver}
+          name="port"
+          type="number"
+          defaultValue={DEFAULT_PORT[driver] ?? 5432}
+          required
+          className={inputClass}
+        />
       </label>
       <label className={labelClass}>
         Database
@@ -115,8 +144,8 @@ function ConnectionItem({ connection }: { connection: ConnectionRow }) {
       <div>
         <p className="font-medium text-foreground">{connection.name}</p>
         <p className="text-sm text-foreground-muted">
-          {connection.user}@{connection.host}:{connection.port}/{connection.database} — SSL:{' '}
-          {connection.sslMode}
+          {DRIVER_LABEL[connection.driver] ?? connection.driver} · {connection.user}@
+          {connection.host}:{connection.port}/{connection.database} — SSL: {connection.sslMode}
         </p>
         {testState.ok && testState.message && (
           <p className="text-xs text-success">{testState.message}</p>

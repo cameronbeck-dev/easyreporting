@@ -28,6 +28,7 @@
   },
   "optionalDependencies": {
     "@types/pg": "^8.11.14",
+    "mssql": "^11.0.1",
     "pg": "^8.16.0"
   },
   "devDependencies": {

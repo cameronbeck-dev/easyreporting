@@ -21,6 +21,7 @@ import type { DecryptedConnection } from './sql/pool';
 import { getPool } from './sql/pool';
 import { listColumns } from './sql/introspect';
 import { buildAggregated, buildSummary, buildRows, buildTable } from './sql/buildQuery';
+import { getDialect, type SqlDialect } from './sql/dialect';
 import { formatBucketKey } from './dateBuckets';
 
 interface DatasetRow {
@@ -30,8 +31,6 @@ interface DatasetRow {
   columnsJson: { name: string; type: import('./types').ColumnType; table?: string; format?: ColumnFormat }[];
   joins: JoinStep[];
 }
-
-const SCHEMA_NAME = 'public';
 
 // Every query path validates that the dataset's stored columns still exist by introspecting
 // `information_schema` — 1 + N sequential round-trips (one per join) against the customer DB
@@ -46,10 +45,18 @@ const lastValidatedAt = new Map<string, number>();
 export class SqlProvider implements DataProvider {
   private dataset: DatasetRow;
   private connection: DecryptedConnection;
+  // The SQL dialect for this connection's driver. Concentrates every Postgres-vs-SQL Server
+  // syntax difference; the query builders below are otherwise dialect-agnostic.
+  private dialect: SqlDialect;
+  private schemaName: string;
 
   constructor({ dataset, connection }: { dataset: DatasetRow; connection: DecryptedConnection }) {
     this.dataset = dataset;
     this.connection = connection;
+    this.dialect = getDialect(connection.driver);
+    // Datasets don't persist a schema; assume the driver's default (Postgres: public,
+    // SQL Server: dbo), matching the pre-existing single-schema assumption.
+    this.schemaName = this.dialect.defaultSchema;
   }
 
   private getAllowedCols(): Set<string> {
@@ -74,7 +81,7 @@ export class SqlProvider implements DataProvider {
       // Introspect all tables concurrently rather than one join at a time.
       const tables = [this.dataset.tableName, ...this.dataset.joins.map((j) => j.tableName)];
       const perTable = await Promise.all(
-        tables.map(async (t) => ({ table: t, cols: await listColumns(this.connection, SCHEMA_NAME, t) })),
+        tables.map(async (t) => ({ table: t, cols: await listColumns(this.connection, this.schemaName, t) })),
       );
 
       const liveQualified = new Set<string>();
@@ -90,7 +97,7 @@ export class SqlProvider implements DataProvider {
         );
       }
     } else {
-      const live = await listColumns(this.connection, SCHEMA_NAME, this.dataset.tableName);
+      const live = await listColumns(this.connection, this.schemaName, this.dataset.tableName);
       const liveNames = new Set(live.map((c) => c.name));
       const stored = this.dataset.columnsJson.map((c) => c.name);
       const missing = stored.filter((n) => !liveNames.has(n));
@@ -107,7 +114,7 @@ export class SqlProvider implements DataProvider {
 
   private buildTableSource() {
     return {
-      schemaName: SCHEMA_NAME,
+      schemaName: this.schemaName,
       tableName: this.dataset.tableName,
       joins: this.dataset.joins,
     };
@@ -134,6 +141,7 @@ export class SqlProvider implements DataProvider {
       q,
       allowedCols,
       columns,
+      this.dialect,
     );
 
     const pool = await getPool(this.connection);
@@ -170,7 +178,7 @@ export class SqlProvider implements DataProvider {
     await this.validateStoredColumnsExist();
 
     const allowedCols = this.getAllowedCols();
-    const { text, values } = buildSummary(this.buildTableSource(), q, allowedCols);
+    const { text, values } = buildSummary(this.buildTableSource(), q, allowedCols, this.dialect);
 
     const pool = await getPool(this.connection);
     const result = await pool.query(text, values);
@@ -191,7 +199,7 @@ export class SqlProvider implements DataProvider {
 
     const allowedCols = this.getAllowedCols();
     const columns = this.getColumns();
-    const { text, values } = buildTable(this.buildTableSource(), q, allowedCols, columns);
+    const { text, values } = buildTable(this.buildTableSource(), q, allowedCols, columns, this.dialect);
 
     const pool = await getPool(this.connection);
     const result = await pool.query(text, values);
@@ -235,6 +243,10 @@ export class SqlProvider implements DataProvider {
       q,
       allowedCols,
       this.dataset.columnsJson,
+      // tenantColumn: left undefined to preserve prior projection behavior (the tenant column is
+      // stripped post-query by AccessControlledProvider regardless).
+      undefined,
+      this.dialect,
     );
 
     const pool = await getPool(this.connection);

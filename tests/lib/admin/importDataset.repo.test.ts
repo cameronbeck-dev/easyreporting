@@ -18,6 +18,7 @@ vi.mock('@/lib/data/sql/introspect', () => ({
   listTablesAndViews: vi.fn(),
   listColumns: vi.fn(),
   mapSqlType: vi.fn((t: string) => (t === 'integer' ? 'number' : 'string')),
+  mapColumnType: vi.fn((_conn: unknown, t: string) => (t === 'integer' ? 'number' : 'string')),
   testConnection: vi.fn(),
 }));
 vi.mock('@/lib/data/sql/pool', () => ({

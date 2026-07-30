@@ -39,10 +39,11 @@ import { listTenantColumnsResolved } from '../db/config-repo';
 import { getProviderForDataset } from '../data/resolveDataset';
 import { Aggregation } from '../data/types';
 import { encryptSecret } from '../crypto/secrets';
-import { testConnection as introspectTestConnection, listTablesAndViews, listColumns, mapSqlType } from '../data/sql/introspect';
+import { testConnection as introspectTestConnection, listTablesAndViews, listColumns, mapColumnType } from '../data/sql/introspect';
+import { getDialect, type SqlDriver } from '../data/sql/dialect';
 import type { ColumnType, ColumnFormat, JoinStep } from '../data/types';
 import { sanitizeColumnFormat } from '../data/formatSpec';
-import { type DecryptedConnection, type SslMode, toDecryptedConnection } from '../data/sql/pool';
+import { type DecryptedConnection, type SslMode, toDecryptedConnection, toDriver } from '../data/sql/pool';
 import type { RowScope } from '../auth/types';
 import type { ComputedField } from '../data/computed/types';
 import { parseComputedExpression, ComputedParseError } from '../data/computed/parser';
@@ -581,6 +582,7 @@ export interface ConnectionRow {
 
 export interface CreateConnectionInput {
   name: string;
+  driver: SqlDriver;
   host: string;
   port: number;
   database: string;
@@ -624,7 +626,7 @@ export async function createConnection(
   await db.insert(connections).values({
     id,
     name,
-    driver: 'postgres',
+    driver: toDriver(input.driver),
     host: input.host.trim(),
     port: input.port,
     database: input.database.trim(),
@@ -671,6 +673,7 @@ export async function testConnectionById(
 }
 
 export interface TestConnectionDraftInput {
+  driver: SqlDriver;
   host: string;
   port: number;
   database: string;
@@ -686,6 +689,7 @@ export async function testConnectionDraft(
   assertOwner(admin);
   const conn: DecryptedConnection = {
     id: '__draft__',
+    driver: toDriver(input.driver),
     host: input.host,
     port: input.port,
     database: input.database,
@@ -700,11 +704,13 @@ export async function testConnectionDraft(
 export async function introspectTables(
   admin: AdminContext,
   connectionId: string,
-  schemaName = 'public',
+  schemaName?: string,
 ): Promise<string[]> {
   assertOwner(admin);
   const conn = await loadDecryptedConnection(connectionId);
-  const tables = await listTablesAndViews(conn, schemaName);
+  // An empty/omitted schema falls back to the driver's default (Postgres: public, SQL Server: dbo).
+  const schema = schemaName?.trim() || getDialect(conn.driver).defaultSchema;
+  const tables = await listTablesAndViews(conn, schema);
   return tables.map((t) => t.name);
 }
 
@@ -716,14 +722,15 @@ export async function introspectColumns(
 ): Promise<{ name: string; type: ColumnType }[]> {
   assertOwner(admin);
   const conn = await loadDecryptedConnection(connectionId);
+  const schema = schemaName?.trim() || getDialect(conn.driver).defaultSchema;
   // Validate tableName is in the introspected list (no raw identifier injection)
-  const tables = await listTablesAndViews(conn, schemaName);
+  const tables = await listTablesAndViews(conn, schema);
   const tableNames = new Set(tables.map((t) => t.name));
   if (!tableNames.has(tableName)) {
-    throw new ForbiddenError(`Table "${tableName}" does not exist in schema "${schemaName}".`);
+    throw new ForbiddenError(`Table "${tableName}" does not exist in schema "${schema}".`);
   }
-  const cols = await listColumns(conn, schemaName, tableName);
-  return cols.map((c) => ({ name: c.name, type: mapSqlType(c.sqlType) }));
+  const cols = await listColumns(conn, schema, tableName);
+  return cols.map((c) => ({ name: c.name, type: mapColumnType(conn, c.sqlType) }));
 }
 
 // ---------------------------------------------------------------------------
@@ -807,7 +814,7 @@ export async function createDataset(
 
     const columnsJson = rawCols.map((c) => ({
       name: c.name,
-      type: mapSqlType(c.sqlType),
+      type: mapColumnType(conn, c.sqlType),
     }));
 
     const computedFields = validateComputedFields(input.computedFields ?? [], columnsJson.map((c) => c.name), tenantColumn);
@@ -897,7 +904,7 @@ export async function createDataset(
   for (const c of baseCols) {
     qualifiedCols.push({
       name: `${input.tableName}.${c.name}`,
-      type: mapSqlType(c.sqlType),
+      type: mapColumnType(conn, c.sqlType),
       table: input.tableName,
     });
   }
@@ -907,7 +914,7 @@ export async function createDataset(
     for (const c of joinCols) {
       qualifiedCols.push({
         name: `${step.tableName}.${c.name}`,
-        type: mapSqlType(c.sqlType),
+        type: mapColumnType(conn, c.sqlType),
         table: step.tableName,
       });
     }

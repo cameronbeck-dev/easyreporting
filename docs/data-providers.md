@@ -92,6 +92,31 @@ The user's access facts (allow-list, row scopes, tenant) come from the metadata 
 
 Putting security logic inside a provider would duplicate it inconsistently and risk gaps. Keep providers focused on data retrieval only — and remember the one rule above: apply every filter you are given.
 
+## SQL dialects (Postgres & SQL Server)
+
+`SqlProvider` is dialect-agnostic. Everything that differs between database engines lives in
+`src/lib/data/sql/dialect.ts` behind the `SqlDialect` interface, and the provider picks the
+right one from the connection's `driver` (`getDialect(connection.driver)`):
+
+- **`postgres`** — the reference dialect; its output is byte-identical to the original
+  hard-coded builders (the SQL test suite pins this).
+- **`sqlserver`** — T-SQL: `[bracket]` identifiers, `@pN` placeholders, `IN (...)` lists
+  (SQL Server can't bind an array to one parameter), `LOWER(...) LIKE LOWER(...)` for
+  case-insensitive `contains`, **version-safe** date buckets via `DATEFROMPARTS`/`DATEADD`
+  (no `DATE_TRUNC`, so it runs on SQL Server 2012+ and Azure SQL), `OFFSET/FETCH` for paging
+  and top-N, and a portable null-safe join for the two-dimension table ranking CTE.
+
+The builders in `buildQuery.ts` take the dialect as an optional last argument (default
+Postgres) and are otherwise written once. Adding another engine means adding one `SqlDialect`
+implementation plus a driver-pool branch in `sql/pool.ts` — no query logic is duplicated.
+
+**Connectivity.** `sql/pool.ts` lazily loads the driver package as an optional dependency
+(`pg` for Postgres, `mssql` for SQL Server) and adapts both to a uniform positional
+`query(text, values)` API, so the builders never care which driver runs. SQL Server auth is
+username/password (SQL login) today; the connection model is shaped so Azure AD / token auth
+can be added without touching the query path. Schema defaults to the engine default
+(`public` / `dbo`) and is chosen per-connection in the dataset builder.
+
 ## Registering a New Provider
 
 Edit `src/lib/data/resolveDataset.ts` to add a new branch. The resolver picks the inner

@@ -6,7 +6,7 @@
 // access ceiling are enforced inside the repo, not here.
 import { revalidatePath } from 'next/cache';
 import { requireAdminAction, ForbiddenError } from '../auth/requireAdmin';
-import { toSslMode } from '../data/sql/pool';
+import { toSslMode, toDriver } from '../data/sql/pool';
 import * as repo from './repo';
 
 export interface ActionState {
@@ -119,6 +119,7 @@ export async function createConnectionAction(_prev: ActionState, formData: FormD
     const admin = await requireAdminAction();
     await repo.createConnection(admin, {
       name: String(formData.get('name') ?? ''),
+      driver: toDriver(String(formData.get('driver') ?? '')),
       host: String(formData.get('host') ?? ''),
       port: Number(formData.get('port') ?? 5432),
       database: String(formData.get('database') ?? ''),
@@ -145,6 +146,7 @@ export async function testConnectionAction(_prev: ActionState, formData: FormDat
       result = await repo.testConnectionById(admin, connectionId);
     } else {
       result = await repo.testConnectionDraft(admin, {
+        driver: toDriver(String(formData.get('driver') ?? '')),
         host: String(formData.get('host') ?? ''),
         port: Number(formData.get('port') ?? 5432),
         database: String(formData.get('database') ?? ''),

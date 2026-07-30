@@ -66,7 +66,7 @@ export const invites = sqliteTable('invites', {
 export const connections = sqliteTable('connections', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
-  driver: text('driver', { enum: ['postgres'] }).notNull().default('postgres'),
+  driver: text('driver', { enum: ['postgres', 'sqlserver'] }).notNull().default('postgres'),
   host: text('host').notNull(),
   port: integer('port').notNull().default(5432),
   database: text('database').notNull(),

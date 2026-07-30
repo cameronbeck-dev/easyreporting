@@ -10,9 +10,11 @@ import type {
 import { Aggregation } from '../types';
 import type { ColumnSchema } from '../types';
 import type { TableSource, JoinStep } from '../types';
-import { quoteIdent, assertKnown, clampTopN } from './identifiers';
+import { assertKnown, clampTopN } from './identifiers';
 import { parseComputedExpression } from '../computed/parser';
 import { computedMeasureToSql } from '../computed/toSql';
+import type { SqlDialect } from './dialect';
+import { postgresDialect } from './dialect';
 
 /**
  * The SQL measure expression: a computed field pushed down to SQL when `measure` is set,
@@ -24,13 +26,14 @@ function measureExpr(
   column: string,
   aggregation: Aggregation,
   allowedCols: Set<string>,
+  dialect: SqlDialect,
 ): string {
   if (measure) {
     const { ast, dependencies } = parseComputedExpression(measure.expression, measure.dependencies);
     for (const dep of dependencies) assertKnown(dep, allowedCols);
-    return computedMeasureToSql(ast);
+    return computedMeasureToSql(ast, (n) => n, dialect.quoteIdent);
   }
-  return aggExpr(column, aggregation);
+  return aggExpr(column, aggregation, dialect);
 }
 
 export interface BuiltQuery {
@@ -56,8 +59,9 @@ const JOIN_SQL: Record<string, string> = {
  *   FROM "schema"."base"
  * For multi-table sources appends one JOIN line per step.
  */
-export function buildFrom(src: TableSource): string {
-  const base = `FROM ${quoteIdent(src.schemaName)}.${quoteIdent(src.tableName)}`;
+export function buildFrom(src: TableSource, dialect: SqlDialect = postgresDialect): string {
+  const q = dialect.quoteIdent;
+  const base = `FROM ${q(src.schemaName)}.${q(src.tableName)}`;
   if (src.joins.length === 0) return base;
 
   const joinLines = src.joins.map((j: JoinStep) => {
@@ -66,9 +70,9 @@ export function buildFrom(src: TableSource): string {
       throw new Error(`Invalid joinType: "${j.joinType}"`);
     }
     return (
-      `${joinKeyword} ${quoteIdent(src.schemaName)}.${quoteIdent(j.tableName)}` +
-      ` ON ${quoteIdent(j.tableName)}.${quoteIdent(j.rightColumn)}` +
-      ` = ${quoteIdent(j.leftTable)}.${quoteIdent(j.leftColumn)}`
+      `${joinKeyword} ${q(src.schemaName)}.${q(j.tableName)}` +
+      ` ON ${q(j.tableName)}.${q(j.rightColumn)}` +
+      ` = ${q(j.leftTable)}.${q(j.leftColumn)}`
     );
   });
 
@@ -79,6 +83,7 @@ export function buildWhere(
   filters: Filter[],
   allowedCols: Set<string>,
   startIndex: number,
+  dialect: SqlDialect = postgresDialect,
 ): { clause: string; values: unknown[] } {
   if (filters.length === 0) return { clause: '', values: [] };
 
@@ -88,34 +93,34 @@ export function buildWhere(
 
   for (const f of filters) {
     assertKnown(f.column, allowedCols);
-    const col = quoteIdent(f.column);
+    const col = dialect.quoteIdent(f.column);
 
     if (f.operator === 'eq') {
-      parts.push(`${col} = $${idx}`);
+      parts.push(`${col} = ${dialect.placeholder(idx)}`);
       values.push(f.value);
       idx++;
     } else if (f.operator === 'neq') {
-      parts.push(`${col} <> $${idx}`);
+      parts.push(`${col} <> ${dialect.placeholder(idx)}`);
       values.push(f.value);
       idx++;
     } else if (f.operator === 'gt') {
-      parts.push(`${col} > $${idx}`);
+      parts.push(`${col} > ${dialect.placeholder(idx)}`);
       values.push(f.value);
       idx++;
     } else if (f.operator === 'gte') {
-      parts.push(`${col} >= $${idx}`);
+      parts.push(`${col} >= ${dialect.placeholder(idx)}`);
       values.push(f.value);
       idx++;
     } else if (f.operator === 'lt') {
-      parts.push(`${col} < $${idx}`);
+      parts.push(`${col} < ${dialect.placeholder(idx)}`);
       values.push(f.value);
       idx++;
     } else if (f.operator === 'lte') {
-      parts.push(`${col} <= $${idx}`);
+      parts.push(`${col} <= ${dialect.placeholder(idx)}`);
       values.push(f.value);
       idx++;
     } else if (f.operator === 'contains') {
-      parts.push(`${col} ILIKE $${idx}`);
+      parts.push(dialect.containsExpr(col, dialect.placeholder(idx)));
       values.push(`%${String(f.value)}%`);
       idx++;
     } else if (f.operator === 'in') {
@@ -123,18 +128,20 @@ export function buildWhere(
       if (list.length === 0) {
         parts.push('FALSE');
       } else {
-        parts.push(`${col} = ANY($${idx})`);
-        values.push(list);
-        idx++;
+        const rendered = dialect.inList(col, list, idx, false);
+        parts.push(rendered.sql);
+        values.push(...rendered.values);
+        idx += rendered.values.length;
       }
     } else if (f.operator === 'nin') {
       const list = Array.isArray(f.value) ? f.value : [f.value];
       if (list.length === 0) {
         parts.push('TRUE'); // exclude nothing
       } else {
-        parts.push(`${col} <> ALL($${idx})`);
-        values.push(list);
-        idx++;
+        const rendered = dialect.inList(col, list, idx, true);
+        parts.push(rendered.sql);
+        values.push(...rendered.values);
+        idx += rendered.values.length;
       }
     }
   }
@@ -142,10 +149,10 @@ export function buildWhere(
   return { clause: `WHERE ${parts.join(' AND ')}`, values };
 }
 
-function aggExpr(col: string, aggregation: Aggregation): string {
+function aggExpr(col: string, aggregation: Aggregation, dialect: SqlDialect): string {
   if (aggregation === Aggregation.Count) return 'COUNT(*)';
-  if (aggregation === Aggregation.CountUnique) return `COUNT(DISTINCT ${quoteIdent(col)})`;
-  return `${aggregation.toUpperCase()}(${quoteIdent(col)})`;
+  if (aggregation === Aggregation.CountUnique) return `COUNT(DISTINCT ${dialect.quoteIdent(col)})`;
+  return `${aggregation.toUpperCase()}(${dialect.quoteIdent(col)})`;
 }
 
 export function buildAggregated(
@@ -153,6 +160,7 @@ export function buildAggregated(
   q: AggregatedQuery,
   allowedCols: Set<string>,
   columns: ColumnSchema[],
+  dialect: SqlDialect = postgresDialect,
 ): BuiltQuery {
   assertKnown(q.x, allowedCols);
   // With a computed measure, q.y is a field name (not a column); measureExpr validates the
@@ -160,7 +168,7 @@ export function buildAggregated(
   if (!q.measure) assertKnown(q.y, allowedCols);
 
   const filters = q.filters ?? [];
-  const { clause, values } = buildWhere(filters, allowedCols, 1);
+  const { clause, values } = buildWhere(filters, allowedCols, 1, dialect);
 
   const xCol = columns.find((c) => c.name === q.x);
   const useBucket = q.dateBucket && xCol?.type === 'date';
@@ -168,19 +176,19 @@ export function buildAggregated(
     throw new Error(`Invalid dateBucket: "${q.dateBucket}"`);
   }
   const xExpr = useBucket
-    ? `DATE_TRUNC('${q.dateBucket}', ${quoteIdent(q.x)})`
-    : quoteIdent(q.x);
+    ? dialect.dateBucketExpr(q.dateBucket as string, dialect.quoteIdent(q.x))
+    : dialect.quoteIdent(q.x);
 
-  const yExpr = measureExpr(q.measure, q.y, q.aggregation, allowedCols);
+  const yExpr = measureExpr(q.measure, q.y, q.aggregation, allowedCols, dialect);
 
   // Top-N only applies to non-date axes; date axes stay chronological.
   const topN = xCol?.type === 'date' ? null : clampTopN(q.limit);
   const orderBy = topN ? 'ORDER BY y DESC' : 'ORDER BY x';
-  const limitClause = topN ? `LIMIT ${topN}` : '';
+  const limitClause = topN ? dialect.topNClause(topN) : '';
 
   const text = [
     `SELECT ${xExpr} AS x, ${yExpr} AS y`,
-    buildFrom(src),
+    buildFrom(src, dialect),
     clause,
     `GROUP BY ${xExpr}`,
     orderBy,
@@ -196,6 +204,7 @@ export function buildSummary(
   src: TableSource,
   q: SummaryQuery,
   allowedCols: Set<string>,
+  dialect: SqlDialect = postgresDialect,
 ): BuiltQuery {
   for (const m of q.metrics) {
     // Computed metrics validate their dependency columns inside measureExpr; Count maps to
@@ -205,15 +214,15 @@ export function buildSummary(
   }
 
   const filters = q.filters ?? [];
-  const { clause, values } = buildWhere(filters, allowedCols, 1);
+  const { clause, values } = buildWhere(filters, allowedCols, 1, dialect);
 
   const exprs = q.metrics.map(
-    (m, i) => `${measureExpr(m.measure, m.column, m.aggregation, allowedCols)} AS m${i}`,
+    (m, i) => `${measureExpr(m.measure, m.column, m.aggregation, allowedCols, dialect)} AS m${i}`,
   );
 
   const text = [
     `SELECT ${exprs.join(', ')}`,
-    buildFrom(src),
+    buildFrom(src, dialect),
     clause,
   ]
     .filter(Boolean)
@@ -245,6 +254,7 @@ export function buildTable(
   q: TableQuery,
   allowedCols: Set<string>,
   columns: ColumnSchema[],
+  dialect: SqlDialect = postgresDialect,
 ): BuiltQuery {
   if (q.dimensions.length === 0) throw new Error('A table needs at least one dimension');
   if (q.measures.length === 0) throw new Error('A table needs at least one measure');
@@ -259,12 +269,12 @@ export function buildTable(
   void columns; // reserved for future date-bucketed dimensions; dimensions are plain today.
 
   const filters = q.filters ?? [];
-  const { clause, values } = buildWhere(filters, allowedCols, 1);
+  const { clause, values } = buildWhere(filters, allowedCols, 1, dialect);
 
-  const dimExprs = q.dimensions.map((d) => quoteIdent(d));
+  const dimExprs = q.dimensions.map((d) => dialect.quoteIdent(d));
   const dimSelects = dimExprs.map((e, i) => `${e} AS d${i}`);
   const measureSelects = q.measures.map(
-    (m, i) => `${measureExpr(m.measure, m.y, m.aggregation, allowedCols)} AS m${i}`,
+    (m, i) => `${measureExpr(m.measure, m.y, m.aggregation, allowedCols, dialect)} AS m${i}`,
   );
   const selectList = [...dimSelects, ...measureSelects].join(', ');
   const groupBy = `GROUP BY ${dimExprs.join(', ')}`;
@@ -286,7 +296,7 @@ export function buildTable(
 
   // No top-N cap: one plain grouped query.
   if (topN === null) {
-    const text = [`SELECT ${selectList}`, buildFrom(src), clause, groupBy, displayOrderBy]
+    const text = [`SELECT ${selectList}`, buildFrom(src, dialect), clause, groupBy, displayOrderBy]
       .filter(Boolean)
       .join(' ');
     return { text, values };
@@ -304,11 +314,11 @@ export function buildTable(
   if (q.dimensions.length === 1) {
     const inner = [
       `SELECT ${selectList}`,
-      buildFrom(src),
+      buildFrom(src, dialect),
       clause,
       groupBy,
       `ORDER BY m${rankIdx} ${rankDir}`,
-      `LIMIT ${topN}`,
+      dialect.topNClause(topN),
     ]
       .filter(Boolean)
       .join(' ');
@@ -322,18 +332,18 @@ export function buildTable(
   // an average over child groups would rank by the wrong number. The WHERE params are shared by
   // both CTEs (reused `$n` placeholders), so `values` is unchanged.
   const rankMeasure = q.measures[rankIdx];
-  const rankExpr = measureExpr(rankMeasure.measure, rankMeasure.y, rankMeasure.aggregation, allowedCols);
+  const rankExpr = measureExpr(rankMeasure.measure, rankMeasure.y, rankMeasure.aggregation, allowedCols, dialect);
   const dim0 = dimExprs[0];
   const text = [
     `WITH grouped AS (SELECT ${selectList}`,
-    buildFrom(src),
+    buildFrom(src, dialect),
     clause,
     `${groupBy})`,
     `, ranked AS (SELECT ${dim0} AS rk`,
-    buildFrom(src),
+    buildFrom(src, dialect),
     clause,
-    `GROUP BY ${dim0} ORDER BY ${rankExpr} ${rankDir} LIMIT ${topN})`,
-    `SELECT g.* FROM grouped g JOIN ranked r ON g.d0 IS NOT DISTINCT FROM r.rk`,
+    `GROUP BY ${dim0} ORDER BY ${rankExpr} ${rankDir} ${dialect.topNClause(topN)})`,
+    `SELECT g.* FROM grouped g JOIN ranked r ON ${dialect.nullSafeEq('g.d0', 'r.rk')}`,
     displayOrderBy,
   ]
     .filter(Boolean)
@@ -347,15 +357,16 @@ export function buildRows(
   allowedCols: Set<string>,
   storedColumns?: { name: string; table?: string }[],
   tenantColumn?: string,
+  dialect: SqlDialect = postgresDialect,
 ): { dataQuery: BuiltQuery; countQuery: BuiltQuery } {
   const filters = q.filters ?? [];
-  const { clause, values } = buildWhere(filters, allowedCols, 1);
+  const { clause, values } = buildWhere(filters, allowedCols, 1, dialect);
 
   const offset = (q.page - 1) * q.pageSize;
   const limitIdx = values.length + 1;
   const offsetIdx = values.length + 2;
 
-  const fromClause = buildFrom(src);
+  const fromClause = buildFrom(src, dialect);
 
   let selectClause: string;
   if (src.joins.length > 0 && storedColumns) {
@@ -367,16 +378,15 @@ export function buildRows(
       .filter((c) => c.name !== tenantColumn)
       .map((c) => {
         if (c.table) {
-          // Qualified name stored as "table.column" — emit "table"."col" AS "table.col"
-          // The AS alias uses the literal qualified name (with dot) as a double-quoted string,
+          // Qualified name stored as "table.column" — emit <table>.<col> AS <"table.col">.
+          // The AS alias uses the literal qualified name (with dot) as a quoted string,
           // so result row keys equal the stored qualified names.
           const dot = c.name.indexOf('.');
           const tbl = c.name.slice(0, dot);
           const col = c.name.slice(dot + 1);
-          const aliasLiteral = `"${c.name.replace(/"/g, '""')}"`;
-          return `${quoteIdent(tbl)}.${quoteIdent(col)} AS ${aliasLiteral}`;
+          return `${dialect.quoteIdent(tbl)}.${dialect.quoteIdent(col)} AS ${dialect.quoteAlias(c.name)}`;
         }
-        return `${quoteIdent(c.name)} AS ${quoteIdent(c.name)}`;
+        return `${dialect.quoteIdent(c.name)} AS ${dialect.quoteAlias(c.name)}`;
       });
     selectClause = projections.length > 0 ? `SELECT ${projections.join(', ')}` : 'SELECT *';
   } else {
@@ -387,7 +397,7 @@ export function buildRows(
     selectClause,
     fromClause,
     clause,
-    `LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+    dialect.pagingClause(dialect.placeholder(limitIdx), dialect.placeholder(offsetIdx)),
   ]
     .filter(Boolean)
     .join(' ');
