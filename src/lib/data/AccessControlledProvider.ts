@@ -144,6 +144,7 @@ export class AccessControlledProvider implements DataProvider {
       type: 'number',
       isComputed: true,
       format: f.format,
+      label: f.label,
     }));
     return {
       ...schema,
@@ -317,6 +318,7 @@ export class AccessControlledProvider implements DataProvider {
       type: 'number',
       isComputed: true,
       format: f.format,
+      label: f.label,
     }));
 
     return {

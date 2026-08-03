@@ -9,6 +9,7 @@ import { useChartTheme } from './echartsTheme';
 import { fieldColor } from './fieldColors';
 import { buildChartOption, type ChartValueFormats } from './buildChartOption';
 import { measureFormatColumn } from './columnFormat';
+import { buildColumnLabels } from './chartTypes';
 import { useSchema } from './useSchema';
 import { fetchChartData, type AggregatedFetcher } from './chartData';
 import { aggregatedToCsv } from '@/lib/data/export/toCsv';
@@ -65,6 +66,9 @@ export default function ChartCard({
     chartRef.current?.getEchartsInstance().resize();
   }, [chartHeight]);
 
+  // Owner-set column display names, so combo legends and the CSV export read the friendly names.
+  const labels = buildColumnLabels(schema.columns);
+
   const accent = fieldColor(config.aggregation === Aggregation.Count ? 'records' : config.y);
   const effectiveBucket = config.dateBucket ?? granularity;
   const filtersKey = JSON.stringify(globalFilters);
@@ -84,7 +88,7 @@ export default function ChartCard({
     const fetchOne: AggregatedFetcher = (query) =>
       postJson<AggregatedResult>('/api/query', { datasetId: config.datasetId, query });
 
-    fetchChartData(config, { globalFilters, bucket: granularity, fetch: fetchOne })
+    fetchChartData(config, { globalFilters, bucket: granularity, fetch: fetchOne, labels })
       .then((data) => {
         if (cancelled) return;
         setResult(data);
@@ -128,7 +132,7 @@ export default function ChartCard({
 
   const handleExport = () => {
     if (!result) return;
-    const csv = aggregatedToCsv(config, result);
+    const csv = aggregatedToCsv(config, result, labels);
     const name = (config.title || 'chart').replace(/[^a-zA-Z0-9._-]+/g, '_') || 'chart';
     downloadText(`${name}.csv`, csv);
   };

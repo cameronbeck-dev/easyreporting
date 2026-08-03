@@ -5,12 +5,15 @@
 // source, which is the whole point of the restructure. The computed-fields editor and its
 // formula autocomplete were lifted verbatim from DatasetsManager so the two never diverge.
 import { useActionState, useEffect, useMemo, useRef, useState } from 'react';
+import { useFormStatus } from 'react-dom';
 import {
   addComputedFieldAction,
   removeComputedFieldAction,
+  setColumnLabelAction,
   setDatasetJoinsAction,
   type ActionState,
 } from '@/lib/admin/actions';
+import { prettify } from '../chartTypes';
 import type { DatasetAdminRow, JoinableDataset } from '@/lib/admin/repo';
 import type { ComputedField } from '@/lib/data/computed/types';
 import { parseComputedExpression } from '@/lib/data/computed/parser';
@@ -27,6 +30,14 @@ interface JoinDraft {
 interface ColumnEntry {
   name: string;
   type: string;
+}
+
+/** A column the owner may rename here: the dataset's own source columns (+ computed fields). */
+interface EditableColumn {
+  name: string;
+  type: string;
+  label?: string;
+  isComputed?: boolean;
 }
 
 const SECTION = 'rounded-card border border-border bg-surface p-6 shadow-card';
@@ -203,13 +214,72 @@ function ExpressionInput({
   );
 }
 
+/** Save button for a display-name row: disabled until the value changes; shows pending/saved state. */
+function LabelSaveButton({ dirty }: { dirty: boolean }) {
+  const { pending } = useFormStatus();
+  const label = pending ? 'Saving…' : dirty ? 'Save' : 'Saved';
+  const cls = dirty
+    ? buttonClass('primary')
+    : 'rounded-full px-3.5 py-1.5 text-sm font-semibold cursor-default bg-surface-muted text-foreground-muted';
+  return (
+    <button type="submit" disabled={!dirty || pending} className={cls}>
+      {label}
+    </button>
+  );
+}
+
+/**
+ * Inline editor for one column's display name. Blank clears it (end users fall back to the
+ * prettified column name, shown as the placeholder). Saves via setColumnLabelAction, which
+ * revalidates every surface that renders columns so the new name propagates immediately.
+ */
+function ColumnLabelEditor({ datasetId, column }: { datasetId: string; column: EditableColumn }) {
+  const [state, action] = useActionState<ActionState, FormData>(setColumnLabelAction, {});
+  const [value, setValue] = useState(column.label ?? '');
+
+  // Baseline for the dirty check; adopt the just-saved value after a successful save.
+  const savedRef = useRef(column.label ?? '');
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  useEffect(() => {
+    if (state.ok) savedRef.current = valueRef.current.trim();
+  }, [state]);
+  const dirty = value.trim() !== savedRef.current.trim();
+
+  return (
+    <form action={action} className="flex items-center gap-2">
+      <input type="hidden" name="datasetId" value={datasetId} />
+      <input type="hidden" name="columnName" value={column.name} />
+      <input
+        name="label"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder={prettify(column.name)}
+        aria-label={`Display name for ${column.name}`}
+        className={`${inputClass} w-52`}
+        autoComplete="off"
+      />
+      <LabelSaveButton dirty={dirty} />
+      {state.error && <span className="text-xs text-danger">{state.error}</span>}
+    </form>
+  );
+}
+
 export default function SchemaEditor({
   dataset,
+  editableColumns,
   joinableDatasets,
 }: {
   dataset: DatasetAdminRow;
+  editableColumns: EditableColumn[];
   joinableDatasets: JoinableDataset[];
 }) {
+  // The dataset's own source columns, keyed by name — the ones an owner may rename here. Join-
+  // brought columns appear in `dataset.columns` but not here (rename them on their own dataset).
+  const editableByName = useMemo(
+    () => new Map(editableColumns.filter((c) => !c.isComputed).map((c) => [c.name, c])),
+    [editableColumns],
+  );
   // File joins only apply to file-backed datasets; SQL joins are set at dataset creation.
   const isFile = dataset.connectionId === null;
   const [addState, addAction] = useActionState<ActionState, FormData>(addComputedFieldAction, {});
@@ -238,25 +308,35 @@ export default function SchemaEditor({
 
   return (
     <div className="flex flex-col gap-6">
-      {/* ---- Column types (read-only; set at import time) ---------------- */}
+      {/* ---- Columns & display names ------------------------------------- */}
       <section className={SECTION}>
-        <h3 className="mb-1 text-sm font-semibold text-foreground">Column types</h3>
+        <h3 className="mb-1 text-sm font-semibold text-foreground">Columns &amp; display names</h3>
         <p className="mb-4 text-sm text-foreground-muted">
-          Types are set when the data is imported or introspected. Joins that bring in columns
-          from other datasets will appear here too.
+          Give a column a friendly <strong>display name</strong> that end users see in place of the
+          raw name — everywhere it appears: the data grid, filters, chart and table labels, and CSV
+          exports. Leave it blank to use the auto-formatted name (shown as the placeholder). Column
+          types are set when the data is imported or introspected and can&apos;t be changed here.
         </p>
         <div className="flex flex-col divide-y divide-border/60 text-sm">
-          {dataset.columns.map((c) => (
-            <div key={c.name} className="flex items-center justify-between gap-3 py-1.5">
-              <span className="text-foreground">
-                {c.name}
-                {c.name === dataset.tenantColumn && (
-                  <span className="ml-2 text-xs text-foreground-muted">(tenant)</span>
+          {dataset.columns.map((c) => {
+            const editable = editableByName.get(c.name);
+            return (
+              <div key={c.name} className="flex flex-wrap items-center justify-between gap-3 py-2">
+                <div className="min-w-0">
+                  <span className="font-mono text-foreground">{c.name}</span>
+                  {c.name === dataset.tenantColumn && (
+                    <span className="ml-2 text-xs text-foreground-muted">(tenant)</span>
+                  )}
+                  <span className="ml-2 text-xs text-foreground-muted">{c.type}</span>
+                </div>
+                {editable ? (
+                  <ColumnLabelEditor datasetId={dataset.id} column={editable} />
+                ) : (
+                  <span className="text-xs text-foreground-muted">joined — rename on its own dataset</span>
                 )}
-              </span>
-              <span className="text-xs text-foreground-muted">{c.type}</span>
-            </div>
-          ))}
+              </div>
+            );
+          })}
         </div>
       </section>
 

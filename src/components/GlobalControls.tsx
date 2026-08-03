@@ -3,7 +3,7 @@
 import type { ColumnSchema } from '@/lib/data/types';
 import type { DateBucket } from '@/lib/data/types';
 import type { GlobalControls as Globals, DatePreset } from './chartTypes';
-import { prettify } from './chartTypes';
+import { prettify, columnLabelFor, buildColumnLabels } from './chartTypes';
 import { allDateColumns, resolveDateColumn, presetRange } from './dashboardUtils';
 import FilterList, { filterSummary } from './FilterList';
 
@@ -47,6 +47,7 @@ export default function GlobalControls({
 }: Props) {
   const dateCols = allDateColumns(columns);
   const timelineCol = resolveDateColumn(globals, columns);
+  const labels = buildColumnLabels(columns);
   const hasRange = Boolean(globals.dateFrom && globals.dateTo);
 
   const isDefault =
@@ -77,7 +78,7 @@ export default function GlobalControls({
     chips.push(globals.datePreset === 'all' ? 'All dates' : presetLabel);
   }
   if (timelineCol) chips.push(prettify(globals.granularity));
-  for (const f of globals.filters) if (f.column) chips.push(filterSummary(f));
+  for (const f of globals.filters) if (f.column) chips.push(filterSummary(f, labels));
   if (globals.compare) chips.push('vs previous');
 
   if (!open) {
@@ -141,7 +142,7 @@ export default function GlobalControls({
                 aria-label="Timeline date column"
               >
                 {dateCols.map((c) => (
-                  <option key={c.name} value={c.name}>{prettify(c.name)}</option>
+                  <option key={c.name} value={c.name}>{columnLabelFor(c)}</option>
                 ))}
               </select>
             </div>

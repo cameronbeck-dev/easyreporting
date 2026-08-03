@@ -82,6 +82,33 @@ export function prettify(name: string): string {
   return name.replace(/[_-]+/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+/**
+ * A name→display-name lookup, built from a dataset's schema columns. Only columns with an
+ * owner-set display name appear; a lookup miss means "no custom name" and callers fall back to
+ * `prettify(name)` (dimensions/columns) or the raw name (measures), preserving prior behavior.
+ */
+export type ColumnLabels = Record<string, string>;
+
+/** Build a {@link ColumnLabels} map from schema columns (only those with a non-empty label). */
+export function buildColumnLabels(columns: { name: string; label?: string }[]): ColumnLabels {
+  const map: ColumnLabels = {};
+  for (const c of columns) {
+    const l = c.label?.trim();
+    if (l) map[c.name] = l;
+  }
+  return map;
+}
+
+/** Display name for a column referenced by name: the owner-set label if any, else prettified. */
+export function columnLabel(name: string, labels?: ColumnLabels): string {
+  return labels?.[name] ?? prettify(name);
+}
+
+/** Display name when you hold the schema column itself: its label if any, else prettified. */
+export function columnLabelFor(col: { name: string; label?: string }): string {
+  return col.label?.trim() || prettify(col.name);
+}
+
 /** Human-friendly word for each aggregation, used in default chart titles. */
 const AGGREGATION_LABEL: Record<Aggregation, string> = {
   [Aggregation.Sum]: 'Total',
@@ -94,9 +121,11 @@ const AGGREGATION_LABEL: Record<Aggregation, string> = {
 
 /** Readable name for a single measure, e.g. "Total revenue", "Number of records", or
  * "Unique customer". Count ignores its column (counts rows); every other aggregation —
- * CountUnique included — names the column it measures. */
-export function metricLabel(aggregation: Aggregation, column: string): string {
-  const measure = aggregation === Aggregation.Count ? 'records' : column;
+ * CountUnique included — names the column it measures. When a `labels` map is supplied and the
+ * column has an owner-set display name, that name is used; otherwise the raw column name (the
+ * prior behavior) is kept, so nothing changes for un-renamed columns. */
+export function metricLabel(aggregation: Aggregation, column: string, labels?: ColumnLabels): string {
+  const measure = aggregation === Aggregation.Count ? 'records' : (labels?.[column] ?? column);
   return `${AGGREGATION_LABEL[aggregation]} ${measure}`;
 }
 
@@ -134,15 +163,15 @@ export function reconcileAggregation(aggregation: Aggregation, type: ColumnType 
   return aggregationsForColumnType(type).includes(aggregation) ? aggregation : Aggregation.CountUnique;
 }
 
-/** Builds a readable default chart title, e.g. "Total revenue by month". */
-export function defaultChartTitle(aggregation: Aggregation, y: string, x: string): string {
-  return `${metricLabel(aggregation, y)} by ${x}`;
+/** Builds a readable default chart title, e.g. "Total revenue by Month". */
+export function defaultChartTitle(aggregation: Aggregation, y: string, x: string, labels?: ColumnLabels): string {
+  return `${metricLabel(aggregation, y, labels)} by ${columnLabel(x, labels)}`;
 }
 
-/** Default title for a combo chart, e.g. "Total revenue & Average margin by month". */
-export function defaultComboTitle(measures: ComboMeasure[], x: string): string {
-  const parts = measures.map((m) => metricLabel(m.aggregation, m.y));
-  return `${parts.join(' & ')} by ${prettify(x)}`;
+/** Default title for a combo chart, e.g. "Total revenue & Average margin by Month". */
+export function defaultComboTitle(measures: ComboMeasure[], x: string, labels?: ColumnLabels): string {
+  const parts = measures.map((m) => metricLabel(m.aggregation, m.y, labels));
+  return `${parts.join(' & ')} by ${columnLabel(x, labels)}`;
 }
 
 /** A configurable snapshot KPI tile. */
@@ -214,17 +243,17 @@ export interface TableConfig {
  * prettified; measures use their custom label or a metric label. Shared by the card header
  * and the CSV export so the file matches the screen.
  */
-export function tableColumnLabels(config: TableConfig): string[] {
-  const dimLabels = config.dimensions.map(prettify);
-  const measureLabels = config.columns.map((c) => c.label?.trim() || metricLabel(c.aggregation, c.y));
+export function tableColumnLabels(config: TableConfig, labels?: ColumnLabels): string[] {
+  const dimLabels = config.dimensions.map((d) => columnLabel(d, labels));
+  const measureLabels = config.columns.map((c) => c.label?.trim() || metricLabel(c.aggregation, c.y, labels));
   return [...dimLabels, ...measureLabels];
 }
 
 /** Default title for a table, e.g. "Total revenue by Receiver State". */
-export function defaultTableTitle(dimensions: string[], columns: TableMeasureConfig[]): string {
-  const dims = dimensions.map(prettify).join(' & ');
+export function defaultTableTitle(dimensions: string[], columns: TableMeasureConfig[], labels?: ColumnLabels): string {
+  const dims = dimensions.map((d) => columnLabel(d, labels)).join(' & ');
   const first = columns[0];
-  const measure = first ? metricLabel(first.aggregation, first.y) : 'Summary';
+  const measure = first ? metricLabel(first.aggregation, first.y, labels) : 'Summary';
   return `${measure} by ${dims}`;
 }
 

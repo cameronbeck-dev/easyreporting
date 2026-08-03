@@ -79,6 +79,13 @@ export interface ColumnSchema {
   isComputed?: boolean;
   /** Owner-configured display format, if any. See ColumnFormat. */
   format?: ColumnFormat;
+  /**
+   * Owner-configured display name shown to end users everywhere the column appears (grid
+   * headers, pickers, filters, chart/table labels, CSV headers) in place of the raw column
+   * name. Absent → surfaces fall back to `prettify(name)`. Stored per column on
+   * `datasets.columnsJson` (and on computed fields); edited in the dataset's Schema section.
+   */
+  label?: string;
 }
 
 export interface Dataset {

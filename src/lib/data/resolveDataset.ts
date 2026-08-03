@@ -66,7 +66,7 @@ export async function getProviderForDataset(
         id: row.id,
         name: row.name,
         tableName: row.tableName!,
-        columnsJson: row.columnsJson as { name: string; type: ColumnType; table?: string; format?: ColumnFormat }[],
+        columnsJson: row.columnsJson as { name: string; type: ColumnType; table?: string; format?: ColumnFormat; label?: string }[],
         joins: (row.joinsJson ?? []) as JoinStep[],
       },
       connection: toDecryptedConnection(connRow),
@@ -81,7 +81,7 @@ export async function getProviderForDataset(
     // valid. Only the JOINED datasets' columns are surfaced QUALIFIED ("alias.column"), and
     // they are computed here from each joined dataset's stored columns (not persisted on this
     // row). buildDuckFrom aliases the base by the dataset id, so bare base refs still resolve.
-    type ColJson = { name: string; type: ColumnType; table?: string; format?: ColumnFormat };
+    type ColJson = { name: string; type: ColumnType; table?: string; format?: ColumnFormat; label?: string };
     const joins = (row.joinsJson ?? []) as JoinStep[];
     let effectiveColumns = (row.columnsJson ?? []) as ColJson[];
     const resolvedJoins = [];
@@ -116,6 +116,7 @@ export async function getProviderForDataset(
           type: c.type,
           table: j.tableName,
           format: c.format,
+          label: c.label,
         })),
       ];
     }

@@ -2,7 +2,7 @@
 
 import type { ColumnSchema } from '@/lib/data/types';
 import type { DatePreset } from './chartTypes';
-import { prettify } from './chartTypes';
+import { columnLabelFor } from './chartTypes';
 import { allDateColumns, resolveDateColumn, presetRange } from './dashboardUtils';
 import FilterList from './FilterList';
 import type { DataExplorerState } from './dataExplorer';
@@ -64,7 +64,7 @@ export default function DataFilterBar({ datasetId, columns, state, onChange }: P
                 aria-label="Date column"
               >
                 {dateCols.map((c) => (
-                  <option key={c.name} value={c.name}>{prettify(c.name)}</option>
+                  <option key={c.name} value={c.name}>{columnLabelFor(c)}</option>
                 ))}
               </select>
             </div>

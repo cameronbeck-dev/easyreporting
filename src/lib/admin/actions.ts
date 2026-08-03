@@ -112,6 +112,19 @@ export async function setColumnFormatAction(_prev: ActionState, formData: FormDa
   });
 }
 
+// --- Column display names (owner admins; repo enforces) ------------------
+
+export async function setColumnLabelAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
+  const datasetId = String(formData.get('datasetId') ?? '');
+  return run(['/admin/formats', `/admin/datasets/${datasetId}/schema`, '/admin/datasets', '/data', '/'], async () => {
+    const admin = await requireAdminAction();
+    const columnName = String(formData.get('columnName') ?? '');
+    // An empty label clears the display name (restores the prettified column name).
+    const label = String(formData.get('label') ?? '');
+    await repo.setColumnLabel(admin, datasetId, columnName, label || null);
+  });
+}
+
 // --- Connections (owner admins) ------------------------------------------
 
 export async function createConnectionAction(_prev: ActionState, formData: FormData): Promise<ActionState> {

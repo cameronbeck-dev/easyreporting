@@ -1,7 +1,7 @@
 import Papa from 'papaparse';
 import type { RowsResult, AggregatedResult, TableResult } from '../types';
-import { prettify, tableColumnLabels } from '@/components/chartTypes';
-import type { ChartConfig, TableConfig } from '@/components/chartTypes';
+import { prettify, columnLabel, columnLabelFor, tableColumnLabels } from '@/components/chartTypes';
+import type { ChartConfig, TableConfig, ColumnLabels } from '@/components/chartTypes';
 
 /**
  * Upper bound on rows returned by a single export. Exports run through the same
@@ -18,13 +18,13 @@ export const MAX_EXPORT_ROWS = 50_000;
  * Column order and visibility mirror exactly what the caller received from the
  * provider — so a company that cannot see a column never sees it in the export
  * either (the security guarantee is upstream, in `AccessControlledProvider`; this
- * function only formats what it is given). Headers use the same human-friendly
- * `prettify` labels shown in the data table, so the file matches the screen.
- * Nulls/undefined become empty cells; `papaparse` handles quoting of any value
- * containing commas, quotes, or newlines.
+ * function only formats what it is given). Headers use the same display names
+ * shown in the data table (an owner-set label, else the prettified column name),
+ * so the file matches the screen. Nulls/undefined become empty cells; `papaparse`
+ * handles quoting of any value containing commas, quotes, or newlines.
  */
 export function rowsToCsv(result: RowsResult): string {
-  const fields = result.columns.map((c) => prettify(c.name));
+  const fields = result.columns.map((c) => columnLabelFor(c));
   const data = result.rows.map((row) =>
     result.columns.map((c) => {
       const v = row[c.name];
@@ -41,11 +41,12 @@ export function rowsToCsv(result: RowsResult): string {
  * additional access check is needed — the data already passed through
  * `AccessControlledProvider` when the chart fetched it from `/api/query`.
  *
- * Headers reuse the same `prettify` labels as the chart legend/axes; the layout
- * is series-per-column, so it already handles the multi-series case for free.
+ * The X header reuses the column's display name (owner-set label, else prettified);
+ * series headers keep their prettified metric/category names. The layout is
+ * series-per-column, so it already handles the multi-series case for free.
  */
-export function aggregatedToCsv(config: ChartConfig, result: AggregatedResult): string {
-  const fields = [prettify(config.x), ...result.series.map((s) => prettify(s.name))];
+export function aggregatedToCsv(config: ChartConfig, result: AggregatedResult, labels?: ColumnLabels): string {
+  const fields = [columnLabel(config.x, labels), ...result.series.map((s) => prettify(s.name))];
   const data = result.x.map((xValue, i) => [
     xValue,
     ...result.series.map((s) => {
@@ -62,8 +63,8 @@ export function aggregatedToCsv(config: ChartConfig, result: AggregatedResult): 
  * come straight from the provider's TableResult, which already passed through
  * AccessControlledProvider — so no additional access check is needed here.
  */
-export function tableToCsv(config: TableConfig, result: TableResult): string {
-  const fields = tableColumnLabels(config);
+export function tableToCsv(config: TableConfig, result: TableResult, labels?: ColumnLabels): string {
+  const fields = tableColumnLabels(config, labels);
   const data = result.rows.map((row) => row.map((v) => (v === null || v === undefined ? '' : v)));
   return Papa.unparse({ fields, data });
 }

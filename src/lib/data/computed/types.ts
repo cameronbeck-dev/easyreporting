@@ -8,6 +8,8 @@ export interface ComputedField {
   dependencies: string[];
   /** Owner-configured display format, if any (computed fields are always numeric). */
   format?: ColumnFormat;
+  /** Owner-configured display name shown to end users in place of the field name. See ColumnSchema.label. */
+  label?: string;
 }
 
 /** Aggregate functions usable inside a computed-field formula. */

@@ -392,27 +392,32 @@ async function upsertRow(args: {
   id: string;
   displayName: string;
   tenantColumn: string;
-  columnsJson: (DatasetColumn & { format?: ColumnFormat })[];
+  columnsJson: (DatasetColumn & { format?: ColumnFormat; label?: string })[];
 }): Promise<void> {
   const parquetRel = finalRel(args.id);
 
-  // Preserve owner-configured per-column display formats across re-import: columnsJson is rebuilt
-  // from the file's schema each time, so carry a saved format over when the column still exists
-  // with the same type (a type change invalidates a type-specific format).
+  // Preserve owner-configured per-column display settings across re-import: columnsJson is rebuilt
+  // from the file's schema each time, so carry saved settings over for a column that still exists.
+  // A format is type-specific, so it only survives when the type is unchanged; a display-name
+  // (label) is type-agnostic, so it survives regardless of a type change.
   const [existing] = await db
     .select({ columnsJson: datasets.columnsJson })
     .from(datasets)
     .where(eq(datasets.id, args.id))
     .limit(1);
-  const priorFormats = new Map<string, { type: ColumnType; format: ColumnFormat }>();
+  const prior = new Map<string, { type: ColumnType; format?: ColumnFormat; label?: string }>();
   if (existing) {
-    for (const c of existing.columnsJson as { name: string; type: ColumnType; format?: ColumnFormat }[]) {
-      if (c.format) priorFormats.set(c.name, { type: c.type, format: c.format });
+    for (const c of existing.columnsJson as { name: string; type: ColumnType; format?: ColumnFormat; label?: string }[]) {
+      if (c.format || c.label) prior.set(c.name, { type: c.type, format: c.format, label: c.label });
     }
   }
   const columnsJson = args.columnsJson.map((c) => {
-    const prior = priorFormats.get(c.name);
-    return prior && prior.type === c.type ? { ...c, format: prior.format } : c;
+    const p = prior.get(c.name);
+    if (!p) return c;
+    const next = { ...c };
+    if (p.label) next.label = p.label;
+    if (p.format && p.type === c.type) next.format = p.format;
+    return next;
   });
 
   await db

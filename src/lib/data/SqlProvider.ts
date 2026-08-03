@@ -28,7 +28,7 @@ interface DatasetRow {
   id: string;
   name: string;
   tableName: string;
-  columnsJson: { name: string; type: import('./types').ColumnType; table?: string; format?: ColumnFormat }[];
+  columnsJson: { name: string; type: import('./types').ColumnType; table?: string; format?: ColumnFormat; label?: string }[];
   joins: JoinStep[];
 }
 
@@ -64,7 +64,7 @@ export class SqlProvider implements DataProvider {
   }
 
   private getColumns(): ColumnSchema[] {
-    return this.dataset.columnsJson.map((c) => ({ name: c.name, type: c.type, format: c.format }));
+    return this.dataset.columnsJson.map((c) => ({ name: c.name, type: c.type, format: c.format, label: c.label }));
   }
 
   private isMultiTable(): boolean {

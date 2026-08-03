@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { SummaryMetric, SummaryResult } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import type { TableConfig, TableMeasureConfig, TableSort } from './chartTypes';
-import { defaultTableTitle, prettify, aggregationOptionLabel, aggregationsForColumnType, reconcileAggregation, metricLabel } from './chartTypes';
+import { defaultTableTitle, columnLabel, columnLabelFor, buildColumnLabels, aggregationOptionLabel, aggregationsForColumnType, reconcileAggregation, metricLabel } from './chartTypes';
 import { inputClass } from './ui/forms';
 import { postJson } from '@/lib/api/client';
 import { useSchema } from './useSchema';
@@ -63,6 +63,7 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
   // Every column is a valid measure; the per-row aggregation select adapts to the chosen column's
   // type (see aggregationsForColumnType), so no column filtering is needed here.
   const measureColumns = columns;
+  const labels = buildColumnLabels(columns);
 
   // Seed the default breakdown + measure once columns first arrive (new table only).
   const didInitRef = useRef(false);
@@ -135,7 +136,7 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
     onSubmit({
       id: initial?.id ?? `table-${Date.now()}`,
       datasetId,
-      title: title || defaultTableTitle(dimensions, cols),
+      title: title || defaultTableTitle(dimensions, cols, labels),
       dimensions,
       columns: cols,
       limit: typeof limit === 'number' && limit > 0 ? limit : undefined,
@@ -197,7 +198,7 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
               <label className="mb-1 block text-sm font-medium text-foreground">Break down by</label>
               <select value={dim1} onChange={(e) => setDim1(e.target.value)} className={fieldClass}>
                 {dimColumns.map((c) => (
-                  <option key={c.name} value={c.name}>{prettify(c.name)}</option>
+                  <option key={c.name} value={c.name}>{columnLabelFor(c)}</option>
                 ))}
               </select>
             </div>
@@ -207,11 +208,11 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
               <select value={dim2} onChange={(e) => setDim2(e.target.value)} className={fieldClass}>
                 <option value="">Don&apos;t split further</option>
                 {dim2Columns.map((c) => (
-                  <option key={c.name} value={c.name}>{prettify(c.name)}</option>
+                  <option key={c.name} value={c.name}>{columnLabelFor(c)}</option>
                 ))}
               </select>
               <p className="mt-1 text-xs text-foreground-muted">
-                Adds a second level — rows group under each {dim1 ? prettify(dim1) : 'category'} value.
+                Adds a second level — rows group under each {dim1 ? columnLabel(dim1, labels) : 'category'} value.
               </p>
             </div>
 
@@ -250,7 +251,7 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
                           className={`${fieldClass} disabled:bg-surface-muted disabled:text-foreground-muted`}
                         >
                           {measureColumns.map((c) => (
-                            <option key={c.name} value={c.name}>{prettify(c.name)}</option>
+                            <option key={c.name} value={c.name}>{columnLabelFor(c)}</option>
                           ))}
                         </select>
                       </div>
@@ -314,14 +315,14 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
                     className={inputClass}
                   >
                     {measures.map((m, i) => (
-                      <option key={i} value={i}>{metricLabel(m.aggregation, m.y)}</option>
+                      <option key={i} value={i}>{metricLabel(m.aggregation, m.y, labels)}</option>
                     ))}
                   </select>
                 </div>
               )}
               <p className="mt-1 text-xs text-foreground-muted">
-                Keep only the highest {dim2 ? `${dim1 ? prettify(dim1) : 'primary'} groups` : 'rows'} by{' '}
-                {rankMeasure ? metricLabel(rankMeasure.aggregation, rankMeasure.y) : 'the first measure'}.
+                Keep only the highest {dim2 ? `${dim1 ? columnLabel(dim1, labels) : 'primary'} groups` : 'rows'} by{' '}
+                {rankMeasure ? metricLabel(rankMeasure.aggregation, rankMeasure.y, labels) : 'the first measure'}.
               </p>
             </div>
 

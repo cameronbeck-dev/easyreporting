@@ -7,7 +7,8 @@ import type { ChartConfig, ChartType, ComboMeasure, AxisSide } from './chartType
 import {
   defaultChartTitle,
   defaultComboTitle,
-  prettify,
+  columnLabelFor,
+  buildColumnLabels,
   aggregationOptionLabel,
   aggregationsForColumnType,
   reconcileAggregation,
@@ -61,6 +62,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
   const [breakdown, setBreakdown] = useState(initial?.breakdown ?? '');
   const [breakdownLimit, setBreakdownLimit] = useState<number | ''>(initial?.breakdownLimit ?? '');
 
+  const labels = buildColumnLabels(columns);
   const isComputedCol = (name: string) => columns.find((c) => c.name === name)?.isComputed ?? false;
 
   const xType = columns.find((c) => c.name === xCol)?.type;
@@ -111,7 +113,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
       onSubmit({
         ...shared,
         type: 'combo',
-        title: title || defaultComboTitle(measures, xCol),
+        title: title || defaultComboTitle(measures, xCol, labels),
         // Mirror the bar measure onto the legacy single-measure fields (accent color, etc.).
         y: barY,
         aggregation: barAgg,
@@ -123,7 +125,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
     onSubmit({
       ...shared,
       type: chartType,
-      title: title || defaultChartTitle(aggregation, yCol, xCol),
+      title: title || defaultChartTitle(aggregation, yCol, xCol, labels),
       y: yCol,
       aggregation,
       breakdown: canBreakdown && breakdown ? breakdown : undefined,
@@ -179,7 +181,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
               className={`${fieldClass} disabled:bg-surface-muted disabled:text-foreground-muted`}
             >
               {yColumns.map((c) => (
-                <option key={c.name} value={c.name}>{prettify(c.name)}</option>
+                <option key={c.name} value={c.name}>{columnLabelFor(c)}</option>
               ))}
             </select>
           </div>
@@ -251,7 +253,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
               <label className="mb-1 block text-sm font-medium text-foreground">X Axis (Group By)</label>
               <select value={xCol} onChange={(e) => setXCol(e.target.value)} className={fieldClass}>
                 {xColumns.map((c) => (
-                  <option key={c.name} value={c.name}>{prettify(c.name)}</option>
+                  <option key={c.name} value={c.name}>{columnLabelFor(c)}</option>
                 ))}
               </select>
             </div>
@@ -342,7 +344,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
                     className={`${fieldClass} disabled:bg-surface-muted disabled:text-foreground-muted`}
                   >
                     {yColumns.map((c) => (
-                      <option key={c.name} value={c.name}>{prettify(c.name)}</option>
+                      <option key={c.name} value={c.name}>{columnLabelFor(c)}</option>
                     ))}
                   </select>
                   {isCount && (
@@ -360,7 +362,7 @@ export default function AddChartDialog({ datasetId, initial, onSubmit, onClose }
                     >
                       <option value="">Don&apos;t split</option>
                       {breakdownColumns.map((c) => (
-                        <option key={c.name} value={c.name}>{prettify(c.name)}</option>
+                        <option key={c.name} value={c.name}>{columnLabelFor(c)}</option>
                       ))}
                     </select>
                     <p className="mt-1 text-xs text-foreground-muted">

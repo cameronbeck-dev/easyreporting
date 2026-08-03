@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import type { ColumnSchema, Filter, SummaryResult, SummaryMetric } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import type { TileConfig } from './chartTypes';
-import { metricLabel, prettify, aggregationOptionLabel, aggregationsForColumnType, reconcileAggregation } from './chartTypes';
+import { metricLabel, columnLabelFor, buildColumnLabels, aggregationOptionLabel, aggregationsForColumnType, reconcileAggregation } from './chartTypes';
 import { fieldColor } from './fieldColors';
 import { formatValue } from './formatNumber';
 import { measureFormatColumn } from './columnFormat';
@@ -22,10 +22,10 @@ interface Props {
 
 const COUNT_COLUMN = '__count__';
 
-function tileLabel(t: TileConfig, isComputed: boolean): string {
+function tileLabel(t: TileConfig, col: ColumnSchema | undefined, labels: Record<string, string>): string {
   // Computed fields self-aggregate via their formula, so an aggregation word ("Total…")
-  // would be misleading — show the field name alone.
-  return isComputed ? prettify(t.column) : metricLabel(t.aggregation, t.column);
+  // would be misleading — show the field's display name alone.
+  return col?.isComputed ? columnLabelFor(col) : metricLabel(t.aggregation, t.column, labels);
 }
 
 function tileColorKey(t: TileConfig): string {
@@ -57,6 +57,7 @@ export default function KpiSnapshot({
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const numericCols = columns.filter((c) => c.type === 'number');
+  const labels = buildColumnLabels(columns);
   const filtersKey = JSON.stringify(globalFilters);
   const compareKey = JSON.stringify(compareFilters);
   const tilesKey = JSON.stringify(tiles.map(toMetric));
@@ -149,8 +150,9 @@ export default function KpiSnapshot({
         {tiles.map((t, i) => {
         const color = fieldColor(tileColorKey(t));
         const editing = editingId === t.id;
-        const tileComputed = columns.find((c) => c.name === t.column)?.isComputed ?? false;
-        const tileColType = columns.find((c) => c.name === t.column)?.type;
+        const tileCol = columns.find((c) => c.name === t.column);
+        const tileComputed = tileCol?.isComputed ?? false;
+        const tileColType = tileCol?.type;
         return (
           <div
             key={t.id}
@@ -185,7 +187,7 @@ export default function KpiSnapshot({
                   className="rounded-control border border-border bg-surface px-2 py-1 text-sm text-foreground disabled:bg-surface-muted disabled:text-foreground-muted focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 >
                   {columns.map((c) => (
-                    <option key={c.name} value={c.name}>{prettify(c.name)}</option>
+                    <option key={c.name} value={c.name}>{columnLabelFor(c)}</option>
                   ))}
                 </select>
                 {tileComputed && (
@@ -218,7 +220,7 @@ export default function KpiSnapshot({
                 <div className="mb-3 flex items-center gap-2">
                   <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} aria-hidden />
                   <span className="text-xs font-semibold uppercase tracking-wide text-foreground-muted">
-                    {tileLabel(t, tileComputed)}
+                    {tileLabel(t, tileCol, labels)}
                   </span>
                 </div>
                 <div className="flex items-baseline gap-2">

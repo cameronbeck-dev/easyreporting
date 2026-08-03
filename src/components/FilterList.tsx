@@ -2,8 +2,8 @@
 
 import { useState } from 'react';
 import type { ColumnSchema } from '@/lib/data/types';
-import type { DashFilter } from './chartTypes';
-import { prettify } from './chartTypes';
+import type { DashFilter, ColumnLabels } from './chartTypes';
+import { columnLabel, columnLabelFor, buildColumnLabels } from './chartTypes';
 import ValueMultiSelect from './ValueMultiSelect';
 
 // The additive-filter editor (include/exclude value sets, numeric ranges), shared by the
@@ -15,9 +15,10 @@ const pillActive = 'rounded-full bg-primary px-3 py-1 text-xs font-semibold text
 const pillIdle =
   'rounded-full px-3 py-1 text-xs font-medium text-foreground-muted transition-colors hover:text-foreground';
 
-/** Short human summary of a filter for a collapsed chip / row label. */
-export function filterSummary(f: DashFilter): string {
-  const col = prettify(f.column);
+/** Short human summary of a filter for a collapsed chip / row label. Uses the column's owner-set
+ *  display name when a `labels` map is provided, otherwise the prettified column name. */
+export function filterSummary(f: DashFilter, labels?: ColumnLabels): string {
+  const col = columnLabel(f.column, labels);
   if (f.op === 'range') {
     const { min, max } = f;
     if (min != null && max != null) return `${col}: ${min}–${max}`;
@@ -41,6 +42,7 @@ interface Props {
 
 export default function FilterList({ datasetId, columns, filters, onChange }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
+  const labels = buildColumnLabels(columns);
 
   // Columns you can add filters on: real (non-computed) dimensions and measures. Dates are
   // driven by the timeline/date-range control, so they're excluded here.
@@ -91,7 +93,7 @@ export default function FilterList({ datasetId, columns, filters, onChange }: Pr
             key={f.id}
             className="flex items-center justify-between gap-3 rounded-control border border-border bg-background px-3 py-2"
           >
-            <span className="text-sm text-foreground">{f.column ? filterSummary(f) : 'New filter'}</span>
+            <span className="text-sm text-foreground">{f.column ? filterSummary(f, labels) : 'New filter'}</span>
             <div className="flex items-center gap-1">
               <button
                 onClick={() => setEditingId(f.id)}
@@ -164,7 +166,7 @@ function FilterEditor({
         >
           <option value="">Choose column…</option>
           {filterableCols.map((c) => (
-            <option key={c.name} value={c.name}>{prettify(c.name)}</option>
+            <option key={c.name} value={c.name}>{columnLabelFor(c)}</option>
           ))}
         </select>
 

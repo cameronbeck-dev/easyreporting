@@ -307,16 +307,17 @@ export async function listAllDatasetsForAdmin(admin: AdminContext): Promise<{ id
 // query path (schema, rows, aggregates) reads the format from one place.
 // ---------------------------------------------------------------------------
 
-type StoredColumn = { name: string; type: ColumnType; table?: string; format?: ColumnFormat };
+type StoredColumn = { name: string; type: ColumnType; table?: string; format?: ColumnFormat; label?: string };
 
 /**
- * A dataset's columns (source + computed) with their current display format — powers the Formats
- * admin page. Computed fields are flagged so the UI can label them; they are always numeric.
+ * A dataset's columns (source + computed) with their current display format + display name —
+ * powers the Formats admin page and the Schema section's rename editor. Computed fields are
+ * flagged so the UI can label them; they are always numeric.
  */
 export async function getDatasetColumnsForAdmin(
   admin: AdminContext,
   datasetId: string,
-): Promise<{ name: string; type: ColumnType; format?: ColumnFormat; isComputed?: boolean }[]> {
+): Promise<{ name: string; type: ColumnType; format?: ColumnFormat; label?: string; isComputed?: boolean }[]> {
   assertOwner(admin);
   const [row] = await db
     .select({ columnsJson: datasets.columnsJson, computedFieldsJson: datasets.computedFieldsJson })
@@ -325,14 +326,69 @@ export async function getDatasetColumnsForAdmin(
     .limit(1);
   if (!row) throw new ForbiddenError('Dataset not found.');
 
-  const source = (row.columnsJson as StoredColumn[]).map((c) => ({ name: c.name, type: c.type, format: c.format }));
+  const source = (row.columnsJson as StoredColumn[]).map((c) => ({ name: c.name, type: c.type, format: c.format, label: c.label }));
   const computed = ((row.computedFieldsJson ?? []) as ComputedField[]).map((f) => ({
     name: f.name,
     type: 'number' as ColumnType,
     format: f.format,
+    label: f.label,
     isComputed: true,
   }));
   return [...source, ...computed];
+}
+
+/**
+ * Set (or clear, when `label` is empty/null) one column's display name — the friendly label end
+ * users see in place of the raw column name. Mirrors setColumnFormat: the target may be a source
+ * column (stored on columnsJson) or a computed field (stored on computedFieldsJson). Unlike a
+ * format, a label is type-agnostic, so it applies to columns of any type.
+ */
+export async function setColumnLabel(
+  admin: AdminContext,
+  datasetId: string,
+  columnName: string,
+  label: string | null,
+): Promise<void> {
+  assertOwner(admin);
+  const [row] = await db.select().from(datasets).where(eq(datasets.id, datasetId)).limit(1);
+  if (!row) throw new ForbiddenError('Dataset not found.');
+
+  const clean = label?.trim() || undefined;
+  const cols = row.columnsJson as StoredColumn[];
+  const sourceTarget = cols.find((c) => c.name === columnName);
+
+  if (sourceTarget) {
+    const next = cols.map((c) => {
+      if (c.name !== columnName) return c;
+      // Rebuild the entry without any prior label, re-attaching only a non-empty one.
+      const rebuilt: StoredColumn = { name: c.name, type: c.type };
+      if (c.table !== undefined) rebuilt.table = c.table;
+      if (c.format !== undefined) rebuilt.format = c.format;
+      if (clean) rebuilt.label = clean;
+      return rebuilt;
+    });
+    await db.update(datasets).set({ columnsJson: next }).where(eq(datasets.id, datasetId));
+    return;
+  }
+
+  // Fall back to computed fields, which live on their own JSON column.
+  const computed = (row.computedFieldsJson ?? []) as ComputedField[];
+  const computedTarget = computed.find((f) => f.name === columnName);
+  if (!computedTarget) throw new ForbiddenError('Unknown column.');
+
+  const nextComputed: ComputedField[] = computed.map((f) => {
+    if (f.name !== columnName) return f;
+    const rebuilt: ComputedField = {
+      name: f.name,
+      type: f.type,
+      expression: f.expression,
+      dependencies: f.dependencies,
+    };
+    if (f.format !== undefined) rebuilt.format = f.format;
+    if (clean) rebuilt.label = clean;
+    return rebuilt;
+  });
+  await db.update(datasets).set({ computedFieldsJson: nextComputed }).where(eq(datasets.id, datasetId));
 }
 
 /**
@@ -358,8 +414,10 @@ export async function setColumnFormat(
     const next = cols.map((c) => {
       if (c.name !== columnName) return c;
       // Rebuild the entry without any prior format, re-attaching only when a cleaned one remains.
+      // The display name (label) is independent config, so carry it across unchanged.
       const rebuilt: StoredColumn = { name: c.name, type: c.type };
       if (c.table !== undefined) rebuilt.table = c.table;
+      if (c.label !== undefined) rebuilt.label = c.label;
       if (cleaned) rebuilt.format = cleaned;
       return rebuilt;
     });
@@ -375,13 +433,15 @@ export async function setColumnFormat(
   const cleaned = format ? sanitizeColumnFormat(format, 'number') : undefined;
   const nextComputed: ComputedField[] = computed.map((f) => {
     if (f.name !== columnName) return f;
-    // Rebuild without any prior format, re-attaching only a cleaned one.
+    // Rebuild without any prior format, re-attaching only a cleaned one. The display name
+    // (label) is independent config, so carry it across unchanged.
     const rebuilt: ComputedField = {
       name: f.name,
       type: f.type,
       expression: f.expression,
       dependencies: f.dependencies,
     };
+    if (f.label !== undefined) rebuilt.label = f.label;
     if (cleaned) rebuilt.format = cleaned;
     return rebuilt;
   });

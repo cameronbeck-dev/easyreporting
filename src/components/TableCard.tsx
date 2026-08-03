@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { TableConfig, TableSort } from './chartTypes';
-import { tableColumnLabels } from './chartTypes';
+import { tableColumnLabels, buildColumnLabels } from './chartTypes';
 import type { Filter, TableResult, SummaryResult, SummaryMetric, ColumnSchema } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import { fieldColor } from './fieldColors';
@@ -108,7 +108,10 @@ export default function TableCard({
   }, [configKey, filtersKey]);
 
   const dimCount = config.dimensions.length;
-  const labels = tableColumnLabels(config);
+  // Owner-set column display names, applied to dimension headers (and measure headers that don't
+  // have a manual per-measure label). Shared with the CSV export so the file matches the screen.
+  const columnLabels = buildColumnLabels(schema.columns);
+  const labels = tableColumnLabels(config, columnLabels);
 
   // Per-output-column format metadata. Measure columns resolve their source column's format
   // (currency stays currency); compaction is per value (see formatValue), so no column-wide
@@ -152,7 +155,7 @@ export default function TableCard({
 
   const handleExport = () => {
     if (!result) return;
-    const csv = tableToCsv(config, result);
+    const csv = tableToCsv(config, result, columnLabels);
     const name = (config.title || 'table').replace(/[^a-zA-Z0-9._-]+/g, '_') || 'table';
     downloadText(`${name}.csv`, csv);
   };

@@ -50,7 +50,7 @@ interface FileDataset {
   parquetPath: string;
   // Multi-table (joined) file datasets store qualified names ("alias.column") + a `table`
   // (the alias); single-table datasets store bare names and no `table`.
-  columnsJson: { name: string; type: ColumnType; table?: string; format?: ColumnFormat }[];
+  columnsJson: { name: string; type: ColumnType; table?: string; format?: ColumnFormat; label?: string }[];
   /** The tenant column (qualified for joined datasets). Omitted from multi-table row projection. */
   tenantColumn?: string;
   /** Present only for joined datasets; resolveDataset resolves each join's Parquet path. */
@@ -71,7 +71,7 @@ export class DuckDbProvider implements DataProvider {
   }
 
   private getColumns(): ColumnSchema[] {
-    return this.dataset.columnsJson.map((c) => ({ name: c.name, type: c.type, format: c.format }));
+    return this.dataset.columnsJson.map((c) => ({ name: c.name, type: c.type, format: c.format, label: c.label }));
   }
 
   // The FROM source. Single-table (joins=[]) emits the exact legacy `FROM read_parquet(<lit>)`.

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import type { ColumnSchema } from '@/lib/data/types';
-import { prettify } from './chartTypes';
+import { columnLabelFor } from './chartTypes';
 import { formatValue } from './formatNumber';
 
 interface Props {
@@ -54,7 +54,7 @@ export default function DataTable({ columns, rows, total, hasMore, loadingMore, 
                   key={col.name}
                   className={`sticky top-0 z-10 whitespace-nowrap border-b border-border bg-surface-muted px-3 py-2 font-medium text-foreground ${isNumeric(col.type) ? 'text-right' : ''}`}
                 >
-                  {prettify(col.name)}
+                  {columnLabelFor(col)}
                   <span className="ml-1 text-xs font-normal text-foreground-muted">({col.type})</span>
                 </th>
               ))}

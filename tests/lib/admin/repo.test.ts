@@ -50,7 +50,7 @@ vi.mock('@/lib/db/client', async () => {
 });
 
 // Import admin functions AFTER all mocks are in place.
-const { createDataset, setColumnFormat, getDatasetColumnsForAdmin } = await import('@/lib/admin/repo');
+const { createDataset, setColumnFormat, setColumnLabel, getDatasetColumnsForAdmin } = await import('@/lib/admin/repo');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -439,5 +439,56 @@ describe('setColumnFormat / getDatasetColumnsForAdmin', () => {
     await expect(
       setColumnFormat(PLATFORM_ADMIN, 'sales', 'nope', { decimals: 0 }),
     ).rejects.toThrow();
+  });
+});
+
+// ── per-column display names (labels) ─────────────────────────────────────────
+
+describe('setColumnLabel / getDatasetColumnsForAdmin', () => {
+  beforeEach(async () => {
+    await insertFileDataset(testDb);
+  });
+
+  it('sets a source column display name and reads it back', async () => {
+    await setColumnLabel(PLATFORM_ADMIN, 'sales', 'revenue', 'Total Sales (AUD)');
+    const cols = await getDatasetColumnsForAdmin(PLATFORM_ADMIN, 'sales');
+    expect(cols.find((c) => c.name === 'revenue')?.label).toBe('Total Sales (AUD)');
+  });
+
+  it('trims whitespace and clears when passed an empty/blank value', async () => {
+    await setColumnLabel(PLATFORM_ADMIN, 'sales', 'city', '  Branch  ');
+    expect((await getDatasetColumnsForAdmin(PLATFORM_ADMIN, 'sales')).find((c) => c.name === 'city')?.label).toBe(
+      'Branch',
+    );
+    await setColumnLabel(PLATFORM_ADMIN, 'sales', 'city', '   ');
+    expect(
+      (await getDatasetColumnsForAdmin(PLATFORM_ADMIN, 'sales')).find((c) => c.name === 'city')?.label,
+    ).toBeUndefined();
+  });
+
+  it('labels a computed field (persisted to computedFieldsJson)', async () => {
+    await setColumnLabel(PLATFORM_ADMIN, 'sales', 'margin', 'Gross Margin');
+    const [row] = await testDb.select().from(datasets).where(eq(datasets.id, 'sales'));
+    const computed = row.computedFieldsJson as { name: string; label?: string }[];
+    expect(computed.find((f) => f.name === 'margin')?.label).toBe('Gross Margin');
+  });
+
+  it('keeps the display name and format independent of one another', async () => {
+    // Setting a label must not wipe an existing format, and vice versa.
+    await setColumnFormat(PLATFORM_ADMIN, 'sales', 'revenue', { style: 'currency', currencyCode: 'AUD' });
+    await setColumnLabel(PLATFORM_ADMIN, 'sales', 'revenue', 'Revenue');
+    let revenue = (await getDatasetColumnsForAdmin(PLATFORM_ADMIN, 'sales')).find((c) => c.name === 'revenue');
+    expect(revenue?.label).toBe('Revenue');
+    expect(revenue?.format).toEqual({ style: 'currency', currencyCode: 'AUD' });
+
+    await setColumnFormat(PLATFORM_ADMIN, 'sales', 'revenue', { decimals: 0 });
+    revenue = (await getDatasetColumnsForAdmin(PLATFORM_ADMIN, 'sales')).find((c) => c.name === 'revenue');
+    expect(revenue?.label).toBe('Revenue'); // label survived a format change
+    expect(revenue?.format).toEqual({ decimals: 0 });
+  });
+
+  it('rejects a non-owner admin and an unknown column', async () => {
+    await expect(setColumnLabel(COMPANY_ADMIN, 'sales', 'revenue', 'X')).rejects.toThrow();
+    await expect(setColumnLabel(PLATFORM_ADMIN, 'sales', 'nope', 'X')).rejects.toThrow();
   });
 });

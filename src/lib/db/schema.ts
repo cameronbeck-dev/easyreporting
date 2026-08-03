@@ -102,7 +102,7 @@ export const datasets = sqliteTable('datasets', {
   role: text('role').notNull().default('fact'),
   columnsJson: text('columns_json', { mode: 'json' })
     .notNull()
-    .$type<{ name: string; type: ColumnType; table?: string; format?: ColumnFormat }[]>(),
+    .$type<{ name: string; type: ColumnType; table?: string; format?: ColumnFormat; label?: string }[]>(),
   joinsJson: text('joins_json', { mode: 'json' })
     .$type<JoinStep[]>(),
   computedFieldsJson: text('computed_fields_json', { mode: 'json' })
