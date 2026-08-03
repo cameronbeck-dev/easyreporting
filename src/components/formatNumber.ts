@@ -3,6 +3,7 @@
 // em dash for non-finite values (e.g. a ratio that divided by zero).
 
 import type { ColumnFormat, ColumnSchema } from '@/lib/data/types';
+import { resolveCurrencyCode } from '@/lib/data/formatSpec';
 
 export function formatMetric(v: number): string {
   if (!isFinite(v)) return '—';
@@ -115,18 +116,23 @@ function formatNumberWith(n: number, fmt: ColumnFormat, scale?: Scale): string {
   const opts: Intl.NumberFormatOptions = {
     useGrouping: fmt.thousands ?? true,
   };
-  // Only treat as currency when the code is a valid ISO 4217 shape — otherwise Intl throws on a
-  // half-typed code (e.g. "A" while an admin is still typing "AUD"). Fall back to a plain number.
-  if (style === 'currency' && fmt.currencyCode && /^[A-Za-z]{3}$/.test(fmt.currencyCode)) {
+  // A currency column always renders as currency. An unusable code (empty, or half-typed like "A"
+  // while an admin types "AUD") resolves to the default rather than degrading to a bare number,
+  // which used to make a saved "Currency" style look like it had no effect. Intl never sees an
+  // invalid code, so it still cannot throw.
+  if (style === 'currency') {
     opts.style = 'currency';
-    opts.currency = fmt.currencyCode.toUpperCase();
+    opts.currency = resolveCurrencyCode(fmt.currencyCode);
   } else if (style === 'percent') {
     opts.style = 'percent';
   }
   if (fmt.decimals != null) {
     const d = clampDecimals(fmt.decimals);
+    // Decimals are meant for the full number, but they apply after dividing by the scale, so
+    // `decimals: 0` rendered 1,234,567 as "1M" instead of "1.2M". Once compacted, allow one
+    // fraction digit; the floor stays at `d`, so a column asking for more precision is unaffected.
     opts.minimumFractionDigits = d;
-    opts.maximumFractionDigits = d;
+    opts.maximumFractionDigits = compacted ? Math.max(d, 1) : d;
   } else {
     // No explicit decimals: 1 for compacted values (1.7K), up to 2 otherwise.
     opts.maximumFractionDigits = compacted ? 1 : 2;

@@ -7,6 +7,7 @@
 import { revalidatePath } from 'next/cache';
 import { requireAdminAction, ForbiddenError } from '../auth/requireAdmin';
 import { toSslMode, toDriver } from '../data/sql/pool';
+import type { ColumnFormat } from '../data/types';
 import * as repo from './repo';
 
 export interface ActionState {
@@ -18,6 +19,8 @@ export interface ActionState {
   message?: string;
   /** Connection/table/column lists returned by introspect actions. */
   data?: unknown;
+  /** The column format as actually persisted (null when cleared) — see setColumnFormatAction. */
+  savedFormat?: ColumnFormat | null;
 }
 
 function bool(v: FormDataEntryValue | null): boolean {
@@ -94,9 +97,13 @@ export async function setTenantColumnsAction(_prev: ActionState, formData: FormD
 // --- Column formats (owner admins; repo enforces + sanitizes) ------------
 
 export async function setColumnFormatAction(_prev: ActionState, formData: FormData): Promise<ActionState> {
-  return run(['/admin/formats'], async () => {
+  const datasetId = String(formData.get('datasetId') ?? '');
+  // A format drives every display surface, so all of them have to be revalidated — not just the
+  // editor. Mirrors setColumnLabelAction; previously only '/admin/formats' was listed, leaving the
+  // dataset-scoped editor, the data grid and the dashboard serving pre-change output.
+  const paths = ['/admin/formats', `/admin/datasets/${datasetId}/formats`, '/data', '/'];
+  return run(paths, async () => {
     const admin = await requireAdminAction();
-    const datasetId = String(formData.get('datasetId') ?? '');
     const columnName = String(formData.get('columnName') ?? '');
     // The format is sent as a JSON blob (nested object). Empty/"null" clears the column's format.
     const raw = String(formData.get('format') ?? '');
@@ -108,7 +115,14 @@ export async function setColumnFormatAction(_prev: ActionState, formData: FormDa
         return { error: 'Invalid format payload.' };
       }
     }
-    await repo.setColumnFormat(admin, datasetId, columnName, parsed as Parameters<typeof repo.setColumnFormat>[3]);
+    const savedFormat = await repo.setColumnFormat(
+      admin,
+      datasetId,
+      columnName,
+      parsed as Parameters<typeof repo.setColumnFormat>[3],
+    );
+    // Hand back what was stored so the editor can show it rather than its optimistic draft.
+    return { savedFormat: savedFormat ?? null };
   });
 }
 

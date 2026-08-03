@@ -28,8 +28,27 @@ export const DATE_PRESET_LABELS: Record<(typeof DATE_PRESETS)[number], string> =
   MonYYYY: 'Month YYYY — January 2024',
 };
 
-/** Free-text prefix/suffix length cap. */
-const MAX_AFFIX = 16;
+/** Free-text prefix/suffix length cap. The editor caps its inputs to match. */
+export const MAX_AFFIX = 16;
+
+/**
+ * Currency used when `style: 'currency'` carries no usable code. A currency column with no code
+ * cannot be rendered as currency at all, so it silently degraded to a plain number — defaulting
+ * here (and in resolveCurrencyCode) keeps "Currency" meaning currency everywhere.
+ */
+export const DEFAULT_CURRENCY_CODE = 'AUD';
+
+/** A code Intl will accept (ISO 4217 shape), upper-cased — or undefined if unusable. */
+export function normalizeCurrencyCode(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return /^[A-Za-z]{3}$/.test(trimmed) ? trimmed.toUpperCase() : undefined;
+}
+
+/** The code to render with: the column's own when usable, else the default. Never throws on Intl. */
+export function resolveCurrencyCode(value: unknown): string {
+  return normalizeCurrencyCode(value) ?? DEFAULT_CURRENCY_CODE;
+}
 
 /**
  * Whitelist and clamp a client-supplied format to what the column's type supports, so tampered or
@@ -56,9 +75,12 @@ export function sanitizeColumnFormat(input: unknown, type: ColumnType): ColumnFo
     if (f.compactThreshold != null && Number.isFinite(threshold) && threshold > 0) {
       out.compactThreshold = Math.floor(threshold);
     }
-    if (typeof f.currencyCode === 'string' && /^[A-Za-z]{3}$/.test(f.currencyCode.trim())) {
-      out.currencyCode = f.currencyCode.trim().toUpperCase();
-    }
+    const code = normalizeCurrencyCode(f.currencyCode);
+    if (code) out.currencyCode = code;
+    // Never persist "currency with no code": that combination renders as a plain number, so the
+    // saved format silently disagreed with the chosen style. A half-typed code becomes the default
+    // rather than vanishing, and the caller echoes the stored format back so the editor shows it.
+    if (out.style === 'currency' && !out.currencyCode) out.currencyCode = DEFAULT_CURRENCY_CODE;
     if (typeof f.prefix === 'string' && f.prefix.trim()) out.prefix = f.prefix.slice(0, MAX_AFFIX);
     if (typeof f.suffix === 'string' && f.suffix.trim()) out.suffix = f.suffix.slice(0, MAX_AFFIX);
     return Object.keys(out).length ? out : undefined;

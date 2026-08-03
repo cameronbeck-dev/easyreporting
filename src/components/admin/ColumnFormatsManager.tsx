@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState, useEffect, useRef, useState } from 'react';
+import { useActionState, useEffect, useState } from 'react';
 import { useFormStatus } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { setColumnFormatAction, type ActionState } from '@/lib/admin/actions';
@@ -12,6 +12,8 @@ import {
   COMPACT_MODE_LABELS,
   DATE_PRESETS,
   DATE_PRESET_LABELS,
+  DEFAULT_CURRENCY_CODE,
+  MAX_AFFIX,
 } from '@/lib/data/formatSpec';
 import { formatValue } from '../formatNumber';
 import { prettify } from '../chartTypes';
@@ -53,9 +55,21 @@ function toPayload(draft: ColumnFormat, type: ColumnType): ColumnFormat {
     p.compactThreshold = draft.compactThreshold;
   }
   if (draft.style === 'currency' && draft.currencyCode) p.currencyCode = draft.currencyCode;
-  if (draft.prefix) p.prefix = draft.prefix;
-  if (draft.suffix) p.suffix = draft.suffix;
+  // Match the server's emptiness test: it keeps an affix only when it has non-whitespace content,
+  // so treating a spaces-only affix as meaningful here made the row dirty and "save" a no-op.
+  // Content is kept verbatim (a deliberate trailing space in "AUD " survives).
+  if (draft.prefix?.trim()) p.prefix = draft.prefix;
+  if (draft.suffix?.trim()) p.suffix = draft.suffix;
   return p;
+}
+
+/**
+ * Show the currency code the value will actually render with. "Currency" with a blank code renders
+ * as currency using the default, so leaving the box empty would misrepresent the output.
+ */
+function withCurrencyDefault(format: ColumnFormat): ColumnFormat {
+  if (format.style !== 'currency' || format.currencyCode) return format;
+  return { ...format, currencyCode: DEFAULT_CURRENCY_CODE };
 }
 
 function SaveButton({ dirty }: { dirty: boolean }) {
@@ -88,19 +102,25 @@ function preview(type: ColumnType, payload: ColumnFormat): string {
 
 function ColumnRow({ column, datasetId }: { column: Column; datasetId: string }) {
   const [state, action] = useActionState<ActionState, FormData>(setColumnFormatAction, {});
-  const [draft, setDraft] = useState<ColumnFormat>(() => ({ ...(column.format ?? {}) }));
+  const [draft, setDraft] = useState<ColumnFormat>(() => withCurrencyDefault({ ...(column.format ?? {}) }));
+  const [savedSerialized, setSavedSerialized] = useState(() =>
+    JSON.stringify(toPayload(withCurrencyDefault(column.format ?? {}), column.type)),
+  );
 
-  const savedSerialized = useRef(JSON.stringify(toPayload(column.format ?? {}, column.type)));
   const payload = toPayload(draft, column.type);
   const currentSerialized = JSON.stringify(payload);
-  const dirty = currentSerialized !== savedSerialized.current;
+  const dirty = currentSerialized !== savedSerialized;
 
-  // After a successful save, adopt the just-saved draft as the new baseline.
-  const payloadRef = useRef(currentSerialized);
-  payloadRef.current = currentSerialized;
+  // Adopt what the server actually stored. Sanitizing can normalize or drop fields, so the draft
+  // is not proof of what was saved — treating it as the new baseline showed "Saved" for values
+  // that never persisted, which then reappeared changed on the next load. Reading the response
+  // also removes the in-flight race: edits made mid-save no longer mark themselves as saved.
   useEffect(() => {
-    if (state.ok) savedSerialized.current = payloadRef.current;
-  }, [state]);
+    if (!state.ok || state.savedFormat === undefined) return;
+    const stored = withCurrencyDefault(state.savedFormat ?? {});
+    setDraft(stored);
+    setSavedSerialized(JSON.stringify(toPayload(stored, column.type)));
+  }, [state, column.type]);
 
   const patch = (p: Partial<ColumnFormat>) => setDraft((d) => ({ ...d, ...p }));
 
@@ -223,6 +243,7 @@ function ColumnRow({ column, datasetId }: { column: Column; datasetId: string })
                 <input
                   className={inputSmall}
                   value={draft.prefix ?? ''}
+                  maxLength={MAX_AFFIX}
                   onChange={(e) => patch({ prefix: e.target.value })}
                 />
               </label>
@@ -232,6 +253,7 @@ function ColumnRow({ column, datasetId }: { column: Column; datasetId: string })
                 <input
                   className={inputSmall}
                   value={draft.suffix ?? ''}
+                  maxLength={MAX_AFFIX}
                   onChange={(e) => patch({ suffix: e.target.value })}
                 />
               </label>

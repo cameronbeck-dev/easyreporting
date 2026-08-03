@@ -395,13 +395,16 @@ export async function setColumnLabel(
  * Set (or clear, when `format` is null) one column's display format. The target may be a source
  * column (stored on columnsJson) or a computed field (stored on computedFieldsJson); the format is
  * sanitized against the column's real type, so only fields that type supports are persisted.
+ *
+ * Returns the format as actually stored (undefined when cleared). Sanitizing can drop or normalize
+ * fields, so callers echo this back to the editor instead of trusting the submitted draft.
  */
 export async function setColumnFormat(
   admin: AdminContext,
   datasetId: string,
   columnName: string,
   format: ColumnFormat | null,
-): Promise<void> {
+): Promise<ColumnFormat | undefined> {
   assertOwner(admin);
   const [row] = await db.select().from(datasets).where(eq(datasets.id, datasetId)).limit(1);
   if (!row) throw new ForbiddenError('Dataset not found.');
@@ -422,7 +425,7 @@ export async function setColumnFormat(
       return rebuilt;
     });
     await db.update(datasets).set({ columnsJson: next }).where(eq(datasets.id, datasetId));
-    return;
+    return cleaned;
   }
 
   // Fall back to computed fields, which live on their own JSON column and are always numeric.
@@ -446,6 +449,7 @@ export async function setColumnFormat(
     return rebuilt;
   });
   await db.update(datasets).set({ computedFieldsJson: nextComputed }).where(eq(datasets.id, datasetId));
+  return cleaned;
 }
 
 // ---------------------------------------------------------------------------

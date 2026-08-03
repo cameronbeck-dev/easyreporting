@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { formatValue, pickScale, formatMetric } from '@/components/formatNumber';
 import { measureFormatColumn } from '@/components/columnFormat';
+import { sanitizeColumnFormat, DEFAULT_CURRENCY_CODE } from '@/lib/data/formatSpec';
 import type { ColumnFormat, ColumnSchema } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 
@@ -59,13 +60,44 @@ describe('formatValue — numeric formats', () => {
   });
 
   it('does not throw on an incomplete/invalid currency code (e.g. while typing "AUD")', () => {
-    // Half-typed code → falls back to a plain number rather than throwing on Intl.
+    // Half-typed code → resolves to the default currency. Intl never sees an invalid code, and a
+    // currency column never silently degrades to a bare number (which read as "the style did
+    // nothing"). Only the symbol is a guess; the style itself is honoured.
     for (const code of ['', 'A', 'AU', 'AUDX', '12']) {
       const f: ColumnFormat = { style: 'currency', currencyCode: code, decimals: 2, compact: 'off' };
       expect(() => formatValue(1500, num(f), { fallback: 'plain' })).not.toThrow();
+      expect(formatValue(1500, num(f), { fallback: 'plain' })).toBe('A$1,500.00');
     }
-    expect(formatValue(1500, num({ style: 'currency', currencyCode: 'AU', decimals: 2, compact: 'off' }), { fallback: 'plain' }))
-      .toBe('1,500.00');
+  });
+
+  it('currency style with no code at all still renders as currency', () => {
+    const f: ColumnFormat = { style: 'currency', decimals: 2, compact: 'off' };
+    expect(formatValue(1234.5, num(f), { fallback: 'plain' })).toBe('A$1,234.50');
+  });
+
+  it('a spaces-only prefix/suffix is not treated as content', () => {
+    const f: ColumnFormat = { style: 'plain', decimals: 0, compact: 'off', prefix: '  ', suffix: ' ' };
+    // sanitizeColumnFormat drops these, so nothing should wrap the number once persisted.
+    expect(sanitizeColumnFormat(f, 'number')).toEqual({ style: 'plain', decimals: 0, compact: 'off' });
+  });
+});
+
+describe('sanitizeColumnFormat — currency is never half-configured', () => {
+  it('fills the default code when style is currency without a usable one', () => {
+    for (const code of [undefined, '', 'A', 'AU', 'AUDX']) {
+      const out = sanitizeColumnFormat({ style: 'currency', currencyCode: code, decimals: 2 }, 'number');
+      expect(out).toEqual({ style: 'currency', decimals: 2, currencyCode: DEFAULT_CURRENCY_CODE });
+    }
+  });
+
+  it('keeps a valid code, normalized to upper case', () => {
+    const out = sanitizeColumnFormat({ style: 'currency', currencyCode: ' usd ' }, 'number');
+    expect(out).toEqual({ style: 'currency', currencyCode: 'USD' });
+  });
+
+  it('does not invent a currency code for non-currency styles', () => {
+    expect(sanitizeColumnFormat({ style: 'percent', decimals: 1 }, 'number'))
+      .toEqual({ style: 'percent', decimals: 1 });
   });
 });
 
@@ -86,6 +118,19 @@ describe('formatValue — compaction', () => {
     expect(scale).toBe('M');
     expect(formatValue(1_700, num(f), { fallback: 'metric', scale })).toBe('0.00M');
     expect(formatValue(3_400_000, num(f), { fallback: 'metric', scale })).toBe('3.40M');
+  });
+
+  it("decimals: 0 keeps one digit once compacted (not '1M' for 1.23M)", () => {
+    const f: ColumnFormat = { decimals: 0, compact: 'auto' };
+    expect(formatValue(1_234_567.89, num(f), { fallback: 'plain' })).toBe('1.2M');
+    expect(formatValue(45_600, num(f), { fallback: 'plain' })).toBe('45.6K');
+    // Below the auto threshold nothing is compacted, so decimals: 0 still means no decimals.
+    expect(formatValue(1_234.5, num(f), { fallback: 'plain' })).toBe('1,235');
+  });
+
+  it('decimals above 1 are still honoured when compacted', () => {
+    const f: ColumnFormat = { decimals: 2, compact: 'auto' };
+    expect(formatValue(1_234_567.89, num(f), { fallback: 'plain' })).toBe('1.23M');
   });
 
   it('compact currency keeps its symbol', () => {
