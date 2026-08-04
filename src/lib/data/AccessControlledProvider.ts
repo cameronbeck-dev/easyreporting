@@ -20,6 +20,7 @@ import { Aggregation } from './types';
 import type { ComputedField } from './computed/types';
 import { evaluateAst } from './computed/evaluator';
 import { parseComputedExpression } from './computed/parser';
+import { computedReduction, type ComputedReduction } from './computed/reduction';
 
 export class AccessError extends Error {
   constructor(message: string) {
@@ -87,6 +88,20 @@ export class AccessControlledProvider implements DataProvider {
     }
   }
 
+  /**
+   * Classify a computed field's reduction from its formula, for display labelling. A formula that
+   * fails to parse falls back to 'ratio' — the conservative label, since it claims nothing about
+   * the value being a total. (Query paths surface parse errors themselves; this must not throw.)
+   */
+  private reductionOf(f: ComputedField): ComputedReduction {
+    try {
+      const { ast } = parseComputedExpression(f.expression, f.dependencies);
+      return computedReduction(ast);
+    } catch {
+      return 'ratio';
+    }
+  }
+
   // Computed fields are visible if and only if ALL their dependencies are allowed
   // source columns. Visibility is purely derived — no separate grant needed.
   private visibleComputedFields(): ComputedField[] {
@@ -145,6 +160,7 @@ export class AccessControlledProvider implements DataProvider {
       isComputed: true,
       format: f.format,
       label: f.label,
+      computedReduction: this.reductionOf(f),
     }));
     return {
       ...schema,
@@ -319,6 +335,7 @@ export class AccessControlledProvider implements DataProvider {
       isComputed: true,
       format: f.format,
       label: f.label,
+      computedReduction: this.reductionOf(f),
     }));
 
     return {

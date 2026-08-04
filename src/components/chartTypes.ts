@@ -1,5 +1,5 @@
 import { Aggregation } from '@/lib/data/types';
-import type { DateBucket, ColumnType } from '@/lib/data/types';
+import type { DateBucket, ColumnType, ColumnSchema } from '@/lib/data/types';
 
 /** Every chart type the dashboard can render. `combo` overlays two measures (bar + line). */
 export type ChartType = 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'donut' | 'combo';
@@ -109,7 +109,24 @@ export function columnLabelFor(col: { name: string; label?: string }): string {
   return col.label?.trim() || prettify(col.name);
 }
 
-/** Human-friendly word for each aggregation, used in default chart titles. */
+// ---------------------------------------------------------------------------
+// Measure naming
+//
+// A measure's title names the THING measured; the aggregation is metadata about how the number
+// was derived. Sum is the assumed default for a numeric measure, so stating it tells a reader
+// nothing they weren't already assuming — and it read absurdly on columns whose own name already
+// says "Total" ("Total Total Sell"). So Sum is left unstated.
+//
+// Every other aggregation changes what the number MEANS: an average, minimum or distinct count
+// misread as a total is a wrong dashboard, not just an ugly label. Those are always stated.
+//
+// The aggregation is never merely implied. aggregationBadge() supplies a compact chip and
+// measureCalculation() a full-sentence tooltip, rendered together by <MeasureLabel>, for every
+// aggregation including Sum. Callers naming a whole set of measures use resolveMeasureLabels(),
+// which restates the aggregation when two measures would otherwise share one title.
+// ---------------------------------------------------------------------------
+
+/** The aggregation word a title uses when it states its aggregation. */
 const AGGREGATION_LABEL: Record<Aggregation, string> = {
   [Aggregation.Sum]: 'Total',
   [Aggregation.Avg]: 'Average',
@@ -119,14 +136,160 @@ const AGGREGATION_LABEL: Record<Aggregation, string> = {
   [Aggregation.Max]: 'Highest',
 };
 
-/** Readable name for a single measure, e.g. "Total revenue", "Number of records", or
- * "Unique customer". Count ignores its column (counts rows); every other aggregation —
- * CountUnique included — names the column it measures. When a `labels` map is supplied and the
- * column has an owner-set display name, that name is used; otherwise the raw column name (the
- * prior behavior) is kept, so nothing changes for un-renamed columns. */
-export function metricLabel(aggregation: Aggregation, column: string, labels?: ColumnLabels): string {
-  const measure = aggregation === Aggregation.Count ? 'records' : (labels?.[column] ?? column);
-  return `${AGGREGATION_LABEL[aggregation]} ${measure}`;
+/**
+ * The one aggregation that prose leaves unstated. Prose titles ("Average Sell by Carrier") carry
+ * no chip, so they do state their aggregation — except Sum, which is the assumed default and which
+ * doubles up on columns already named "Total …". Chip-bearing surfaces state none of them; see
+ * describeMeasure.
+ */
+const IMPLICIT_AGGREGATION = Aggregation.Sum;
+
+/** Compact chip text — the always-visible half of the calculation hint. */
+const AGGREGATION_BADGE: Record<Aggregation, string> = {
+  [Aggregation.Sum]: 'SUM',
+  [Aggregation.Avg]: 'AVG',
+  [Aggregation.Count]: 'COUNT',
+  [Aggregation.CountUnique]: 'UNIQUE',
+  [Aggregation.Min]: 'MIN',
+  [Aggregation.Max]: 'MAX',
+};
+
+/** Verb phrase for the tooltip, spelling the calculation out in full. */
+const AGGREGATION_VERB: Record<Aggregation, string> = {
+  [Aggregation.Sum]: 'Sum of',
+  [Aggregation.Avg]: 'Average of',
+  [Aggregation.Count]: 'Count of',
+  [Aggregation.CountUnique]: 'Distinct count of',
+  [Aggregation.Min]: 'Minimum of',
+  [Aggregation.Max]: 'Maximum of',
+};
+
+/**
+ * A measure's title plus the calculation behind it, for a surface that can render a chip.
+ *
+ * The title names WHAT is measured and the chip says HOW — for every aggregation, not just Sum.
+ * So a distinct count of Company is "Company" + UNIQUE rather than "Unique Company", and the
+ * aggregation lives in exactly one place instead of being repeated in words and chip.
+ *
+ * `badge` is null only when the title had to absorb the aggregation itself: describeMeasures
+ * forces the word in when two measures would otherwise share a title, and a chip on top of that
+ * would duplicate it again. `calculation` is always populated and always reaches a tooltip.
+ */
+export interface MeasureDescriptor {
+  label: string;
+  badge: string | null;
+  calculation: string;
+}
+
+/**
+ * Title, chip and tooltip for one aggregation over a column. `explicit` moves the aggregation into
+ * the title and drops the chip — used for disambiguation, not by default.
+ */
+export function describeMeasure(
+  aggregation: Aggregation,
+  column: string,
+  labels?: ColumnLabels,
+  opts: { explicit?: boolean } = {},
+): MeasureDescriptor {
+  return {
+    label: opts.explicit
+      ? metricLabel(aggregation, column, labels, { explicit: true })
+      : measuredName(aggregation, column, labels),
+    badge: opts.explicit ? null : aggregationBadge(aggregation),
+    calculation: measureCalculation(aggregation, column, labels),
+  };
+}
+
+/**
+ * Descriptors for measures shown together. Titles are bare names, so two aggregations of one column
+ * would collide (both "Sell", distinguished only by chip) — and in a chart legend or an exported
+ * CSV there is no chip to distinguish them. Any colliding measure therefore states its aggregation
+ * in the title and drops its chip.
+ */
+export function describeMeasures(measures: NamedMeasure[], labels?: ColumnLabels): MeasureDescriptor[] {
+  const bare = measures.map((m) => measuredName(m.aggregation, m.column, labels));
+  const counts = new Map<string, number>();
+  for (const label of bare) counts.set(label, (counts.get(label) ?? 0) + 1);
+  return measures.map((m, i) =>
+    describeMeasure(m.aggregation, m.column, labels, { explicit: (counts.get(bare[i]) ?? 0) > 1 }),
+  );
+}
+
+/**
+ * Title, chip and tooltip for a self-aggregating computed field. Its title is just the field name —
+ * the formula does its own math — so the chip carries HOW it reduces, which is not the same for
+ * every computed field: an additive one ([Sell] - [Cost]) genuinely is a total, while a ratio or
+ * weighted average (margin %, [Weight] / [Items]) is not and must not be read as one. Derived
+ * server-side from the formula; see computed/reduction.ts.
+ */
+export function describeComputedField(
+  column: Pick<ColumnSchema, 'name' | 'label' | 'computedReduction'>,
+): MeasureDescriptor {
+  const isTotal = column.computedReduction === 'total';
+  return {
+    label: columnLabelFor(column),
+    badge: isTotal ? AGGREGATION_BADGE[Aggregation.Sum] : 'CALC',
+    calculation: isTotal
+      ? 'Calculated field, totalled across the group'
+      : 'Calculated field — a ratio of totals, not a sum',
+  };
+}
+
+/**
+ * Display name of the thing measured. Count ignores its column (it counts rows); everything else
+ * names its column via the shared columnLabel, so measures and dimensions are titled by the same
+ * rule — measures previously used the raw column name while dimensions were prettified.
+ */
+function measuredName(aggregation: Aggregation, column: string, labels?: ColumnLabels): string {
+  return aggregation === Aggregation.Count ? 'records' : columnLabel(column, labels);
+}
+
+/** Compact chip text for an aggregation, e.g. "SUM". */
+export function aggregationBadge(aggregation: Aggregation): string {
+  return AGGREGATION_BADGE[aggregation];
+}
+
+/** The full calculation, for a tooltip: "Sum of Total Sell", "Count of records". */
+export function measureCalculation(aggregation: Aggregation, column: string, labels?: ColumnLabels): string {
+  return `${AGGREGATION_VERB[aggregation]} ${measuredName(aggregation, column, labels)}`;
+}
+
+/**
+ * Title for one measure. Sum gives the column name alone ("Total Sell"); every other aggregation
+ * is stated ("Average Total Sell", "Number of records"). `explicit` forces the aggregation word —
+ * resolveMeasureLabels uses it to separate measures that would otherwise collide.
+ */
+export function metricLabel(
+  aggregation: Aggregation,
+  column: string,
+  labels?: ColumnLabels,
+  opts: { explicit?: boolean } = {},
+): string {
+  const name = measuredName(aggregation, column, labels);
+  if (aggregation === IMPLICIT_AGGREGATION && !opts.explicit) return name;
+  return `${AGGREGATION_LABEL[aggregation]} ${name}`;
+}
+
+/** A measure reduced to what naming needs: an aggregation over a column. */
+export interface NamedMeasure {
+  aggregation: Aggregation;
+  column: string;
+}
+
+/**
+ * Prose titles for measures listed together (combo card headings), where there is no chip. Sum stays
+ * unstated to avoid doubling up on "Total …" columns; a collision forces every measure sharing the
+ * title to state its aggregation. Chip-bearing surfaces use describeMeasures instead.
+ */
+export function resolveMeasureLabels(measures: NamedMeasure[], labels?: ColumnLabels): string[] {
+  const implicit = measures.map((m) => metricLabel(m.aggregation, m.column, labels));
+  const counts = new Map<string, number>();
+  for (const label of implicit) counts.set(label, (counts.get(label) ?? 0) + 1);
+  return measures.map((m, i) =>
+    (counts.get(implicit[i]) ?? 0) > 1
+      ? metricLabel(m.aggregation, m.column, labels, { explicit: true })
+      : implicit[i],
+  );
 }
 
 /** Standalone noun for an aggregation, for use as a dropdown option (not a sentence). */
@@ -168,9 +331,12 @@ export function defaultChartTitle(aggregation: Aggregation, y: string, x: string
   return `${metricLabel(aggregation, y, labels)} by ${columnLabel(x, labels)}`;
 }
 
-/** Default title for a combo chart, e.g. "Total revenue & Average margin by Month". */
+/** Default title for a combo chart, e.g. "Total Sell & Average margin by Month". */
 export function defaultComboTitle(measures: ComboMeasure[], x: string, labels?: ColumnLabels): string {
-  const parts = measures.map((m) => metricLabel(m.aggregation, m.y, labels));
+  const parts = resolveMeasureLabels(
+    measures.map((m) => ({ aggregation: m.aggregation, column: m.y })),
+    labels,
+  );
   return `${parts.join(' & ')} by ${columnLabel(x, labels)}`;
 }
 
@@ -245,8 +411,25 @@ export interface TableConfig {
  */
 export function tableColumnLabels(config: TableConfig, labels?: ColumnLabels): string[] {
   const dimLabels = config.dimensions.map((d) => columnLabel(d, labels));
-  const measureLabels = config.columns.map((c) => c.label?.trim() || metricLabel(c.aggregation, c.y, labels));
+  const auto = describeMeasures(tableMeasures(config), labels);
+  const measureLabels = config.columns.map((c, i) => c.label?.trim() || auto[i].label);
   return [...dimLabels, ...measureLabels];
+}
+
+/** A table's measures in result-column order. */
+export function tableMeasures(config: TableConfig): NamedMeasure[] {
+  return config.columns.map((c) => ({ aggregation: c.aggregation, column: c.y }));
+}
+
+/**
+ * A chart's measures in series order: a combo chart's own list, otherwise its single y measure.
+ * Mirrors how chartData builds series, so labels line up with what is drawn.
+ */
+export function chartMeasures(config: ChartConfig): NamedMeasure[] {
+  if (config.type === 'combo' && config.measures && config.measures.length > 0) {
+    return config.measures.map((m) => ({ aggregation: m.aggregation, column: m.y }));
+  }
+  return [{ aggregation: config.aggregation, column: config.y }];
 }
 
 /** Default title for a table, e.g. "Total revenue by Receiver State". */

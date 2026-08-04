@@ -4,7 +4,17 @@ import { useEffect, useState } from 'react';
 import type { ColumnSchema, Filter, SummaryResult, SummaryMetric } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import type { TileConfig } from './chartTypes';
-import { metricLabel, columnLabelFor, buildColumnLabels, aggregationOptionLabel, aggregationsForColumnType, reconcileAggregation } from './chartTypes';
+import {
+  buildColumnLabels,
+  columnLabelFor,
+  aggregationOptionLabel,
+  aggregationsForColumnType,
+  reconcileAggregation,
+  describeMeasure,
+  describeComputedField,
+  type MeasureDescriptor,
+} from './chartTypes';
+import MeasureLabel from './MeasureLabel';
 import { fieldColor } from './fieldColors';
 import { formatValue } from './formatNumber';
 import { measureFormatColumn } from './columnFormat';
@@ -22,10 +32,15 @@ interface Props {
 
 const COUNT_COLUMN = '__count__';
 
-function tileLabel(t: TileConfig, col: ColumnSchema | undefined, labels: Record<string, string>): string {
-  // Computed fields self-aggregate via their formula, so an aggregation word ("Total…")
-  // would be misleading — show the field's display name alone.
-  return col?.isComputed ? columnLabelFor(col) : metricLabel(t.aggregation, t.column, labels);
+/** Title, chip and tooltip for a tile's measure. See "Measure naming" in chartTypes. */
+function tileDescriptor(
+  t: TileConfig,
+  col: ColumnSchema | undefined,
+  labels: Record<string, string>,
+): MeasureDescriptor {
+  // A computed field self-aggregates via its formula, so no aggregation applies to it — its chip
+  // reports how the formula reduces instead.
+  return col?.isComputed ? describeComputedField(col) : describeMeasure(t.aggregation, t.column, labels);
 }
 
 function tileColorKey(t: TileConfig): string {
@@ -219,9 +234,10 @@ export default function KpiSnapshot({
                 </button>
                 <div className="mb-3 flex items-center gap-2">
                   <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} aria-hidden />
-                  <span className="text-xs font-semibold uppercase tracking-wide text-foreground-muted">
-                    {tileLabel(t, tileCol, labels)}
-                  </span>
+                  <MeasureLabel
+                    descriptor={tileDescriptor(t, tileCol, labels)}
+                    className="text-xs font-semibold uppercase tracking-wide text-foreground-muted"
+                  />
                 </div>
                 <div className="flex items-baseline gap-2">
                   <span className="tnum text-3xl font-extrabold leading-none text-foreground">

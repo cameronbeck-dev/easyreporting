@@ -2,7 +2,15 @@
 
 import { useEffect, useState } from 'react';
 import type { TableConfig, TableSort } from './chartTypes';
-import { tableColumnLabels, buildColumnLabels } from './chartTypes';
+import {
+  tableColumnLabels,
+  tableMeasures,
+  buildColumnLabels,
+  describeMeasures,
+  describeComputedField,
+  type MeasureDescriptor,
+} from './chartTypes';
+import MeasureLabel from './MeasureLabel';
 import type { Filter, TableResult, SummaryResult, SummaryMetric, ColumnSchema } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import { fieldColor } from './fieldColors';
@@ -112,11 +120,19 @@ export default function TableCard({
   // have a manual per-measure label). Shared with the CSV export so the file matches the screen.
   const columnLabels = buildColumnLabels(schema.columns);
   const labels = tableColumnLabels(config, columnLabels);
+  // Resolved as a set so two aggregations of one column don't share a header (see describeMeasures).
+  const measureDescriptors = describeMeasures(tableMeasures(config), columnLabels);
 
   // Per-output-column format metadata. Measure columns resolve their source column's format
   // (currency stays currency); compaction is per value (see formatValue), so no column-wide
   // scale is precomputed and cells/footer each render at their own magnitude.
-  type MeasureMeta = { kind: 'measure'; fmtCol: Pick<ColumnSchema, 'type' | 'format'> };
+  // Measure headers also carry the calculation (chip + tooltip), since the title itself leaves Sum
+  // unstated — see "Measure naming" in chartTypes.
+  type MeasureMeta = {
+    kind: 'measure';
+    fmtCol: Pick<ColumnSchema, 'type' | 'format'>;
+    descriptor?: MeasureDescriptor;
+  };
   type DimMeta = { kind: 'dim'; fmtCol: Pick<ColumnSchema, 'type' | 'format'> };
   const colMeta: (MeasureMeta | DimMeta)[] = (result?.columns ?? []).map((col, cIdx) => {
     if (cIdx < dimCount) {
@@ -127,7 +143,15 @@ export default function TableCard({
     // column with no matching config measure — render it plainly rather than crashing.
     if (!measure) return { kind: 'measure', fmtCol: { type: 'number' } };
     const fmtCol = measureFormatColumn(schema.columns, measure.y, measure.aggregation);
-    return { kind: 'measure', fmtCol };
+    // A computed field self-aggregates via its formula, so no aggregation applies to it.
+    const srcCol = schema.columns.find((c) => c.name === measure.y);
+    return {
+      kind: 'measure',
+      fmtCol,
+      descriptor: srcCol?.isComputed
+        ? describeComputedField(srcCol)
+        : measureDescriptors[cIdx - dimCount],
+    };
   });
 
   // Effective sort (defaults resolved the same way tableData/buildTable resolve them).
@@ -249,6 +273,8 @@ export default function TableCard({
                 {result.columns.map((col, i) => {
                   const isMeasure = i >= dimCount;
                   const dir = indicatorFor(col.key);
+                  const meta = colMeta[i];
+                  const measureMeta = meta?.kind === 'measure' ? meta : undefined;
                   return (
                     <th
                       key={col.key}
@@ -256,9 +282,17 @@ export default function TableCard({
                       className={`sticky top-0 z-10 cursor-pointer select-none whitespace-nowrap border-b border-border bg-surface px-3 py-2 font-semibold text-foreground-muted transition-colors hover:text-foreground ${
                         isMeasure ? 'text-right' : 'text-left'
                       }`}
-                      title="Click to sort"
+                      // The measure tooltip names the calculation; sorting is discoverable from the
+                      // pointer cursor and the active-direction caret.
+                      title={measureMeta?.descriptor?.calculation ?? 'Click to sort'}
                     >
-                      {labels[i]}
+                      {measureMeta?.descriptor ? (
+                        // labels[i] wins: a manual per-measure label overrides the automatic title,
+                        // while the chip and tooltip still describe the underlying calculation.
+                        <MeasureLabel descriptor={{ ...measureMeta.descriptor, label: labels[i] }} />
+                      ) : (
+                        labels[i]
+                      )}
                       <span className="ml-1 inline-block w-2 text-foreground-muted">
                         {dir === 'asc' ? '▲' : dir === 'desc' ? '▼' : ''}
                       </span>

@@ -15,7 +15,7 @@
 import type { AggregatedResult, Filter, DateBucket } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
 import type { ChartConfig, ColumnLabels } from './chartTypes';
-import { DEFAULT_BREAKDOWN_LIMIT, metricLabel, supportsBreakdown } from './chartTypes';
+import { DEFAULT_BREAKDOWN_LIMIT, describeMeasures, supportsBreakdown } from './chartTypes';
 
 /** The single-measure query shape sent to /api/query. */
 export interface AggQueryInput {
@@ -78,8 +78,15 @@ export async function fetchChartData(
       ),
     );
     const canonicalX = results[0]?.x ?? [];
+    // Resolved as a set: series names omit the aggregation (the card header carries a chip per
+    // measure), so two aggregations of one column would otherwise draw two identically named
+    // series — describeMeasures states the aggregation on exactly those.
+    const seriesNames = describeMeasures(
+      measures.map((m) => ({ aggregation: m.aggregation, column: m.y })),
+      labels,
+    ).map((d) => d.label);
     const series = results.map((r, i) => ({
-      name: metricLabel(measures[i].aggregation, measures[i].y, labels),
+      name: seriesNames[i],
       data: alignTo(canonicalX, r.x, r.series[0]?.data ?? []),
     }));
     return { x: canonicalX, series };

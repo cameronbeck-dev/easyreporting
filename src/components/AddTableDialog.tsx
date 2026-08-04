@@ -314,15 +314,22 @@ export default function AddTableDialog({ datasetId, initial, onSubmit, onClose }
                     onChange={(e) => setRankBy(Number(e.target.value))}
                     className={inputClass}
                   >
+                    {/* A picker has no chip to lean on, so every option states its aggregation —
+                        otherwise two aggregations of one column read identically here. */}
                     {measures.map((m, i) => (
-                      <option key={i} value={i}>{metricLabel(m.aggregation, m.y, labels)}</option>
+                      <option key={i} value={i}>
+                        {metricLabel(m.aggregation, m.y, labels, { explicit: true })}
+                      </option>
                     ))}
                   </select>
                 </div>
               )}
               <p className="mt-1 text-xs text-foreground-muted">
                 Keep only the highest {dim2 ? `${dim1 ? columnLabel(dim1, labels) : 'primary'} groups` : 'rows'} by{' '}
-                {rankMeasure ? metricLabel(rankMeasure.aggregation, rankMeasure.y, labels) : 'the first measure'}.
+                {rankMeasure
+                  ? metricLabel(rankMeasure.aggregation, rankMeasure.y, labels, { explicit: true })
+                  : 'the first measure'}
+                .
               </p>
             </div>
 

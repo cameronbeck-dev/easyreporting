@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
 import { fetchChartData, type AggQueryInput } from '@/components/chartData';
-import { metricLabel } from '@/components/chartTypes';
 import type { ChartConfig } from '@/components/chartTypes';
 import type { AggregatedResult } from '@/lib/data/types';
 import { Aggregation } from '@/lib/data/types';
@@ -49,9 +48,11 @@ describe('fetchChartData — combo', () => {
     const result = await fetchChartData(combo, { ...base, fetch });
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(result.x).toEqual(['Jan', 'Feb']);
+    // Series names are bare column names — the card header carries a chip per measure stating the
+    // aggregation, so the legend doesn't repeat it. Distinct columns here, so no disambiguation.
     expect(result.series).toEqual([
-      { name: metricLabel(Aggregation.Sum, 'revenue'), data: [100, 200] },
-      { name: metricLabel(Aggregation.Avg, 'margin'), data: [0.1, 0.2] },
+      { name: 'Revenue', data: [100, 200] },
+      { name: 'Margin', data: [0.1, 0.2] },
     ]);
   });
 

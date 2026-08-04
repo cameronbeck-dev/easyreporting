@@ -9,7 +9,7 @@ import { useChartTheme } from './echartsTheme';
 import { fieldColor } from './fieldColors';
 import { buildChartOption, type ChartValueFormats } from './buildChartOption';
 import { measureFormatColumn } from './columnFormat';
-import { buildColumnLabels } from './chartTypes';
+import { buildColumnLabels, chartMeasures, describeMeasures, describeComputedField } from './chartTypes';
 import { useSchema } from './useSchema';
 import { fetchChartData, type AggregatedFetcher } from './chartData';
 import { aggregatedToCsv } from '@/lib/data/export/toCsv';
@@ -68,6 +68,18 @@ export default function ChartCard({
 
   // Owner-set column display names, so combo legends and the CSV export read the friendly names.
   const labels = buildColumnLabels(schema.columns);
+
+  // One chip per plotted measure, in series order — the plot is a canvas, so this is where a
+  // series' aggregation is stated. Measures whose series name already absorbed it (a collision)
+  // carry no chip. A computed field reports how its formula reduces instead.
+  const chartMeasureList = chartMeasures(config);
+  const measureChips = describeMeasures(chartMeasureList, labels)
+    .map((d, i) => {
+      const m = chartMeasureList[i];
+      const srcCol = schema.columns.find((c) => c.name === m.column);
+      return { key: `${m.column}:${m.aggregation}:${i}`, ...(srcCol?.isComputed ? describeComputedField(srcCol) : d) };
+    })
+    .filter((c) => c.badge !== null);
 
   const accent = fieldColor(config.aggregation === Aggregation.Count ? 'records' : config.y);
   const effectiveBucket = config.dateBucket ?? granularity;
@@ -155,6 +167,18 @@ export default function ChartCard({
           title={onDragStart ? 'Drag to reposition' : undefined}
         >
           {config.title}
+          {/* The plot is a canvas, so a measure chip can't live on the series itself; the card
+              header carries one per measure to keep each calculation visible and hoverable. */}
+          {measureChips.map((c) => (
+            <span
+              key={c.key}
+              title={c.calculation}
+              className="ml-[0.3em] inline-block translate-y-[-0.1em] rounded-[0.25em] bg-surface-muted px-[0.3em] align-middle text-[0.62em] font-semibold uppercase leading-[1.5] tracking-wide text-foreground-muted"
+            >
+              {c.badge}
+              <span className="sr-only"> — {c.calculation}</span>
+            </span>
+          ))}
         </h3>
         <div className="flex items-center gap-1">
           {onGoToData && (

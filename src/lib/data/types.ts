@@ -77,6 +77,14 @@ export interface ColumnSchema {
   name: string;
   type: ColumnType;
   isComputed?: boolean;
+  /**
+   * Computed fields only: how the field reduces over a group, derived from its formula (see
+   * computed/reduction.ts). 'total' — additive, so the group value is a genuine total
+   * ([Sell] - [Cost]); 'ratio' — non-additive, a ratio or weighted average of totals that must
+   * not itself be summed (margin %). Surfaces label the two differently. The formula itself
+   * stays server-side; this is the only part of it clients need.
+   */
+  computedReduction?: 'total' | 'ratio';
   /** Owner-configured display format, if any. See ColumnFormat. */
   format?: ColumnFormat;
   /**
